@@ -42,6 +42,9 @@ Plugin 'git://git.wincent.com/command-t.git'
 Plugin 'Valloric/YouCompleteMe'
 Plugin 'scrooloose/syntastic.git'
 
+" finds files in git repo
+Plugin 'kien/ctrlp.vim'
+
 call vundle#end()
 filetype plugin indent on     " required
 " To ignore plugin indent changes, instead use:

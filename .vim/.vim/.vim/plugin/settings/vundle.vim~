@@ -8,8 +8,8 @@ set nocompatible              " be iMproved, required
 filetype off                  " required
 
 " set the runtime path to include Vundle and initialize
-set rtp+=~/.vim/bundle/Vundle.vim
-call vundle#begin()
+set rtp+=~/.vim/bundle/vundle/
+call vundle#rc()
 " alternatively, pass a path where Vundle should install plugins
 "let path = '~/some/path/here'
 "call vundle#rc(path)
@@ -42,10 +42,6 @@ Plugin 'git://git.wincent.com/command-t.git'
 Plugin 'Valloric/YouCompleteMe'
 Plugin 'scrooloose/syntastic.git'
 
-" finds files in git repo
-Plugin "kien/ctrlp.vim"
-
-call vundle#end()
 filetype plugin indent on     " required
 " To ignore plugin indent changes, instead use:
 "filetype plugin on

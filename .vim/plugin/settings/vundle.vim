@@ -45,6 +45,9 @@ Plugin 'scrooloose/syntastic.git'
 " finds files in git repo
 Plugin 'kien/ctrlp.vim'
 
+" All the go lang stuff you could need
+Plugin 'jnwhiteh/vim-golang'
+
 call vundle#end()
 filetype plugin indent on     " required
 " To ignore plugin indent changes, instead use:

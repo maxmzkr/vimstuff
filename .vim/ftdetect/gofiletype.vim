@@ -1,0 +1,1 @@
+/home/max/.vim/bundle/vim-golang/ftdetect/gofiletype.vim

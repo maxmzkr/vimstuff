@@ -1,0 +1,1 @@
+/home/max/.vim/bundle/vim-golang/compiler/go.vim

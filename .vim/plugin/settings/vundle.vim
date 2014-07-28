@@ -15,6 +15,7 @@ call vundle#begin()
 "call vundle#rc(path)
 
 
+Plugin 'gmarik/Vundle.vim'
 
 " settings start here
 " let Vundle manage Vundle, required
@@ -47,6 +48,11 @@ Plugin 'kien/ctrlp.vim'
 
 " All the go lang stuff you could need
 Plugin 'jnwhiteh/vim-golang'
+
+" To be able to deploy to arduino from vim
+" arduino syntax
+Plugin 'vim-scripts/Arduino-syntax-file'
+Plugin 'jplaut/vim-arduino-ino'
 
 call vundle#end()
 filetype plugin indent on     " required

@@ -1,11 +1,4 @@
-setlocal tabstop=4
-setlocal softtabstop=4
-setlocal shiftwidth=4
-setlocal textwidth=80
-setlocal smarttab
-setlocal expandtab
-
-" indent Python in the Google way.
+" Indent Python in the Google way.
 
 setlocal indentexpr=GetGooglePythonIndent(v:lnum)
 

@@ -60,7 +60,7 @@ Plugin 'madflow/vim-php'
 Plugin 'ingydotnet/yaml-vim'
 
 " Latex plugin
-Plugin 'vim-scripts/AutomaticLaTexPlugin'
+Plugin 'coot/atp_vim'
 
 call vundle#end()
 filetype plugin indent on     " required

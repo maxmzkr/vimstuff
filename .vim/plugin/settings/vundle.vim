@@ -47,12 +47,20 @@ Plugin 'scrooloose/syntastic.git'
 Plugin 'kien/ctrlp.vim'
 
 " All the go lang stuff you could need
-Plugin 'jnwhiteh/vim-golang'
+Plugin 'fatih/vim-go'
 
 " To be able to deploy to arduino from vim
 " arduino syntax
 Plugin 'vim-scripts/Arduino-syntax-file'
 Plugin 'jplaut/vim-arduino-ino'
+
+Plugin 'madflow/vim-php'
+
+" yaml plugins
+Plugin 'ingydotnet/yaml-vim'
+
+" Latex plugin
+Plugin 'coot/atp_vim'
 
 call vundle#end()
 filetype plugin indent on     " required

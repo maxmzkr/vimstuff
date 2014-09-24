@@ -1,10 +1,5 @@
 let g:netrw_dirhistmax  =10
-let g:netrw_dirhist_cnt =8
-let g:netrw_dirhist_1='/home/max/microwave/microwave'
-let g:netrw_dirhist_2='/home/max/pipedream/lib/deepy'
-let g:netrw_dirhist_3='/home/max/.vim/vimundo'
-let g:netrw_dirhist_4='/home/max/gourlparser'
-let g:netrw_dirhist_5='/home/max/goblog/src/github.com/maxmzkr/goblog/handlers/templates'
-let g:netrw_dirhist_6='/home/max/.vimstuff'
-let g:netrw_dirhist_7='/home/max/.vim/plugin/settings'
-let g:netrw_dirhist_8='/home/max/salt-states/cloud'
+let g:netrw_dirhist_cnt =3
+let g:netrw_dirhist_1='/home/max/salt-states/celeryconfig'
+let g:netrw_dirhist_2='/home/max/.vim/plugin/settings'
+let g:netrw_dirhist_3='/home/max/omniauth/src/github.com/maxmzkr/goomniauth/goomniauth'

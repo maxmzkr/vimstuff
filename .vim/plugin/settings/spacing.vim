@@ -4,7 +4,6 @@
 set smartindent
 set tabstop=2
 set shiftwidth=2
-set expandtab
 
 "allow for inserting line break without entering insert
 nmap <S-Enter> O<Esc>

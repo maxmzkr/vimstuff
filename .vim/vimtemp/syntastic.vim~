@@ -2,7 +2,7 @@
 " ~/.vim/plugin/settings/syntastic.vim
 " used to set settings for syntastic
 " https://github.com/scrooloose/syntastic
-let g:syntastic_cpp_checkers=['gcc', 'cpplint']
+let g:syntastic_cpp_checkers=['cpplint', 'gcc']
 let g:syntastic_cpp_check_headers=1
 
 " custom pylintrc file

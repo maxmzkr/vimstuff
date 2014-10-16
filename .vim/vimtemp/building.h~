@@ -1,0 +1,227 @@
+#ifndef BUILDING_H_
+#define BUILDING_H_
+
+#include <stdio.h>
+#include <array>
+#include <queue>
+#include <vector>
+#include <stack>
+#include <string>
+
+struct Tile {
+  char type = '.';
+	char referer = '\0';
+};
+
+struct Coords {
+	char floor;
+	int y;
+	int x;
+};
+
+typedef std::vector<std::vector<Tile>> Room;
+
+class Building {
+ public:
+  // Base constructor
+  Building();
+
+  // Returns the floor the human is on
+  char human_floor();
+
+  // Returns the x value of the human in the room
+  int human_x();
+
+  // Returns the y value of the human in the room
+  int human_y();
+
+  // Returns the floor the ring is on
+  char ring_floor();
+
+  // Returns the x value of the ring in the room
+  int ring_x();
+
+  // Returns the y value of the ring in the room
+  int ring_y();
+
+  // Returns the length of the rooms
+  int length();
+
+  // Returns the mode of the rooms
+  char mode();
+
+  // Returns the output mode of the rooms
+  char output_mode();
+
+  // Returns the number of floors in the building
+  char number_of_floors();
+
+  // Returns the rooms of the buildign
+	std::vector<Room> rooms();
+
+  // Returns the routing mode of the path finding
+  char routing_mode();
+
+  // Returns the route
+  std::vector<Coords> route();
+
+  // Returns the route stack
+  std::queue<Coords> route_queue();
+
+  // Returns the constructed route stack
+  std::stack<Coords> constructed_route();
+
+  // Sets the floor the human is on.
+  void set_human_floor(char floor);
+
+  // Attempts to set the x value of the human.
+  void set_human_x(int x);
+
+  // Attempts to set the y value of the human.
+  void set_human_y(int y);
+
+  // Sets the floor the ring is on.
+  void set_ring_floor(char floor);
+
+  // Attempts to set the x value of the ring.
+  void set_ring_x(int x);
+
+  // Attempts to set the y value of the ring.
+  void set_ring_y(int y);
+
+  // Sets the length of the room
+  void set_length(int length);
+
+  // Sets the mode of the room
+  void set_mode(char mode);
+
+  // Sets the output mode of the room
+  void set_output_mode(char mode);
+
+  // Sets the number of floors in the building
+  void set_number_of_floors(char number);
+
+  // Sets the routing mode for the path finding
+  void set_routing_mode(char mode);
+
+	// Returns true if the coords are in bound
+  //
+  // A coord is considered in bounds when it's floor y and x
+  // are all greater than 0 and below their respected limit
+	bool IsInBounds(char floor, int y, int x);
+
+	// Returns true if the character is a valid character
+  // Checks that the tile is a character that has a definition
+  // in the spec sheet
+	bool IsValidType(char type);
+
+  // helper fuction for set tiles
+  // used to set tiles when L is the first line
+  char SetTilesL();
+
+  // helper fuction for set tiles
+  // used to set tiles when M is the first line
+  char SetTilesM();
+
+  // Sets all the tiles to the specified characters by stdin
+  // If the starting character is found, the human is set as there
+  //
+  // Also set's the human's coordnates and the ring's
+  //
+  // Returns (deprecated):
+  //  0: If everything went fine
+  //  1: If any of the rooms are too big in either direction
+  //  2: If the human starting space was not found
+	//  3: If there are too many floors
+	//  4: If the mode is not valid
+  char SetTiles();
+
+	// returns the coord that is the specific direction from the other coord
+  //
+  // direction can be 'n', 'e', 's', or 'w'
+  //
+  // Returns:
+  //  The coordnite that is one block away in the specified direction from
+  //  coords
+	Coords NextCoords(Coords coords, char direction);
+
+	// returns the coord that is the specific direction form the other coord
+	// using the directiont that was used to get to the coords
+  //
+  // Reverses the direction and calls next coords
+  //
+  // If direction is '0' - '9', it returns the same x,y on that floor
+	Coords PastCoords(Coords coords, char direction);
+
+  // revels the first coord in the stack
+  //
+  // wrapper function to template stack.top and queue.front
+  Coords DataStructureTop(std::stack<Coords> & stack);
+
+  // revels the first coord in the queue
+  //
+  // wrapper function to template stack.top and queue.front
+  Coords DataStructureTop(std::queue<Coords> & stack);
+
+  // returns if the coords should be pushed
+  //
+  // A coord should be pushed when it's coords are inbounds, it's
+  // not a wall and it hasn't been visted (has a referer)
+  bool ShouldPushCoords(char floor, int x, int y);
+
+  // follows the algorithm specified by the spec sheet
+  //
+  // Fairly literal implementaion of the algorithm in the spec sheet
+  // To use a stack, pass the stack to use, to use a queue, pass the queue
+  // to use. data_structure does not have any other types implemented
+  template <typename DataStructure>
+  bool MapPath(DataStructure & data_structure);
+
+  // Finds the path for the human to the ring
+  //
+  // automatically calls map path with the correct type of data structure
+  // stored in the member stack_ or queue_
+  //
+  // Returns:
+  //  True: if a path was found
+  //  False: if a path was not found
+  bool FindPath();
+
+  // Constructs the path from the referers
+  //
+  // Starts are the ring coords and follows the referers back to the start
+  // Sets the previous's tile to the opposite direction of the referer
+  void ConstructPath();
+
+  // Helper function for print path
+  void PrintMPath();
+
+  // Helper function for print path
+  void PrintLPath();
+
+  // Prints out the path taken according to the output type
+  void PrintPath();
+
+	// Debugging function that prints the map with all visited as a X
+  void PrintVisited();
+
+ private:
+  int human_floor_;
+  int human_x_;
+  int human_y_;
+  int ring_floor_;
+  int ring_x_;
+  int ring_y_;
+  int length_; // width and length of a room
+  char mode_; // map or list
+  char output_mode_;
+  int number_of_floors_;
+  std::vector<Room> rooms_;
+  std::queue<Coords> route_queue_;
+  std::stack<Coords> route_stack_;
+  std::stack<Coords> constructed_route_; // order of coords to take
+  char routing_mode_;
+};
+
+#endif  // BUILDING_H_
+

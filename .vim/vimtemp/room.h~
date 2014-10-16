@@ -1,0 +1,33 @@
+// The functions and structs in this file are used to control a room and
+// determine the layout
+
+#ifndef PROJECT01_ROOM_H_
+#define PROJECT01_ROOM_H_
+// The class that controls all the information of a room
+class Room {
+ public:
+  Room(const int length);
+
+  bool human_present();
+
+  int human_x();
+
+  int human_y();
+
+  int length() const;
+
+  // Takes in a vector and pushes it to the end of the room
+  // Does not push the vector if it is of the wrong size and
+  // returns false
+  // Returns True if it is of the correct size
+  bool PushRow(std::vector<char>);
+
+ private:
+  std::vector<std::vector<char>> elements;
+  bool human_present_;
+  int human_x_;
+  int human_y_;
+  const int length_;
+}
+
+#endif // PROJECT01_ROOM_H_

@@ -1,0 +1,22 @@
+package handlers
+
+import (
+  "html/template"
+  "net/http"
+)
+
+type CssStruct struct {
+
+}
+
+var CssTemplate = template.Must(
+  template.ParseFiles(
+    "src/github.com/maxmzkr/goblog/handlers/tempaltes/css/main.css",
+  ),
+)
+
+func CssHandler(variableMap map[string]string,
+                 writer http.ResponseWriter,
+                 request *http.Request) {
+  CssTemplate.ExecuteTemplate(writer, "main.css", CssStruct{})
+}

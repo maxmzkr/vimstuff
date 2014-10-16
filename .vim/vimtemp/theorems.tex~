@@ -1,0 +1,841 @@
+\documentclass[avery5388,grid]{flashcards}
+
+\cardfrontstyle[\large\slshape]{headings}
+\cardbackstyle{empty}
+\cardfrontfoot{Math 217}
+
+\usepackage{amssymb}
+\usepackage{amsmath}
+\usepackage{amsthm}
+\usepackage{calc}
+\usepackage{arydshln}
+\usepackage{datetime}
+\usepackage{enumitem}
+
+\begin{document}
+
+\newcommand*{\WidestLHS}{[\vec{x} + \vec{y}]_\mathfrak{B} = [\vec{x}]_\mathfrak{B} + [\vec{y}]_\mathfrak{B}}%
+\newcommand*{\FormatLHS}[1]{\makebox[\widthof{$\WidestLHS$}][l]{$#1$}}%
+
+\begin{flashcard}[Theorem 1.3.1]{Number of solutions of a linear system}
+	\vspace*{\stretch{1}}
+	A system of equations is said to be \textit{consistent} if there is at least one solution; it is inconsistent if there are no solutions.\\
+	\indent A linear system is inconsistent if (and only if) the reduced row-echelon form of its augmented matrix contains the row 
+	\begin{math}
+		\left[\begin{array}{cccc;{3pt/2pt}c}
+				0 & 0 & \cdots & 0 & 1
+		\end{array}\right]
+	\end{math}, representing the equation 0 = 1.
+	\indent If a linear system is consistent, then it has either
+	\begin{itemize}
+		\item \textit{infinitely many solutions} (if there is at least one free variable), or
+		\item \textit{exactly one solution} (if all the variables are leading).	
+	\end{itemize}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 1.3.3]{Number of equations vs.\ number of unknowns}
+	\vspace*{\stretch{1}}
+	\begin{enumerate}[label=\textbf{\alph*.}]
+			\item If a linear system has exactly one solution, then there must be at least as many equations as there are variables  ($m \le n$ with a matrix $n \times m$)
+	\end{enumerate}
+	Equivalently, we can formulate the contrapositive:
+	\begin{enumerate}[resume,label=\textbf{\alph*.}]
+			\item A linear system with fewer equations than unknowns ($n < m$) has either no solutions or infinitely many solutions
+	\end{enumerate}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 1.3.4]{System of $n$ equations in $n$ variables}
+	\vspace*{\stretch{1}}
+	A linear system of $n$ equations in $n$ variables has a unique solution if (and only if) the rank of its coefficient matrix $A$ is $n$. In this case,
+	\begin{equation*}
+		\textrm{rref}(A)=
+		\left [
+			\begin{array}{ccccc}
+				1 & 0 & 0 & \cdots & 0\\
+				0 & 1 & 0 & \cdots & 0\\
+				0 & 0 & 1 & \cdots & 0\\
+				\vdots & \vdots & \vdots & \ddots & \vdots\\
+				0 & 0 & 0 & \cdots & 1
+			\end{array}
+		\right ]
+	\end{equation*}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 1.3.8]{The product $A\vec{x}$ in terms of the columns of $A$}
+	\vspace*{\stretch{1}}
+	If the column vectors of an $n \times m$ matrix $A$ are $\vec{v}_1, \ldots, \vec{v}_m$ and $\vec{x}$ is a vector in $\mathbb{R}^m$ with components $x_1, \ldots, x_m$, then
+	\begin{equation*}
+		A\vec{x}=
+		\left [
+			\begin{array}{ccc}
+				| & & |\\
+				\vec{v}_1 & \cdots & \vec{v}_m\\
+				| & & |\\
+			\end{array}
+		\right ]
+		\left [
+			\begin{array}{c}
+				x_1\\
+				\vdots\\
+				x_m
+			\end{array}
+		\right ] = x_1\vec{v}_1 + \cdots + x_m\vec{v}_m.
+	\end{equation*}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 1.3.10]{Algebraic rules for $A\vec{x}$}
+	\vspace*{\stretch{1}}
+	If $A$ is an $n \times m$ matrix, $\vec{x}$ and $\vec{y}$ are vectors in $\mathbb{R}^m$, and $k$ is a scalar, then
+	\begin{enumerate}[label=\textbf{\alph*.}]
+		\item $A(\vec{x} + \vec{y}) = A\vec{x} + A\vec{y}$, and
+		\item $A(k\vec{x}) = k(A\vec{x})$
+	\end{enumerate}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 1.3.11]{Matrix form of a linear system}
+	\vspace*{\stretch{1}}
+	We can write the linear system withaugmented matrix
+	\begin{math}
+		\left [
+			\begin{array}{c;{3pt/2pt}c}
+				A & \vec{b}
+			\end{array}
+		\right ]
+	\end{math}
+	in matrix form as $$A\vec{x} = \vec{b}.$$
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.1.2]{The columns of the matrix of a linear transformation}
+	\vspace*{\stretch{1}}
+	Consider a linear transformation $T$ from $\mathbb{R}^m$ to $\mathbb{R}^n$. Then, the matrix of $T$ is
+	\begin{equation*}
+		A=
+		\left [
+			\begin{array}{cccc}
+				| & | & & |\\
+				T(\vec{e}_1) & T(\vec{e}_2) & \cdots & T(\vec{e}_m)\\
+				| & | & & |\\
+			\end{array}
+		\right ], \textrm{ where }
+		\vec{e}_i = 
+		\left [
+			\begin{array}{c}
+				0\\
+				0\\
+				\vdots\\
+				1\\
+				\vdots\\
+				0\\
+			\end{array}
+		\right ]
+		\begin{array}{cc}
+			&\\
+			&\\
+			&\\
+			\leftarrow & i\textrm{th}\\
+			&\\
+			&\\
+		\end{array}
+	\end{equation*}
+
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.1.3]{Linear transformations}
+	\vspace*{\stretch{1}}
+	A transformation $T$ from $\mathbb{R}^m$ to $\mathbb{R}^n$ is linear if (and only if)
+	\begin{enumerate}[label=\textbf{\alph*.}]
+		\item $T(\vec{v} + \vec{w}) = T(\vec{v}) + T(\vec{w})$, for all vectors $\vec{v}$ and $\vec{w}$ in $\mathbb{R}^m$, and
+		\item $T(k\vec{v})=kT(\vec{v})$, for all vectors $\vec{v}$ in $\mathbb{R}^m$ and all scalars $k$.
+	\end{enumerate}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.2.3]{Rotations}
+	\vspace*{\stretch{1}}
+	The matrix of a counterclockwise rotation in $\mathbb{R}^2$ through an angle $\theta$ is
+	$$
+	\left [
+		\begin{array}{rr}
+			\textrm{cos } \theta & -\textrm{sin } \theta\\
+			\textrm{sin } \theta & \textrm{cos } \theta
+		\end{array}
+	\right ].
+	$$
+	Note that this matrix is of the form
+	$
+	\left [
+		\begin{array}{rr}
+			a & -b\\
+			b & a
+		\end{array}
+	\right ],
+	$
+	where $a^2 + b^2 = 1$. Conversely, any matrix of this form represents a rotation.
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.2.4]{Rotations combined with a scaling}
+	\vspace*{\stretch{1}}
+	A matrix of the form
+	$
+	\left [
+		\begin{array}{rr}
+			a & -b\\
+			b & a
+		\end{array}
+	\right ]
+	$
+	represents a rotation combined with a scaling.\\
+	\indent More precisely, if $r$ and $\theta$ are the polar coordinates of vector
+	$
+	\left [
+		\begin{array}{c}
+			a\\
+			b
+		\end{array}
+	\right ]
+	$,
+	then
+	$
+	\left [
+		\begin{array}{rr}
+			a & -b\\
+			b & a
+		\end{array}
+	\right ]
+	$
+	represents a rotation through $\theta$ combined with a scaling by $r$.
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.2.5]{Horizontal and vertical shears}
+	\vspace*{\stretch{1}}
+	The matrix of a \textit{horizontal shear} is of the form
+	$
+	\left [
+		\begin{array}{cc}
+			1 & k\\
+			0 & 1
+		\end{array}
+	\right ]
+	$,
+	and the matrix of a \textit{vertical shear} is of the form
+	$
+	\left [
+		\begin{array}{cc}
+			1 & 0\\
+			k & 1
+		\end{array}
+	\right ]
+	$,
+	where $k$ is an arbitrary constant.
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.3.2]{The columns of the matrix product}
+	\vspace*{\stretch{1}}
+	Let $B$ be an $n \times p$ matrix and $A$ a $p \times m$ matrix with columns $\vec{v}_1, \vec{v}_2, \ldots, \vec{v}_m$. Then, the product $BA$ is
+	$$
+		BA = B
+	 	\left [
+			\begin{array}{cccc}
+	 			| & | & & |\\
+				\vec{v}_1 & \vec{v}_2 & \cdots & \vec{v}_m\\
+	 			| & | & & |
+			\end{array}
+		\right ]
+		=
+		\left [
+			\begin{array}{cccc}
+				| & | & & |\\
+				B\vec{v}_1 & B\vec{v}_2 & \cdots & B\vec{v}_m\\
+				| & | & & |
+			\end{array}
+		\right ]
+	$$
+	To find $BA$, we can multiply $B$ by the columns of $A$ and combine the resulting vectors.
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.3.3]{Matrix multiplication is noncommutative}
+	\vspace*{\stretch{1}}
+	$AB \ne BA$, in general. However, at times it does happen that $AB = BA$; then we say that the matrices $A$ and $B$ \textit{commute}.
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.3.4]{The entries of the matrix product}
+	\vspace*{\stretch{1}}
+	Let $B$ be an $n \times p$ matrix and $A$ a $p \times m$ matrix. The $ij$th entry of $BA$ is the dot product of the $i$th row of $B$ with $j$th column of $A$.
+	$$
+	BA = 
+	\left [
+		\begin{array}{cccc}
+			b_{11} & b_{12} & \cdots & b_{1p}\\
+			b_{21} & b_{22} & \cdots & b_{2p}\\
+			\vdots & \vdots & & \vdots\\
+			b_{i1} & b_{i2} & \cdots & b_{ip}\\
+			\vdots & \vdots & & \vdots\\
+			b_{n1} & b_{n2} & \cdots & b_{np}
+		\end{array}
+	\right ]
+	\left [
+		\begin{array}{cccccc}
+			a_{11} & a_{12} & \cdots & a_{1j} & \cdots & a_{1m}\\
+			a_{21} & a_{22} & \cdots & a_{2j} & \cdots & a_{2m}\\
+			\vdots & \vdots & & \vdots & & \vdots\\
+			a_{p1} & a_{p2} & \cdots & a_{pj} & \cdots & a_{pm}
+		\end{array}
+	\right ]
+	$$
+	is the $n \times m$ matrix whose $ij$th entry is
+	$$
+	b_{i1}a_{1j} + b_{i2}a_{2j} + \cdots + b_{ip}a_{pj} = \sum\limits_{k=1}^pb_{ik}a_{kj}.
+	$$
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.3.5]{Multiplying with the identity matrix}
+	\vspace*{\stretch{1}}
+	For an $n \times m$ matrix $A$.
+	$$
+	AI_m = I_nA = A.
+	$$
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.3.6]{Matrix multiplication is associative}
+	\vspace*{\stretch{1}}
+	$$
+	(AB)C=A(BC)
+	$$
+	We can simply write $ABC$ for the product (AB)C=A(BC).
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.3.7 - 2.3.8]{Distributive property for matrices}
+	\vspace*{\stretch{1}}
+	If $A$ and $B$ and $n \times p$ matrices, and $C$ and $D$ are $p \times m$ matrices, then
+	\begin{equation*}
+		\begin{split}
+			A(C+D) = AC + AD&, \textrm{ and}\\
+			(A + B)C = AC + BC&.
+		\end{split}
+	\end{equation*}
+	If $A$ is an $n \times p$ matrix, $B$ is a $p \times m$ matrix, and $k$ is a scalar, then
+	$$
+	(kA)B=A(kB)=k(AB).
+	$$
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.3.9]{Multiplying block matrices}
+	\vspace*{\stretch{1}}
+	Block matrices can be multiplied as though the blocks were scalars (i.e., using the formula in Theorem 2.3.4):
+	$$
+	AB =
+	\left [
+		\begin{array}{cccc}
+			A_{11} & A_{12} & \cdots & A_{1p}\\
+			A_{21} & A_{22} & \cdots & A_{2p}\\
+			\vdots & \vdots & & \vdots\\
+			A_{i1} & A_{i2} & \cdots & A_{ip}\\
+			\vdots & \vdots & & \vdots\\
+			A_{n1} & A_{n2} & \cdot & A_{np}
+		\end{array}
+	\right ]
+	\left [
+		\begin{array}{cccccc}
+			B_{11} & B_{12} & \cdots & B_{1j} & \cdots & B_{1m}\\
+			B_{21} & B_{22} & \cdots & B_{2j} & \cdots & B_{2m}\\
+			\vdots & \vdots & & \vdots & & \vdots\\
+			B_{p1} & B_{p2} & \cdots & B_{pj} & \cdots & B_{pm}
+		\end{array}
+	\right ]
+	$$
+	is the block matrix whose $ij$th block is the matrix
+	$$
+	A_{i1}B_{1j} + A_{i2}B_{2j} + \cdots + A_{ip}B_{pj} = \sum\limits_{k=1}^pA_{ik}B_{kj},
+	$$
+	provided that all the products $A_{ik}B_{kj}$ are defined.
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.4.3]{Invertibility}
+	\vspace*{\stretch{1}}
+	An $n \times n$ matrix $A$ is invertible if (and only if)
+	$$
+	rref(A) = I_n
+	$$
+	or, equivalenly, if
+	$$
+	rank(A) = n.
+	$$
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.4.4]{Invertibility and linear systems}
+	\vspace*{\stretch{1}}
+	Let $A$ be an $n \times n$ matrix.
+	\begin{enumerate}[label=\textbf{\alph*.}]
+		\item Consider a Vector $\vec{b}$ in $\mathbb{R}^n$. If $A$ is invertible, then the system $A\vec{x} = \vec{b}$ has the unique solution $\vec{x} = A^{-1}\vec{b}$. If $A$ is noninvertible, then the system $A\vec{x} = \vec{b}$ has infinitely many solutions or none.
+		\item Consider the special case when $\vec{b} = \vec{0}$ has $\vec{x} = \vec{0}$ as a solution. If $A$ is invertible, then this is the only solution. If $A$ is noninvertible, then the system $A\vec{x} = \vec{0}$ has infinitely many solutions.
+	\end{enumerate}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.4.5]{Finding the inverse of a matrix}
+	\vspace*{\stretch{1}}
+	To find the \textit{inverse} of an $n \times n$ matrix $A$, form the $n \times (2n)$ matrix
+	$
+	\left [
+		\begin{array}{c;{3pt/2pt}c}
+			A & I_n
+		\end{array}
+	\right ]
+	$
+	and compute
+	$
+	\left [
+		\begin{array}{c;{3pt/2pt}c}
+			A & I_n
+		\end{array}
+	\right ]
+	$.
+	\begin{itemize}
+		\item If
+			$
+			\textrm{rref}
+			\left [
+				\begin{array}{c;{3pt/2pt}c}
+					A & I_n
+				\end{array}
+			\right ]
+			$ is of the form
+			$
+			\left [
+				\begin{array}{c;{3pt/2pt}c}
+					I_n & B
+				\end{array}
+			\right ]
+			$
+			, then $A$ is invertible, and $A^{-1} = B$.
+		\item If
+			$
+			\textrm{rref}
+			\left [
+				\begin{array}{c;{3pt/2pt}c}
+					A & I_n
+				\end{array}
+			\right ]
+			$ is of another form (i.e., its left half fails to be $I_n$), then $A$ is not invertible. Note that the left half of 
+			$
+			\textrm{rref}
+			\left [
+				\begin{array}{c;{3pt/2pt}c}
+					A & I_n
+				\end{array}
+			\right ]
+			$ is $\textrm{rref}(A)$
+	\end{itemize}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.4.6]{Multiplying with the inverse}
+	\vspace*{\stretch{1}}
+	For an invertible $n \times n$ matrix $A$.
+	$$
+	A^{-1}A = I_n \textrm{ and } A^{-1}A = I_n.
+	$$
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.4.7]{The inverse of a product of matrices}
+	\vspace*{\stretch{1}}
+	If $A$ and $B$ are invertible $n \times n$ matrices, then $BA$ is invertible as well, and
+	$$
+	(BA)^{-1} = A^{-1}B^{-1}
+	$$
+	Pay attention to the order of the matrices. (Order matters!)
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.4.8]{A criterion for invertibility}
+	\vspace*{\stretch{1}}
+	Let $A$ and $B$ be two $n \times n$ matrices such that
+	$$
+	BA = I_n
+	$$
+	Then
+	\begin{enumerate}[label=\textbf{\alph*.}]
+		\item $A$ and $B$ are both invertible,
+		\item $A^{-1} = B$ and $B^{-1} = A$, and
+		\item $AB = I_n$.
+	\end{enumerate}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.4.9]{Inverse and determinant of $2 \times 2$ matrix}
+	\vspace*{\stretch{1}}
+	\begin{enumerate}[label=\textbf{\alph*.}]
+			\item The $2 \times 2$ matrix
+				$$
+				A =
+				\left [
+					\begin{array}{cc}
+						a & b\\
+						c & d
+					\end{array}
+				\right ]
+				$$
+				is invertible if (and only if) $ad - bc \ne 0$.\\
+				\indent Quantity $ad - bc$ is called the \textit{determinant} of $A$, written $\textrm{det}(A)$:
+				$$
+				\textrm{det}(A) = \textrm{det}
+				\left [
+					\begin{array}{cc}
+						a & b\\
+						c & d
+					\end{array}
+				\right ]
+				= ad - bc.
+				$$
+			\item If
+				$$
+				A =
+				\left [
+					\begin{array}{rr}
+						a & b\\
+						c & d
+					\end{array}
+				\right ]
+				$$
+				is invertible, then
+				$$
+				\left [
+					\begin{array}{rr}
+						a & b\\
+						c & d
+					\end{array}
+				\right ]^{-1}
+				=
+				\frac{1}{ad - bc}
+				\left [
+					\begin{array}{rr}
+						d & -b\\
+						-c & a
+					\end{array}
+				\right ]
+				=
+				\frac{1}{\textrm{det}(A)}
+				\left [
+					\begin{array}{rr}
+						d & -b\\
+						-c & a
+					\end{array}
+				\right ].
+				$$
+		\end{enumerate}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 2.4.10]{Geometrical interpretation of the determinant of a $2 \times 2$ matrix}
+	\vspace*{\stretch{1}}
+	If
+	$
+	A =
+	\left [
+		\begin{array}{cc}
+			\vec{v} & \vec{w}
+		\end{array}
+	\right ]
+	$
+	is a $2 \times 2$ matrix with nonzero columns $\vec{v}$ and $\vec{w}$, then
+	$$
+	\textrm{det}A = \textrm{det}
+	\left [
+		\begin{array}{cc}
+			\vec{v} & \vec{w}
+		\end{array}	
+	\right ]
+	= \|\vec{c}\,\| \, \textrm{sin}\, \theta \|\vec{w}\|.
+	$$
+	where $\theta$ is the oriented angle from $\vec{v}$ to $\vec{w}$, with $-\pi < \theta \le \pi$. If follows that
+	\begin{itemize}
+		\item $|\textrm{det}\,A| = \|\vec{v}\||\textrm{sin}\theta|\|\vec{w}\|$ is the \textit{area of the parallelogram} spanned by $\vec{v}$ and $\vec{w}$.
+		\item $\textrm{det}\,A = 0$ if $\vec{v}$ and $\vec{w}$ are \textit{parallel}, meaning that $\theta = 0$ or $\theta = \pi$,
+		\item $\textrm{det}\,A > 0$ if $0 < \theta < \pi$, and
+		\item $\textrm{det}\,A < 0$ if $-\pi < \theta < 0$.
+	\end{itemize}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.1.3]{Image of a linear transformation}
+	\vspace*{\stretch{1}}
+	The image of a linear transformation $T(\vec{x}) = A\vec{x}$ is the span of the column vectors of $A$. We denote the image of $T$ by $im(T)$ or $im(A)$.
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.1.4]{Some properties of the image}
+	\vspace*{\stretch{1}}
+	The image of a lienar transformation $T$ (from $\mathbb{R}^m$ to $\mathbb{R}^n$) has the following properties:
+	\begin{enumerate}[label=\textbf{\alph*.}]
+			\item The zero vector $\vec{0}$ in $\mathbb{R}^n$ is in the image of $T$.
+			\item The image of $T$ is \textit{closed under addition}: If $\vec{v}_1$ and $\vec{v}_2$ are in the image of $T$, then so is $\vec{v}_1 + \vec{v}_2$.
+			\item The image of $T$ is \textit{closed under scalar multiplication}: If $\vec{v}$ is in the image of $T$ and $k$ is an arbitrary scalar, then $k\vec{v}$ is in the image of $T$ as well.
+	\end{enumerate}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.1.6]{Some properties of the kernel}
+	\vspace*{\stretch{1}}
+	Consider a linear transformation $T$ from $\mathbb{R}^m$ to $\mathbb{R}^n$.
+	\begin{enumerate}[label=\textbf{\alph*.}]
+			\item The zero vector $\vec{0}$ in $\mathbb{R}^m$ is in the kernel of $T$.
+			\item The kernel is closed under addition.
+			\item The kernel is closed under scalar multiplication.
+	\end{enumerate}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.1.7]{When is $\textrm{ker}(A) = \vec{0}$?}
+	\vspace*{\stretch{1}}
+	\begin{enumerate}[label=\textbf{\alph*.}]
+			\item Consider an $n \times m$ matrix $A$. Then $\textrm{ker}(A) = \{\vec{0}\}$ if (and only if) $\textrm{rank}(A) = m$.
+			\item Consider an $n \times m$ matrix $A$. If $\textrm{ker}(A) = \{\vec{0}\}$, then $m \le n$. Equivalently, if $m > n$, then there are nonzero vectors in the kernel of $A$.
+			\item For a \textit{square} matrix $A$, we have $\textrm{ker}(A) = \{\vec{0}\}$ if (and only if) $A$ is invertible.
+	\end{enumerate}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Summary 3.1.8]{Various characterizations of invertible matrices}
+	\vspace*{\stretch{1}}
+	For an $n \times n$ matrix $A$, the following statements are equivalent; that is, for a given $A$, they are either all true or all false.
+	\begin{enumerate}[label=\textbf{\roman*.}]
+		\item $A$ is invertible.
+		\item The linear system $A\vec{x} = \vec{b}$ has a unique solution $\vec{x}$, for all $\vec{b}$ in $\mathbb{R}^n$.
+		\item $\textrm{rref}(A) = I_n$.
+		\item $\textrm{rank}(A) = n$.
+		\item $\textrm{im}(A) = \mathbb{R}^n$.
+		\item $\textrm{ker}(A) = \{\vec{0}\}$.
+	\end{enumerate}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.2.2]{Image and kernel are subspaces}
+	\vspace*{\stretch{1}}
+	If $T(\vec{x}) = A\vec{x}$ is a linear transformation from $\mathbb{R}^m$ to $\mathbb{R}^n$, then
+	\begin{itemize}
+		\item $\textrm{ker}(T) = \textrm{ker}(A)$ is a subspace of $\mathbb{R}^m$, and
+		\item $\textrm{image}(T) = \textrm{im}(A)$ is a subspace of $\mathbb{R}^n$.
+	\end{itemize}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.2.5]{Linear independence and zero components}
+	\vspace*{\stretch{1}}
+	Consider vectors $\vec{v}_1, \ldots, \vec{v}_m$ in $\mathbb{R}^n$. If $\vec{v}_1$ is nonzero, and if each of the vectors $\vec{v}_i$ (for $i \ge 2$) has a nonzero entry in a component where all the preceding vectors $\vec{v}_1, \ldots, \vec{v}_{i-1}$ have a 0, then the vectors $\vec{v}_1, \ldots, \vec{v}_m$ are linearly independent.
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.2.7]{Relations and linear dependence}
+	\vspace*{\stretch{1}}
+	The vectors $\vec{v}_1, \ldots, \vec{v}_m$ in $\mathbb{R}^n$ are linearly dependent if (and only if) there are nontrivial relations among them.
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.2.8]{Kernel and relations}
+	\vspace*{\stretch{1}}
+	The vectors in the kernel of an $n \times m$ matrix $A$ correspond to the linear relations among the column vectors $\vec{v}_1, \ldots, \vec{v}_m$ of $A$: The equation
+	$$
+	A\vec{x} = \vec{0} \textrm{ means that } x_1\vec{v}_1 + \cdots + x_m\vec{v}_m = \vec{0}.
+	$$
+	In particular, the column vectors of $A$ are linearly independent if (and only if) $\textrm{ker}(A) = \{\vec{0}\}$, or, equivalently, if $\textrm{rank}(A) = m$. This condition implies that $m \le n$.\\
+	\indent Thus, we can find at most $n$ linearly indepenedent vectors in $\mathbb{R}^n$.
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Summary 3.2.9]{Various characterizations of linear independence}
+	\vspace*{\stretch{1}}
+	For a list $\vec{v}_1, \ldots, \vec{v}_m$ of vectors in $\mathbb{R}^n$, the following statements are equivalent:
+	\begin{enumerate}[label=\textbf{\roman*.}]
+		\item Vectors $\vec{v}_1, \ldots, \vec{v}_m$ are linearly independent.
+		\item None of the vectors $\vec{v}_1, \ldots, \vec{v}_m$ is redundant, meaning that none of them is a linear combination of preceding vectors.
+		\item None of the vectors $\vec{v}_i$ is a lienar combination of the other vectors $\vec{v}_1, \ldots, \vec{v}_{i-1}, \vec{v}_{i+1}, \ldots, \vec{v}_m$ in the list.
+		\item There is only the trivial relation among the vectors $\vec{v}_1, \ldots, \vec{v}_m$, meaning that the equation $c_1\vec{v}_1 + \cdots + c_m\vec{v}_m = \vec{0}$ has only the solution $c_1 = \cdots = c_m = 0$.
+		\item $\textrm{ker}
+			\left [
+				\begin{array}{ccc}
+					\vec{v}_1 & \cdots & \vec{v}_m
+				\end{array}
+			\right ]
+			= \{\vec{0}\}$.
+		\item $\textrm{rank}
+			\left [
+				\begin{array}{ccc}
+					\vec{v}_1 & \cdots & \vec{v}_m
+				\end{array}
+			\right ]
+			= m$.
+	\end{enumerate}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.2.10]{Basis and unique representation}
+	\vspace*{\stretch{1}}
+	Consider the vectors $\vec{v}_1, \ldots, \vec{v}_m$ in a subspace $V$ of $\mathbb{R}^n$.\\
+	\indent The vectors $\vec{v}_1, \ldots, \vec{v}_m$ form a basis of $V$ if (and only if) every vector $\vec{v}$ in $V$ can be expressed \textit{uniquely} as a linear combination
+	$$
+	\vec{v} = c_1\vec{v}_1 + \cdots + c_m\vec{v}_m.
+	$$
+	(In Section 3.4, we will call the coefficients $c_1, \ldots, c_m$ the \textit{coordinates} of $\vec{v}$ with respect to the basis $\vec{v}_1, \ldots, \vec{v}_m$.)
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.3.1]{Number of vectors in a basis and span}
+	\vspace*{\stretch{1}}
+	Consider vector $\vec{v}_1, \ldots, \vec{v}_p$ and $\vec{w}_1, \ldots, \vec{w}_q$ in a subspace $V$ of $\mathbb{R}^n$. If the vectors $\vec{v}_1, \ldots, \vec{v}_p$ are linearly independent, and the vectors $\vec{w}_1, \ldots, \vec{w}_q$ span $V$ then $q \ge p$.
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.3.2]{Number of vectors in a basis}
+	\vspace*{\stretch{1}}
+	All bases of a subspace $V$ of $\mathbb{R}^n$ consist of the same number of vectors.
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.3.4]{Independent vectors and spanning vectors in a subspace of $\mathbb{R}^n$}
+	\vspace*{\stretch{1}}
+	Consider a subspace $V$ of $\mathbb{R}^n$ with $\textrm{dim}(V) = m$.
+	\begin{enumerate}[label=\textbf{\alph*.}]
+		\item We can find \textit{at most m} linearly independent vectors in $V$.
+		\item We need \textit{at least m} vectors to span $V$.
+		\item If $m$ vectors in $V$ are linearly independent, then they form a basis fo $V$.
+		\item If $m$ vectors in $V$ span $V$, then they form a basis of $V$.
+	\end{enumerate}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.3.5]{Using rref to construct a basis of the image}
+	\vspace*{\stretch{1}}
+	To construct a basis of the image of $A$, pick the column vectors of $A$ that correspond to the columns of $\textrm{rref}(A)$ containing the leading 1's.
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.3.6]{Dimension of the image}
+	\vspace*{\stretch{1}}
+	For any matrix $A$,
+	$$
+	\textrm{dim}(\textrm{im}A) = \textrm{rank}(A)
+	$$.
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.3.7]{Rank-nullity theorem}
+	\vspace*{\stretch{1}}
+	For any $n \times m$ matrix $A$, the equation
+	$$
+	\textrm{dim}(\textrm{ker}A) + \textrm{dim}(\textrm{im}A) = m
+	$$
+	holds. The dimension of $\textrm{ker}(A)$ is called the \textit{nullity} of $A$, and in Theorem 3.3.6 we observed that $\textrm{dim}(\textrm{im}A) = \textrm{rank}(A)$. Thus, we can write the preceding equation alternatively as
+	$$
+	(\textrm{nulity of } A) + (\textrm{rank of } A) = m.
+	$$
+	Some authors go so far as to call this the \textit{fundamental theorem of linear algebra}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.3.8]{Finding bases of the kernel and image by inspection}
+	\vspace*{\stretch{1}}
+	Suppose you are able to spot the redundant columns of a matrix $A$.\\
+	\indent Express each redundant column as a linear combination of the preceding columns, $\vec{v}_i = c_1\vec{v}_1 + \cdots + c_{i-1}\vec{v}_{i-1}$; write a corresponding relation, $-c_1\vec{v}_1 - \cdots - c_{i-1}\vec{v}_{i-1} + \vec{v}_i = \vec{0}$; and generate the vector
+	$$
+	\left [
+		\begin{array}{c}
+			-c_1\\
+			\vdots\\
+			-c_{i-1}\\
+			1\\
+			0\\
+			\vdots\\
+			0
+		\end{array}
+	\right ]
+	$$
+	\vspace*{\stretch{1}}
+	in the kernel of $A$. The vectors so constructed form a basis of the kernel of $A$.\\
+	\indent The nonredundant columns form a basis of the image of $A$.\\
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.3.9]{Bases of $\mathbb{R}^n$}
+	\vspace*{\stretch{1}}
+	The vectors $\vec{v}_1, \ldots, \vec{v}_n$ in $\mathbb{R}^n$ form a basis of $\mathbb{R}^n$ if (and only if) the matrix
+	$$
+	\left [
+		\begin{array}{ccc}
+			| & & |\\
+			\vec{v}_1 & \cdots & \vec{v}_n\\
+			| & & |
+		\end{array}
+	\right ]
+	$$
+	is invertible.
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Summary 3.3.10]{Various characterizations of invertible matrices}
+	\vspace*{\stretch{1}}
+	For an $n \times n$ matrix $A$, the following statements are equivalent.
+	\begin{enumerate}[label=\textbf{\roman*.}]
+		\item $A$ is invertible.
+		\item The linear system $A\vec{x} = \vec{b}$ has a unique solution $\vec{x}$, for all $\vec{b}$ in $\mathbb{R}^n$.
+		\item $\textrm{rref}(A) = I_n$.
+		\item $\textrm{rank}(A) = n$.
+		\item $\textrm{im}(A) = \mathbb{R}^n$.
+		\item $\textrm{ker}(A) = \{\vec{0}\}$.
+		\item The column vectors of $A$ form a basis of $\mathbb{R}^n$.
+		\item The column vectors of $A$ span $\vec{R}^n$.
+		\item The column vectors of $A$ are linearly independent.
+	\end{enumerate}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.4.2]{Linearity of Coordinates}
+	\vspace*{\stretch{1}}
+	If $\mathfrak{B}$ is a basis of a subspace $V$ of $\mathbb{R}^n$, then
+	\begin{enumerate}[label=\textbf{\alph*.}]
+		\item $\begin{aligned}[t]
+		\FormatLHS{[\vec{x} + \vec{y}]_\mathfrak{B} = [\vec{x}]_\mathfrak{B} + [\vec{y}]_\mathfrak{B},} & \qquad \textrm{for all vectors } \vec{x} \textrm{ and } \vec{y} \textrm{ in } V, \textrm{and}\\
+		\end{aligned}$
+		\item $\begin{aligned}[t]
+		\FormatLHS{[k\vec{x}]_\mathfrak{B} = k[\vec{x}]_\mathfrak{B},} & \qquad \textrm{for all } \vec{x} \textrm{ in } V \textrm{ and for all scalars } k
+		\end{aligned}$
+	\end{enumerate}
+	\vspace*{\stretch{1}}
+\end{flashcard}
+
+\begin{flashcard}[Theorem 3.4.3]{The matrix of a linear transformation}
+	\vspace*{\stretch{1}}
+	Consider a linear transforation $T$ from $\mathbb{R}^n$ to $\mathbb{R}^n$ and a basis $\mathfrak{B} = (\vec{v}_1, \ldots, \vec{v}_n)$ of $\mathbb{R}^n$. Then there exists a unique $n \times n$ matrix $B$ that transforms $[\vec{x}]_\mathfrak{B}$ into $[T(\vec{x})]_\mathfrak{B}$:
+	$$
+	[T(\vec{x})]_\mathfrak{B} = B[\vec{x}]_\mathfrak{B}.
+	$$
+	for all $\vec{x}$ in $\mathbb{R}^n$. This matrix $B$ is called the $\mathfrak{B}$-\textit{matrix of} $T$. We can construct $B$ column by column, as follows:
+	$$
+	B = 
+	\left [
+		\begin{array}{ccc}
+			| & & |\\
+			{[}T(\vec{v}_1){]}_\mathfrak{B} & \cdots & {[}T(\vec{v}_n){]}_\mathfrak{B}\\
+			| & & |
+		\end{array}
+	\right ]
+	$$
+	\vspace*{\stretch{1}}
+\end{flashcard}
+\end{document}

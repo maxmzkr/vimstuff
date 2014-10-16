@@ -59,9 +59,6 @@ Plugin 'madflow/vim-php'
 " yaml plugins
 Plugin 'ingydotnet/yaml-vim'
 
-" Latex plugin
-Plugin 'vim-scripts/AutomaticLaTexPlugin'
-
 call vundle#end()
 filetype plugin indent on     " required
 " To ignore plugin indent changes, instead use:

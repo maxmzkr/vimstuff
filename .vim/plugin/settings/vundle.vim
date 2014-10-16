@@ -59,8 +59,8 @@ Plugin 'madflow/vim-php'
 " yaml plugins
 Plugin 'ingydotnet/yaml-vim'
 
-" Latex plugin
-Plugin 'coot/atp_vim'
+" latex
+Plugin 'LaTeX-Box-Team/LaTeX-Box'
 
 call vundle#end()
 filetype plugin indent on     " required

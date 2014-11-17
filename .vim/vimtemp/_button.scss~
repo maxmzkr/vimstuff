@@ -1,0 +1,22 @@
+.button-nextslide {
+	background-image: url("/images/down_arrow.svg");
+	background-repeat: no-repeat;
+	background-size: contain;
+
+	// dimensions
+	height: 50px;
+	width: 90px;
+
+	@include opacity(.25);
+
+	// position
+	position: absolute;
+	bottom: 0px;
+	left: 50%;
+
+	@include translate(-50%, 0);
+}
+
+.button-nextslide:hover {
+	@include opacity(1);
+}

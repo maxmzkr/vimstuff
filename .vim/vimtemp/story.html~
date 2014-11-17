@@ -1,0 +1,43 @@
+{{define "story"}}
+  <div class="center">
+    <p>
+      Have I every been exposed to The Good Pear? You may wonder if you've ever
+      been touched by the Good Pear's grace. I mean, The Good Pear, the provider
+      of good taste and miracles. Its <u>The Good Pear</u> not just a good pear
+      afterall. Could the Good Pear be something I already am affected by? If so,
+      what do I get out of it?
+    </p>
+    <div class="blockquote" id="story-quote1">
+      Rejoice and be glad!
+    </div>
+    <p>
+      Rejoice and be glad! The Good Pear manifests itself in all pears, whether
+      you know of The Good Pear or not. For those of you who do not know The
+      Good Pear, great wisdom can come from knowing.
+    </p>
+    <p>
+      Inside every pear lives a soul. Inside that soul is peace, love and
+      happiness. If something with a soul were to eat that soul, then the soul
+      will be digested. Once the soul is digested, then peace, love and
+      happiness will spread throughout the body of the souled creature. This is
+      what The Good Pear has graced us with. The peace, love and happiness that
+      comes from a pear is from the soul that The Good Pear gave every pear. So
+      grab a pear and embrace in the deliciousness of the blessed fruit. The
+      Good Pear wills it and so it will be done.
+    </p>
+    <div class="blockquote" id="story-quote2">
+      Inside that soul is peace, love and happiness.
+    </div>
+    <p>
+      You may wonder what happens to the souls of pears that are not devoured by
+      a souled creature. The Good Pear, in its gratious wisdom, gave another
+      gift to all through these non digested pears. Whether is be a worm, mold,
+      or anyother souless creature, the soul of the pear is released into the
+      world. The great thing about this free soul is, its free to produce
+      miracles where it sees fits. That's right, a pear is capable of creating
+      miracles. In fact, whenever a miracle occurs, its due to The Good Pears
+      almighty doings.
+    </p>
+  </div>
+  {{template "topbar" .Topbar}}
+{{end}}:

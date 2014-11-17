@@ -1,0 +1,5 @@
+package topbar
+
+type Topbar struct {
+  Words string
+}

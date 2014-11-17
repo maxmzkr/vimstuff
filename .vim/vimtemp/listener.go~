@@ -1,0 +1,42 @@
+package listener
+
+import (
+  "fmt"
+  "net/http"
+
+  "github.com/gorilla/mux"
+
+  "github.com/maxmzkr/handlers"
+  "github.com/maxmzkr/thegoodpear/handlers/homehandler"
+  "github.com/maxmzkr/thegoodpear/handlers/storyhandler"
+)
+
+func init() {
+  router := mux.NewRouter()
+
+  handlers.ParseTemplates(
+    "src/github.com/maxmzkr/thegoodpear/templates/center.html",
+    "src/github.com/maxmzkr/thegoodpear/templates/global.html",
+    "src/github.com/maxmzkr/thegoodpear/templates/home.html",
+    "src/github.com/maxmzkr/thegoodpear/templates/story.html",
+    "src/github.com/maxmzkr/thegoodpear/templates/topbar.html",
+  )
+
+  router.HandleFunc("/", homehandler.HomeHandler)
+  router.HandleFunc("/story", storyhandler.StoryHandler)
+  router.HandleFunc("/{name}", NameHandler)
+
+  http.Handle("/images/", http.StripPrefix("/images/", http.FileServer(http.Dir("src/github.com/maxmzkr/thegoodpear/static/images"))))
+  http.Handle("/css/", http.StripPrefix("/css/", http.FileServer(http.Dir("src/github.com/maxmzkr/thegoodpear/static/css"))))
+  http.Handle("/javascript/", http.StripPrefix("/javascript/", http.FileServer(http.Dir("src/github.com/maxmzkr/thegoodpear/static/javascript"))))
+  http.Handle("/", router)
+}
+
+func HomeHandler(writer http.ResponseWriter, request *http.Request) {
+  fmt.Fprintf(writer, "welcome")
+}
+
+func NameHandler(writer http.ResponseWriter, request *http.Request) {
+  vars := mux.Vars(request)
+  fmt.Fprintf(writer, vars["name"])
+}

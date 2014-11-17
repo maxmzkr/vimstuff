@@ -1,0 +1,13 @@
+@import "colors";
+
+.center {
+  background-color: $white;
+
+  // dimensions
+  width: 61.803398875%;
+  height: 100%;
+
+  padding-left: ((100 - 61.803398875)/2)*1%;
+  padding-right: ((100 - 61.803398875)/2)*1%;
+  padding-top: $topbar-height + 14px;
+}

@@ -1,0 +1,89 @@
+"""Runs the commands for this package"""
+
+import argparse
+import os
+import sys
+
+from first_start.program_list import ProgramList
+
+def from_folder(args):
+    """Takes in the args passed and installs the folders"""
+    current_directory = os.getcwd()
+    folders = args.folder
+
+    file_list = []
+
+    for folder in folders:
+        folder_path = os.path.join(current_directory, folder)
+        for file_path in os.listdir(folder_path):
+            file_path = os.path.join(current_directory, file_path)
+            file_list.append(file_path)
+
+    program_list = ProgramList.from_file_list(file_list)
+    program_list.install()
+
+def from_file(args):
+    """Takes in the args passed and install the files"""
+    current_directory = os.getcwd()
+    files = args.file
+
+    file_list = []
+
+    for program_file in files:
+        file_path = os.path.join(current_directory, program_file)
+        file_list.append(file_path)
+
+    program_list = ProgramList.from_file_list(file_list)
+
+    program_list.install()
+
+def folder_parse_args(subparsers):
+    """Parses the arguments passed to the folder command"""
+    folder_parser = subparsers.add_parser("folder")
+    folder_parser.add_argument(
+            "folder",
+            metavar="F",
+            type=str,
+            nargs="+",
+            help="A folder full of .program files to install")
+    folder_parser.set_defaults(func=from_folder)
+
+def file_parse_args(subparsers):
+    """Parses the arguments passed to the folder command"""
+    file_parser = subparsers.add_parser("file")
+    file_parser.add_argument(
+            "file",
+            metavar="f",
+            type=str,
+            nargs="+",
+            help="A .program file that should be installed")
+    file_parser.set_defaults(func=from_file)
+
+def parse_args():
+    """Parses all the args"""
+    parser = argparse.ArgumentParser(
+            description="Install things easily")
+
+    subparsers = parser.add_subparsers(
+            title="commands",
+            description="valid commands",
+            help="additional help")
+
+    folder_parse_args(subparsers)
+    file_parse_args(subparsers)
+
+    sys_args = sys.argv[1:]
+
+    args = parser.parse_args(sys_args)
+
+    return args
+
+
+def main():
+    """Simply runs the program"""
+    args = parse_args()
+
+    args.func(args)
+
+if __name__ == "__main__":
+    main()

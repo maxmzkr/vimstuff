@@ -1,0 +1,38 @@
+/*
+// The goblog is going to be my simple blog project
+// It will be edited from the website and will use the gourlparser I wrote
+*/
+
+package goblog
+
+import (
+  "fmt"
+  "net/http"
+
+  "github.com/maxmzkr/gourlparser"
+)
+
+type templateValues struct {
+  Value int
+}
+
+
+func init() {
+  http.HandleFunc("/", goblogHandler)
+  fs := http.FileServer(http.Dir("handlers/templates/css"))
+  http.Handle("/css/", http.StripPrefix("/css/", fs))
+}
+
+func goblogHandler(writer http.ResponseWriter, request *http.Request) {
+  path := request.URL.Path
+  path = gourlparser.AssertSlash(path)
+  variableMap, handler, err := gourlparser.ParsePathWithUrlParserArray(
+    path, gourlParsers)
+
+  if err != nil {
+    fmt.Fprintf(writer, "<h1>Error</h1>")
+    return
+  }
+
+  handler(variableMap, writer, request)
+}

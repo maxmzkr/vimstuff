@@ -1,0 +1,31 @@
+#include <iostream>
+
+void swap(int *a, int index1, int index2) {
+  int value1 = *(a + index1);
+  int value2 = *(a + index2);
+  *(a + index1) = value1;
+  *(a + index2) = value2;
+  return;
+}
+
+void doSomething(int *a, int begin, int end) {
+  if (begin == end) {
+    for (int j = 0; j < end; j++) {
+      std::cout << a[j];
+    }
+    std::cout << std::endl;
+    return;
+  }
+
+  for (int i = begin; i < end; i++) {
+    swap(a, begin, i);
+    doSomething(a, begin + 1, end);
+    swap(a, begin, i);
+  }
+}
+
+int main() {
+  int a[4] = {1, 2, 3, 4};
+  doSomething(a, 0, 4);
+  return 0;
+}

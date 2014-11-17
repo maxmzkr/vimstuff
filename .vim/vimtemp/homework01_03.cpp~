@@ -1,0 +1,38 @@
+#include <fstream>
+#include <iostream>
+#include <vector>
+
+class FooPrinter {
+private:
+    std::ostream *os;
+
+public:
+    FooPrinter(std::ostream *osIn)
+		 : os(osIn)
+    {}
+
+    ~FooPrinter() {
+			delete os;
+    }
+
+    void printFoo() {
+			*os << "foo!" << std::endl;
+    }
+};
+
+void printFoos(std::vector<FooPrinter*> *fooPrinters) {
+    for (FooPrinter *p : *fooPrinters) {
+			p->printFoo();
+    }
+}
+
+int main() {
+    std::vector<FooPrinter*> fooPrinters;
+    std::ofstream os("very-important-information.txt");
+
+    for (int i = 0; i < 10; i++) {
+			fooPrinters.push_back(new FooPrinter(&os));
+    }
+
+    printFoos(&fooPrinters);
+}

@@ -1,0 +1,73 @@
+$logo-padding: 5px;
+$topbar-height: 62px + $logo-padding;
+$topbar-font-height: $topbar-height - 20px;
+
+.topbar {
+	// dimensions
+	width: 100%;
+
+	// position
+	position: fixed;
+	top: 0;
+	left: 0;
+}
+
+.topbar-buttonbar {
+	background-color: $blue;
+
+	// dimensions
+	height: $topbar-height;
+	width: 100%;
+
+	// position
+	position: absolute;
+	top: 0;
+	left: 0;
+}
+
+.topbar-buttons {
+	margin-left: $logo-medium-width + $logo-padding;
+
+	// position
+	position: absolute;
+	left: 0;
+	top: 0;
+}
+
+.topbar-button {
+	color: $white;
+	font-family: "Lato";
+	font-size: $topbar-font-height;
+	font-weight: 900;
+	text-transform: uppercase;
+
+	line-height: $topbar-height;
+	float: left;
+}
+
+.topbar-logo {
+	padding: $logo-padding;
+
+	// position
+	position: absolute;
+	top: 0;
+	left: 0;
+}
+
+.topbar-spacer {
+	background-color: $orange;
+
+	// dimensions
+	height: $topbar-font-height;
+	width: 2px;
+
+	display: inline-block;
+
+	margin-left: 10px;
+	margin-right: 10px;
+
+	position: relative;
+	top: ($topbar-height - $topbar-font-height)/2;
+
+	float: left;
+}

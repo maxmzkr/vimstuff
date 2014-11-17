@@ -1,0 +1,158 @@
+#ifndef SORTED_PRIORITY_QUEUE_H_
+#define SORTED_PRIORITY_QUEUE_H_
+
+#include <functional>
+#include <vector>
+#include "./eecs281_priority_queue.h"
+#include "./P2random.h"
+
+// A specialized version of the 'priority_queue' ADT that is implemented with an
+// underlying sorted array-based container.
+// Note: The most extreme element should be found at the end of the
+// 'data' container, such that traversing the iterators yields the elements in
+// sorted order.
+template<typename TYPE, typename COMP_FUNCTOR = std::less<TYPE>>
+class sorted_priority_queue : public eecs281_priority_queue<TYPE, COMP_FUNCTOR> {
+public:
+  typedef unsigned size_type;
+
+  // Description: Construct a priority_queue out of an iterator range with an optional
+  //              comparison functor.
+  // Runtime: O(n log n) where n is number of elements in range.
+  template<typename InputIterator>
+  sorted_priority_queue(InputIterator start, InputIterator end, COMP_FUNCTOR comp = COMP_FUNCTOR());
+
+  // Description: Construct an empty priority_queue with an optional comparison functor.
+  // Runtime: O(1)
+  explicit sorted_priority_queue(COMP_FUNCTOR comp = COMP_FUNCTOR());
+
+  // Description: Assumes that all elements inside the priority_queue are out of order and
+  //              'rebuilds' the priority_queue by fixing the priority_queue invariant.
+  // Runtime: O(n log n)
+  virtual void fix();
+
+  // Description: Add a new element to the priority_queue.
+  // Runtime: O(n)
+  virtual void push(const TYPE& val);
+
+  // Description: Remove the most extreme (defined by 'compare') element from
+  //              the priority_queue.
+  // Note: We will not run tests on your code that would require it to pop an
+  // element when the priority_queue is empty. Though you are welcome to if you are
+  // familiar with them, you do not need to use exceptions in this project.
+  // Runtime: Amortized O(1)
+  virtual void pop();
+
+  // Description: Return the most extreme (defined by 'compare') element of
+  //              the priority_queue.
+  // Runtime: O(1)
+  virtual const TYPE& top() const;
+
+  // Description: Get the number of elements in the priority_queue. This has been
+  //              implemented for you.
+  // Runtime: O(1)
+  virtual size_type size() const { return data.size(); }
+
+  // Description: Return true if the priority_queue is empty. This has been implemented
+  //              for you.
+  // Runtime: O(1)
+  virtual bool empty() const { return data.empty(); }
+
+ private:
+  // Note: This vector *must* be used your priority_queue implementation.
+  std::vector<TYPE> data;
+
+ private:
+  void swap_elems(int i, int j) {
+    TYPE temp = data[i];
+    data[i] = data[j];
+    data[j] = temp;
+  }
+
+  int median_of_three(int left, int right) {
+    int length = right - left;
+    int one = left;
+    int two = (length)/2 + left;
+    int three = right - 1;
+    if (this->compare(data[one], data[three])) {
+      swap_elems(one, three);
+    }
+    if (this->compare(data[two], data[one])) {
+      swap_elems(two, one);
+    }
+    if (this->compare(data[three], data[two])) {
+      swap_elems(three, two);
+    }
+    return two;
+  }
+
+  int partition(int left, int right) {
+    int pivot_index = median_of_three(left, right);
+    TYPE pivot_value = data[pivot_index];
+    swap_elems(pivot_index, right - 1);
+    int swap_index = left;
+    for (int i = left; i < right - 1; ++i) {
+      if (this->compare(data[i], pivot_value)) {
+        swap_elems(i, swap_index);
+        swap_index = swap_index + 1;
+      }
+    }
+    swap_elems(swap_index, right - 1);
+    return swap_index;
+  }
+
+  void quicksort(int start, int end) {
+    if (start < end) {
+      int pivot = partition(start, end);
+      quicksort(start, pivot);
+      quicksort(pivot + 1, end);
+    }
+  }
+};
+
+template<typename TYPE, typename COMP_FUNCTOR>
+template<typename InputIterator>
+sorted_priority_queue<TYPE, COMP_FUNCTOR>::sorted_priority_queue(
+    InputIterator start, InputIterator end, COMP_FUNCTOR comp) {
+  data.assign(start, end);
+  this->compare = comp;
+  fix();
+}
+
+template<typename TYPE, typename COMP_FUNCTOR>
+sorted_priority_queue<TYPE, COMP_FUNCTOR>::sorted_priority_queue(COMP_FUNCTOR comp) {
+  this->compare = comp;
+}
+
+template<typename TYPE, typename COMP_FUNCTOR>
+void sorted_priority_queue<TYPE, COMP_FUNCTOR>::fix() {
+  quicksort(0, size());
+}
+
+template<typename TYPE, typename COMP_FUNCTOR>
+void sorted_priority_queue<TYPE, COMP_FUNCTOR>::push(const TYPE& val) {
+	if (size() == 0) {
+		data.push_back(val);
+	} else if (this->compare(data[size() - 1], val)) {
+		data.push_back(val);
+	} else {
+		for (int i = size() - 2; i >= 0; --i) {
+			if (this->compare(data[i], val)) {
+				data.insert(data.begin() + i + 1, val);
+				break;
+			}
+		}
+	}
+}
+
+template<typename TYPE, typename COMP_FUNCTOR>
+void sorted_priority_queue<TYPE, COMP_FUNCTOR>::pop() {
+	data.pop_back();
+}
+
+template<typename TYPE, typename COMP_FUNCTOR>
+const TYPE& sorted_priority_queue<TYPE, COMP_FUNCTOR>::top() const {
+	return data.back();
+}
+
+#endif  // SORTED_PRIORITY_QUEUE_H_

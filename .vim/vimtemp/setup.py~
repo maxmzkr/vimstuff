@@ -1,0 +1,31 @@
+"""Used to setup the FirstStart package"""
+from setuptools import setup, find_packages
+
+setup(
+    name = "FirstStart",
+    version = "0.0.2",
+    packages = find_packages(),
+    scripts = [],
+    install_requires = [
+	"numpy",
+	"libpng",
+	"freetype",
+        "python-apt==0.0.0",
+	"matplotlib",
+        "networkx",
+        "mock",
+        "pexpect",
+    ],
+    dependency_links=[
+        "https://launchpad.net/ubuntu/saucy/+source/python-apt/0.8.9.1ubuntu1/+files/python-apt_0.8.9.1ubuntu1.tar.gz#egg=python-apt-0.0.0",
+	"https://pypi.python.org/packages/source/p/python-dateutil/python-dateutil-2.2.tar.gz#egg=dateutil-2.2"
+    ],
+    package_data = {
+    },
+    author = "Max Mizikar",
+    author_email = "maxmzkr@gmail.com",
+    description = "used to install programs on a first start",
+    license = "PSF",
+    keywords = "setup install",
+    url = "",   # project home page, if any
+)

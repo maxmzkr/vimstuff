@@ -1,0 +1,117 @@
+// defines an equity and keeps track of everyone making orders
+#ifndef EQUITIES_H_
+#define EQUITIES_H_
+
+#include <functional>
+#include <queue>
+#include <string>
+#include <map>
+#include <iterator>
+#include <set>
+#include <vector>
+#include "./orders.h"
+
+
+class Equity {
+ public:
+  // getters
+  int64_t unique_id() const;
+
+  std::string symbol() const;
+
+  bool sold() const;
+
+	bool potential_buy_price_set() const;
+
+	int64_t potential_buy_price() const;
+
+	int64_t potential_buy_time() const;
+
+	bool sell_price_set() const;
+
+	int64_t sell_price() const;
+
+	int64_t sell_time() const;
+
+	bool buy_price_set() const;
+
+	int64_t buy_price() const;
+
+	int64_t buy_time() const;
+
+  // setters
+  void set_unique_id(const int64_t unique_id);
+
+  void set_symbol(const std::string symbol);
+
+  void set_sold(const bool sold);
+
+	void set_potential_buy_price(const int64_t potential_buy_price);
+
+	void set_potential_buy_time(const int64_t potential_buy_time);
+
+	void set_sell_price(const int64_t sell_price);
+
+	void set_sell_time(const int64_t sell_time);
+
+	void set_buy_price(const int64_t buy_price);
+
+	void set_buy_time(const int64_t buy_time);
+
+	// General functions
+  void add_transfer(const int64_t transfer_amount);
+
+  void add_order(Order * order);
+
+  int64_t median();
+
+  Order * highest_buy();
+
+  Order * lowest_sell();
+
+	int size() const;
+
+ private:
+	int64_t unique_id_ = 0;
+	std::string symbol_;
+  bool potential_buy_price_set_ = false;
+  int64_t potential_buy_price_ = -1;
+  int64_t potential_buy_time_ = -1;
+	bool sell_price_set_ = false;
+	int64_t sell_price_ = -1;
+	int64_t sell_time_ = -1;
+	bool buy_price_set_ = false;
+	int64_t buy_price_ = -1;
+	int64_t buy_time_ = -1;
+	std::priority_queue<Order *, std::vector<Order *>, LowerBuy> buy_orders_;
+	std::priority_queue<Order *, std::vector<Order *>, HigherSell> sell_orders_;
+	std::vector<Order *> buy_orders_static_;
+	std::vector<Order *> sell_orders_static_;
+  std::priority_queue<int64_t> transfers_low_;
+  std::priority_queue<int64_t, std::vector<int64_t>, std::less<int64_t>> transfers_high_;
+	bool sold_ = false;
+};
+
+
+class Equities {
+	public:
+		// Adds an equity to the data structure and assigns it a unique_id
+		void add_equity(Equity * const equity);
+
+    // Allows access to the equity through iterators
+    std::map<std::string, Equity *>::iterator begin();
+
+    // Allows access to the end of equity through iterators
+    std::map<std::string, Equity *>::iterator end();
+
+    // Allows access to find in the equities
+    std::map<std::string, Equity *>::iterator find(const std::string & find_key);
+
+    // Returns the size of equities
+    int64_t size() const;
+
+	private:
+		std::map<std::string, Equity *> equities_;
+};
+
+#endif  // EQUITIES_H_

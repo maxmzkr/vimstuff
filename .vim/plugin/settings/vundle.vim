@@ -8,14 +8,13 @@ set nocompatible              " be iMproved, required
 filetype off                  " required
 
 " set the runtime path to include Vundle and initialize
-set rtp+=$HOME/.vim/bundle/Vundle.vim
+set rtp+=/home/max/.vim/bundle/Vundle.vim
 call vundle#begin()
 " alternatively, pass a path where Vundle should install plugins
 "let path = '~/some/path/here'
 "call vundle#rc(path)
 
 
-Plugin 'gmarik/Vundle.vim'
 
 " settings start here
 " let Vundle manage Vundle, required
@@ -47,20 +46,7 @@ Plugin 'scrooloose/syntastic.git'
 Plugin 'kien/ctrlp.vim'
 
 " All the go lang stuff you could need
-Plugin 'fatih/vim-go'
-
-" To be able to deploy to arduino from vim
-" arduino syntax
-Plugin 'vim-scripts/Arduino-syntax-file'
-Plugin 'jplaut/vim-arduino-ino'
-
-Plugin 'madflow/vim-php'
-
-" yaml plugins
-Plugin 'ingydotnet/yaml-vim'
-
-" Latex plugin
-Plugin 'coot/atp_vim'
+Plugin 'jnwhiteh/vim-golang'
 
 " sass stuff
 Plugin 'cakebaker/scss-syntax.vim'

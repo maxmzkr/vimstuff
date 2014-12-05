@@ -1,0 +1,40 @@
+#include <algorithm>
+#include <vector>
+#include "./edge.h"
+#include "./node.h"
+
+void Node::set_x(int x) {
+	x_ = x;
+}
+
+void Node::set_y(int y) {
+	y_ = y;
+}
+
+void Node::set_id(int id) {
+	id_ = id;
+}
+
+int Node::x() {
+	return x_;
+}
+
+int Node::y() {
+	return y_;
+}
+
+int Node::id() {
+	return id_;
+}
+
+void Node::add_edge(Edge * edge) {
+	edge_list_.push_back(edge);
+}
+
+void Node::finalize() {
+	std::sort(edge_list_.begin(), edge_list_.end(), edge_compare);
+}
+
+std::vector<Edge *>::iterator Node::edge_iter() {
+	return edge_list_.begin();
+}

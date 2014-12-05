@@ -63,7 +63,7 @@ class poorman_priority_queue : public eecs281_priority_queue<TYPE, COMP_FUNCTOR>
  private:
   int extrema_index() const {
     int extrema_index_ = 0;
-    for (int i = 0; i < data.size(); ++i) {
+    for (unsigned int i = 0; i < data.size(); ++i) {
       if (this->compare(data[extrema_index_], data[i])) {
         extrema_index_ = i;
       }

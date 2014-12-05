@@ -1,0 +1,110 @@
+#ifndef DRIVER_H_
+#define DRIVER_H_
+
+#include <limits>
+#include <queue>
+#include <vector>
+
+#include "./node.h"
+
+struct KruskalsVertex {
+	int id = 0;
+	int x = 0;
+	int y = 0;
+	int size = 1;
+	int referer = 0;
+};
+
+struct PrimsVertex {
+	int id = 0;
+	int x = 0;
+	int y = 0;
+	bool kv = false;
+	double dv = std::numeric_limits<int>::max();
+	int pv = 0;
+};
+
+struct KruskalsEdge {
+	int nodeId1 = 0;
+	int nodeId2 = 0;
+	double length = 0;
+	bool used = false;
+};
+
+struct TravelingEdge {
+	int connectionId = 0;
+	double length = 0;
+};
+
+struct TravelingNode {
+	int id = 0;
+	std::vector<TravelingEdge *> ordered_connections;
+	std::vector<TravelingEdge *> connections;
+	TravelingEdge * actualConnection = nullptr;
+};
+
+class Driver {
+ public:
+	void set_client_type(char client_type);
+
+	char client_type();
+
+	void input();
+
+	int real_id(int node_id, std::vector<int> &set_ids);
+
+	bool connected(int node_id1, int node_id2, std::vector<int> &set_ids);
+
+	void my_union(std::vector<KruskalsVertex *> &vertex_set, int id1,
+                int id2);
+
+	void minimum_spanning_tree();
+void print_edges();
+
+	void traveling_salesman();
+
+	void drive();
+
+ private:
+	void get_nodes_();
+
+	void get_edges_();
+
+	void finalize_();
+
+	double traveling_salesman_(double &current_length,
+                             double &length_cap, std::vector<int> &path,
+                             std::vector<bool> &visited_set,
+                             std::vector<int> &best_path);
+
+	int root_id_(std::vector<KruskalsVertex *> &vertex_set, int id);
+
+	void k_mst_();
+
+	Edge * get_min_edge_(std::vector<int> &tree_ids,
+                       std::vector<bool> &visited_set);
+
+	void p_mst_();
+
+	void set_new_path();
+
+	bool promising(std::vector<int> &path, std::vector<bool> &visited,
+			std::queue<int> &unvisited, std::vector<TravelingNode *> &nodes,
+			long double current_length, long double current_best);
+
+	long double permute(std::vector<int> &path, std::vector<int> &best_path,
+		std::queue<int> &unvisited, std::vector<bool> &visited,
+		std::vector<TravelingNode *> &nodes, long double current_length,
+		long double current_best);
+
+ private:
+	char client_type_ = 0;
+	unsigned int number_of_nodes_ = 0;
+	unsigned int number_of_paths_ = 0;
+	unsigned int number_of_connected_nodes_ = 0;
+	double total_distance_ = 0;
+	std::vector<Node *> nodes_;
+	std::vector<Edge *> edges_;
+};
+
+#endif  // DRIVER_H_

@@ -1,0 +1,12 @@
+#include <map>
+#include <string>
+#include "./customers.h"
+
+std::map<std::string, Customer *>::iterator Customers::begin() {
+  return customers_.begin();
+}
+
+void Customers::add_customer(Customer * const customer) {
+  customer->unique_id = customers_.size();
+  customers_[customer->client_name] = customer;
+}

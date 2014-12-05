@@ -1,0 +1,38 @@
+#include "./problem4.h"
+
+int router_height(const Router * router) {
+  int height = 0;
+  while (router != nullptr) {
+    height = height + 1;
+    router = router->source;
+  }
+  return height;
+}
+
+const Router * potentiallyBrokenRouter(const Router * router1,
+                                       const Router * router2) {
+  if (router1 == nullptr) {
+    return router2->source;
+  }
+  if (router2 == nullptr) {
+    return router1->source;
+  }
+  int router1_height = router_height(router1);
+  int router2_height = router_height(router2);
+  if (router1_height > router2_height) {
+    for (int i = 0; i < router1_height - router2_height; ++i) {
+      router1 = router1->source;
+    }
+  } else {
+    for (int i = 0; i < router2_height - router1_height; ++i) {
+      router2 = router2->source;
+    }
+  }
+  while (true) {
+    if (router1 == router2) {
+      return router1;
+    }
+    router1 = router1->source;
+    router2 = router2->source;
+  }
+}

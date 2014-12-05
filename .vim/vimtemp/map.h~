@@ -1,0 +1,106 @@
+#ifndef MAP_H_
+#define MAP_H_
+
+#include <functional>
+#include <string>
+#include <vector>
+
+#include "./tile.h"
+#include "./eecs281_priority_queue.h"
+
+class Map {
+ public:
+  Map();
+
+  ~Map();
+
+  // setters
+  void set_filename(const char * filename);
+
+  void set_input_mode(char input_mode);
+
+  void set_output_mode(char output_mode);
+
+  void set_output_size(int output_size);
+
+  void set_queue_type(char * queue_type);
+
+  void set_size(int size);
+
+  void set_start_x(int x);
+
+  void set_start_y(int y);
+
+  void set_tile(int x, int y, int rubble_size);
+
+  // getters
+  int start_x() const;
+
+  int start_y() const;
+
+  int size() const;
+
+	char * filename() const;
+
+  char input_mode() const;
+
+  char output_mode() const;
+
+  int output_size() const;
+
+  // general functions
+
+  // Returns the tile that should be run next
+  Tile * next_tile();
+
+  // Handles poping tnt when the next tile is a tnt tile
+  void handle_tnt(int x, int y);
+
+  // Runs the algorithm given until the algorithm is done
+  void run();
+
+  // Inputs the m mode maps
+  void input_m(FILE * fileptr);
+
+  // Inputs the r mode maps
+  void input_r(FILE * fileptr);
+
+  // Inputs the map using the given options
+  void input();
+
+  // Outputs all the information about the path taken
+  void output();
+
+  // Pushes all the surronding tiles that were not visited yet
+  void push_surrounding(int x, int y);
+
+  // Finishes a tile, sets it to 0, records it and such
+  void finish_tile(int x, int y, bool);
+
+ private:
+  void HandleTntRecurse(eecs281_priority_queue<Tile *, TileHarder> * tnt_queue, int x, int y);
+
+  void PushSurrounding(int x, int y, eecs281_priority_queue<Tile *, TileHarder> * priority_queue);
+
+  void PushTNTSurrounding(int x, int y);
+
+  eecs281_priority_queue<Tile *, TileHarder> * priority_queue_;
+  eecs281_priority_queue<Tile *, TileHarder> * tnt_queue_;
+  std::vector<std::vector<Tile *>> tiles_;
+  std::vector<Tile *> tile_order_;
+
+  int start_x_;
+  int start_y_;
+  int size_;
+
+  char queue_type_;
+
+  char input_mode_;
+  char * filename_ = nullptr;
+  int output_size_ = 0;
+  char output_mode_ = 'P';
+  int cleared_tiles_ = 0;
+  unsigned long int rubble_amount_ = 0;
+};
+
+#endif  // MAP_H_

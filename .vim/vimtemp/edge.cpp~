@@ -1,10 +1,14 @@
 #include "./edge.h"
 #include "./node.h"
 
-double get_length(int x1, int x2, int y1, int y2) {
+double get_quick_length(int x1, int x2, int y1, int y2) {
 	double x_diff = x1 - x2;
 	double y_diff = y1 - y2;
-	return sqrt(x_diff*x_diff + y_diff*y_diff);
+  return x_diff*x_diff +  y_diff*y_diff;
+}
+
+double get_length(int x1, int x2, int y1, int y2) {
+	return sqrt(get_quick_length(x1, x2, y1, y2));
 }
 
 double get_length(Node * node1, Node * node2) {

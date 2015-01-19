@@ -45,19 +45,6 @@ Plugin 'scrooloose/syntastic.git'
 " finds files in git repo
 Plugin 'kien/ctrlp.vim'
 
-" All the go lang stuff you could need
-Plugin 'fatih/vim-go'
-
-" To be able to deploy to arduino from vim
-" arduino syntax
-Plugin 'vim-scripts/Arduino-syntax-file'
-Plugin 'jplaut/vim-arduino-ino'
-
-Plugin 'madflow/vim-php'
-
-" yaml plugins
-Plugin 'ingydotnet/yaml-vim'
-
 call vundle#end()
 filetype plugin indent on     " required
 " To ignore plugin indent changes, instead use:

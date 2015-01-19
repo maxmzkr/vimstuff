@@ -1,0 +1,155 @@
+\documentclass[a4paper]{article}
+\usepackage{amsmath}
+\usepackage{mathrsfs}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{gauss}
+\usepackage[top=1in,bottom=1in,left=1.25in,right=1.25in]{geometry}
+\usepackage{dsfont}
+\usepackage{amsthm}
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage{amsmath}
+\usepackage{amsthm}
+\usepackage{amssymb}
+\usepackage{epsfig}
+\usepackage{upgreek}
+\usepackage{graphicx}
+\usepackage{array}
+\usepackage{lipsum}
+\usepackage{algorithm2e}
+\usepackage{tikz}
+\usetikzlibrary{arrows,automata,calc}
+\author{}
+\title{EECS376-PROBLEM SET1}
+\begin{document}
+\maketitle
+
+
+
+Reading Covered: Section 1.1 and 1.2
+
+Due Wednesday January 21st by 11:59 PM.
+
+
+Unlike the worksheets, you are graded based on correctness. Make sure that 
+your arguments are clear. You are encouraged to work together!  
+However, your final write-ups should
+be created independently.
+
+\section*{Problem 1}
+	Let $B = \Sigma^*$. Let $A = \textrm{ some non regular language }$ where $\epsilon \in A$. Then $A \circ B = \Sigma^*$ which is a regular language. Therefore $A \circ B$ is regular and $B$ is regular but $A$ is not required to be regular.
+
+\section*{Problem 2}
+	\begin{tikzpicture}[>=stealth',shorten >=1pt,auto,node distance=2cm,baseline={($(current bounding box.north)-(0,1.6ex)$)}]
+		\node[initial,state]   (q1)               {$q_1$};
+		\node[state]           (q2) [right of=q1] {$q_2$};
+		\node[state]           (q3) [below of=q2] {$q_3$};
+		\node[state]           (q4) [below of=q3] {$q_4$};
+		\node[state]           (q6) [right of=q2] {$q_6$};
+		\node[state]           (q7) [right of=q6] {$q_7$};
+		\node[state,accepting] (q5) [right of=q7] {$q_5$};
+		\node[state]           (q8) [below of=q6] {$q_8$};
+
+		\path[->] (q1) edge [loop above]     node        {o}     (q1)
+		               edge                  node        {b}     (q2)
+									 edge [bend left=70]   node        {m}     (q6)
+							(q2) edge [bend left]      node        {o}     (q3)
+							     edge [loop above]     node        {b}     (q2)
+									 edge [bend left]      node        {m}     (q6)
+							(q3) edge                  node        {o}     (q4)
+									 edge [bend left]      node        {b}     (q2)
+									 edge                  node        {m}     (q8)
+							(q4) edge [bend left]      node        {o}     (q1)
+							     edge [bend left=50]   node        {b}     (q2)
+									 edge [bend right]     node        {m}     (q5)
+							(q5) edge [loop right]     node        {o,b,m} (q5)
+							(q6) edge [bend left]      node        {o}     (q7)
+									 edge [bend left]      node        {b}     (q2)
+							     edge [loop above]     node        {m}     (q6)
+						  (q7) edge [bend right=120] node [swap] {o}     (q1)
+							     edge                  node        {b}     (q5)
+									 edge [bend left]      node        {m}     (q6)
+						  (q8) edge                  node        {o}     (q7)
+							     edge                  node        {b}     (q5)
+									 edge                  node        {m}     (q6);
+	\end{tikzpicture}
+
+\section*{Problem 3}
+	\begin{tikzpicture}[>=stealth',shorten >=1pt,auto,node distance=2cm,baseline={($(current bounding box.north)-(0,1.6ex)$)}]
+		\node [initial,state]   (q1)               {$q_1$}; 
+		\node [state]           (q2) [right of=q1] {$q_2$};
+		\node [state]           (q3) [right of=q2] {$q_3$};
+		\node [state,accepting] (q4) [below of=q3] {$q_4$};
+		\node [state,accepting] (q5) [right of=q4] {$q_5$};
+		\node [state]           (q6) [below of=q5] {$q_6$};
+
+		\path[->] (q1) edge [loop above]    node        {0}          (q1)
+		               edge [bend left]     node        {1}          (q2)
+							(q2) edge [bend left]     node        {0}          (q1)
+							     edge                 node        {1}          (q3)
+							(q3) edge [bend right=65] node [swap] {0}          (q1)
+							     edge [loop right]    node        {1}          (q3)
+									 edge                 node        {$\epsilon$} (q4)
+						  (q4) edge                 node        {0}          (q6)
+							     edge [bend right]    node [swap] {1}          (q5)
+							(q5) edge [bend right]    node [swap] {0,1}        (q4)
+							(q6) edge [loop below]    node        {0,1}        (q6);
+	\end{tikzpicture}
+
+\section*{Problem 4}
+
+
+\subsection*{4.1}
+Let $A$ be defined be the DFA $(Q, \Sigma, \delta, q_0, F)$. Let $A'$ be defined by the NFA $(Q \cup \{q_0'\}, \Sigma, \delta', q_0', \{q_0\})$ where
+\begin{align*}
+	\delta'(q_0', \epsilon) &= F \\
+	\delta'(q_0', a) &= \emptyset \text{\ for all } a \in \Sigma \\
+	\delta'(q, a) &= \{p : q = \delta(p, a)\} 
+\end{align*}
+Then $A' = A^R$ \\
+Proof:\\
+If $w = w_1w_2 \ldots w_n$ is accepted by $A$, then there exists a set of states $\{r_0, r_1, \ldots, r_n\}$ such that $r_0 = q_0$, $r_n \in F$, $r_i = \delta(r_{i-1}, w_{i}) \forall i, 0 < i \le n$. \\
+$w^R$ can be written as $\epsilon w_n w_{n-1} \ldots w_1$.\\
+Assume the set of states $\{q_0', r_n, r_{n-1}, \ldots, r_0\}$ is the set of states taken to acceptance in $A'$'s NFA.\\
+We prove this by stepping through the states. $r_n \in \delta'(q_0', \epsilon)$ $r_{i-1} \in \delta'(r_i, w_i)$ since $r_i = \delta(r_{i-1}, x_{i})$. Since $r_0 = q_0$, this $w^R$ is accepted by $A'$ \\
+\\
+If $w = w_1 w_2 \ldots w_n$ is accepted by $A^R$, then there exists a set of states $\{r_0, r_1, \ldots, r_n\}$ such that $r_0 = q_0'$, $r_n \in \{q_0\}$, $r_i \in \delta'(r_{i-1}, w_{i}) \forall i, 0 < i \le n$.\\
+Since the first state's only branch for acceptance is $\epsilon$, $w_1 = \epsilon$, $w^R$ can be written as $w_n w_{n-1} \ldots w_2$ \\
+Assume the set of states $\{r_n, r_{n-1}, \ldots, r_2\}$ is the set of states taken to acceptance in $A$'s DFA\@. \\
+We prove this by stepping through the states. $r_{i-1} = delta(r_i, w_i)$ since $r_i \in \delta'(r_{i-1}, x_{i})$. Since $r_0 \in F$, this $w^R$ is accepted by $A$ \\
+\\
+Therefore if $w \in A, w^R \in A^R$ and if $w^R \in A^R, w \in A$. Thus $A' = A^R$ and $A'$ is defined by an NFA \@. Thus $A^R$ is regular if $A$ is regular.
+
+\subsection*{4.2}
+Let M be the finite automaton for A defined by $(Q, \Sigma, \delta, q_1, F)$ where $Q = \{q_1, q_2, \ldots, q_n\}$ \\
+Let $\text{Half}(A) = \{x : \exists y, |x| = |y|, xy \in A\}$ \\
+Let $\text{Half}(A, r) = \{x : \exists y, |x| = |y|, xy \in A \text{ and the final state of x in M is } r\}$ \\
+It should be clear that $\bigcup\limits_{i=1}^{n}\text{Half}(A, q_i) = \text{Half}(A)$ \\
+Let $\text{Pref}(A, r)$ be defined by $(Q, \Sigma, \delta, q_1, \{r\})$\\
+This defines all strings that are a prefix of a string in A that ends in state r. Let $w = w_1 w_2 \ldots w_n | w \in A$ then there exists a set of states $\{r_0, r_1, \ldots, r_n\}$ such that $r_0 = q_1$, $r_i = \delta(r_{i-1}, w_i)$, $r_n \in F$. For all $r_j = r$ then $w' = w_1 w_2 \ldots w_j \in \text{Pref}(A, r)$ \\\\
+Let $\text{Suf}(A, r)$ be defined by $(Q, \Sigma, \delta', r, F)$\\
+Where $q_i \in \delta'(q, a) \forall i, 1 \le i \le n, \forall a, a \in \Sigma | \exists b, \delta(q, b) = q_i$ \\
+This defines all strings that are the same length of some suffix of a string in A that starts in state r. Let $w = w_1 w_2 \ldots w_n | w \in A$ then there exists a set of states $\{r_0, r_1, \ldots, r_n\}$ such that $r_0 = q_1$, $r_i = \delta(r_{i-1}, w_i)$, $r_n \in F$. For all $r_j = r$ then any string $w' \text{ where } |w| = n - i$ is accepted by $\text{Suf}(A, r)$\\
+Consider the intersection $\text{Pref}(A, r) \cap \text{Suf}(A, r)$ Which accepts any string $w$ if w is a prefix of a string in $A$ that ends at state $r$ and is of the same length of a suffix of a string in $A$ that starts at state $r$ or the first half of a string in $A$ that ends in state $r$ or $\text{Half}(A, r)$.\\
+Since $\text{Half}(A)$ is constructed using unions and intersections of regular languages, regular languages are closed under the Half operation.\\\\
+Let $w = w_1 w_2 \ldots w_n$ be in $A$. Then $A^R$ accepts $w_n w_{n-1} \ldots w_1$. And $\text{Half}(A^R)$ accepts $w_n w_{n-1} \ldots w_{n/2 + 1}$. And $\text{Half}(A^R)^R$ accepts $w_{n/2 + 1} w_{n/2 + 2} \ldots w_n$ which is the definition of $A_{-\frac{1}{2}}$. Since this was constructed from a regular language using only the Half and reverse operations, $A_{-\frac{1}{2}}$ is regular
+
+\section*{Problem 5}
+
+
+\subsection*{5.1}
+The English language is finite so the English language is regular. Given a the DFA for the English language defined by $(Q, \Sigma, \delta, q_1, F)$ where $Q = \{q_1, q_2, \ldots, q_n\}$, Taking the negation of the DFA can be defined by $(Q, \Sigma, \delta, q_1, F')$ where $q_i \in F' \:\: \forall i, 1 \le i \le n | q_i \not\in F$. Assume $w = w_1 w_2 \ldots w_n$ is not accepted by the English language. Then then all sets of states states $\{r_0, r_1, \ldots, r_n\}$ where $r_0 = q_1$, $r_i = \delta(r_{i-1}, w_i)$, follows $r_n \not\in F$ which would be in $F'$. For all strings $w = w_1 w_2 \ldots w_n$ accepted by the negation of the English language there exists a set of states $\{r_0, r_1, \ldots, r_n\}$ where $r_0 = q_1$, $r_i = \delta(r_{i-1}, w_i)$, $r_n \in F'$ which is not in F. Thus any word not in the English language is accepted by the negation of the English language and any word accepted by the negation of the English language is not accepted by the English language. Since the negation of the English language is a DFA and accepts all words not in the English language and no more, all the words not in the English language is a regular language.
+
+\subsection*{5.2}
+It was shown in the last section that regular languages are closed under negation. From Sipser we also know that regular languages ae closed under union. We also know that the intersection of two sets $S1, S2$ is $\overline{\overline{S1} \cup \overline{S2}}$ thus regular languages are closed over intersection\\
+$R_e$ is defined by the intersection of strings in $R$ and strings that are even. Thus $R_e$ is regular.
+
+\subsection*{5.3}
+$T$ is not guaranteed to be regular. Let $S$ be a non regular language such that $\epsilon \in S$. Let $T = \{\epsilon\}$. $T$ is regular and $T \subset S$ proving $T$ is not always non regular.
+
+
+
+
+
+\end{document}

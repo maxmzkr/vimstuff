@@ -1,0 +1,13 @@
+// This is where the file server will sit. The file server is responsible for
+// taking in requests and sorting them. Then the file server should print the
+// request and allow for more requests
+
+#include <string>
+
+void server(void *void_parameters) {
+  ServerParameters *server_parameters =
+      reinterpret_cast<ServerParameters *>(void_parameters);
+
+  int server_max_requests = server_parameters->server_max_requests;
+  std::string server_filenames[] = server_parameters->server_filenames;
+}

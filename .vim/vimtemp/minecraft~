@@ -1,0 +1,3 @@
+#!/bin/bash
+cd $HOME/.minecraft
+java -Xmx1024M -Xms512M -cp /home/max/.minecraft/launcher.jar net.minecraft.bootstrap.Bootstrap

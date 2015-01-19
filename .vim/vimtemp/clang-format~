@@ -1,0 +1,2 @@
+map <C-I> :pyf /home/max/.bin/clang-format.py<CR>
+imap <C-I> <ESC>:pyf /home/max/.bin/clang-format.py<CR>i

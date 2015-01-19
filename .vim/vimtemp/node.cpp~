@@ -38,3 +38,7 @@ void Node::finalize() {
 std::vector<Edge *>::iterator Node::edge_iter() {
 	return edge_list_.begin();
 }
+
+std::vector<Edge *>::iterator Node::edge_end_iter() {
+	return edge_list_.end();
+}

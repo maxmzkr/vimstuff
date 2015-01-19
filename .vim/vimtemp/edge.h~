@@ -6,6 +6,8 @@
 
 class Node;
 
+double get_length(int x1, int x2, int y1, int y2);
+
 double get_length(Node * node1, Node * node2);
 
 class Edge {

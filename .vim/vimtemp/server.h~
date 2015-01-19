@@ -1,0 +1,14 @@
+#ifndef SERVER_H_
+#define SERVER_H_
+
+#include <string>
+#include <vector>
+
+struct ServerParameters {
+  int server_max_requests;
+  std::vector<char *> server_filenames;
+};
+
+void handle_request(int location);
+
+#endif  // SERVER_H_

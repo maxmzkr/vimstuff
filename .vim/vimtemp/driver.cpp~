@@ -266,7 +266,7 @@ void Driver::traveling_salesman() {
 
 	// print the results
 	printf("%.2Lf\n", best_length);
-	for (size_t i = 0; i < path.size(); ++i) {
+	for (size_t i = 0; i < best_path.size(); ++i) {
 		printf("%i ", best_path[i]);
 	}
 	printf("\n");
@@ -548,7 +548,7 @@ void Driver::p_mst_() {
 		// printf("min vertex id: %i\n", min_vertex->id);
 		for (auto &vertex : vertex_set) {
 			if (!vertex->kv) {
-				double distance = get_length(min_vertex->x, vertex->x,
+				double distance = get_quick_length(min_vertex->x, vertex->x,
 						min_vertex->y, vertex->y);
 				if (distance < vertex->dv) {
 					vertex->dv = distance;
@@ -560,7 +560,9 @@ void Driver::p_mst_() {
 	long double total_distance = 0;
 	for (auto vertex : vertex_set) {
 		if (vertex->id != vertex->pv) {
-			total_distance = total_distance + vertex->dv;
+      PrimsVertex * min_vertex = vertex_set[vertex->pv];
+			total_distance = total_distance + get_length(min_vertex->x, vertex->x,
+                                                   min_vertex->y, vertex->y);
 		}
 	}
 	printf("%.2Lf\n", total_distance);

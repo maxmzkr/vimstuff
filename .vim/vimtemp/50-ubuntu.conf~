@@ -1,5 +1,5 @@
 [SeatDefaults]
 user-session=ubuntu
 # START managed zone synergy-server-autostart -DO-NOT-EDIT
-greeter-setup-script=/usr/bin/synergys --crypto-pass 'vKVl65O27h2x*6@4C2$o8q1p3PeXmKR!H$QaDYB*KK*7KcR0Ep!ns1u94FeNY&8ZgbVaLV8PHrNYZ7C80PMM1ba3rVaMR4iT$6BC'
+greeter-setup-script=/usr/bin/synergys --config /etc/synergy.conf
 # END managed zone synergy-server-autostart --

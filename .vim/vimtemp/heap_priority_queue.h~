@@ -68,17 +68,17 @@ class heap_priority_queue : public eecs281_priority_queue<TYPE, COMP_FUNCTOR> {
     return;
   }
 
-  void fix_down(int i) {
+  void fix_down(unsigned int i) {
     if (i*2 >= size()) {
       return;
     }
-    int left = i*2 + 1;
-    int right = i*2 + 2;
-    int smallest = i;
-    if (left < size() && this->compare(data[left], data[smallest])) {
+    unsigned int left = i*2 + 1;
+    unsigned int right = i*2 + 2;
+    unsigned int smallest = i;
+    if (left < size() && this->compare(data[smallest], data[left])) {
       smallest = left;
     }
-    if (right < size() && this->compare(data[right], data[smallest])) {
+    if (right < size() && this->compare(data[smallest], data[right])) {
       smallest = right;
     }
     if (smallest != i) {
@@ -98,7 +98,7 @@ class heap_priority_queue : public eecs281_priority_queue<TYPE, COMP_FUNCTOR> {
 
   void fix_up(int i) {
 		int parent = (i - 1)/2;
-		if (i == parent || !this->compare(data[i], data[parent])) {
+		if (i == parent || !this->compare(data[parent], data[i])) {
 			return;
 		}
 		swap_elems(i, parent);
@@ -145,5 +145,6 @@ template<typename TYPE, typename COMP_FUNCTOR>
 const TYPE& heap_priority_queue<TYPE, COMP_FUNCTOR>::top() const {
 	return data[0];
 }
+
 #endif  // HEAP_PRIORITY_QUEUE_H_
 

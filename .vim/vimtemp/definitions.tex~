@@ -12,310 +12,35 @@
 
 \begin{document}
 
-\begin{flashcard}[Definition 1.3.2]{The rank of a matrix}
+\begin{flashcard}[Definition 1.5]{Finite automaton}
 \vspace*{\stretch{1}}
-The rank of a matrix $A$ is the number of leading 1's in rref($A$), denoted rank($A$)
+A 5-tuple (\textit{Q}, $\Sigma$, $\delta$, $\textit{q}_{0}$, \textit{F})
+\begin{enumerate}
+	\item \textit{Q} is a finite set called the \textit{\textbf{states}} (letters of the states),
+	\item $\Sigma$ is a finite set called the \textit{\textbf{alphabet}} (possible inputs),
+	\item $\delta : \textit{Q} \times \Sigma \longrightarrow \textit{Q}$ is the \textit{\textbf{transistion functions}} (state table),
+	\item $\textit{q}_{0} \in \textit{Q}$ is the \textit{\textbf{start state}} (start state letter), and
+	\item $\textit{F} \subseteq \textit{Q}$ is the \textit{\textbf{set of accept states}} (list of accept states).
+\end{enumerate}
 \vspace*{\stretch{1}}
-
 \end{flashcard}
 
-\begin{flashcard}[Definition 1.3.5 a]{Sums of matrices}
-	\vspace*{\stretch{1}}
-	The sum of two matrices of the same size is defined entry by entry:
-	\begin{equation*}
-		\left [
-			\begin{array}{ccc}
-				a_{11} & \cdots & a_{1m}\\
-				\vdots & & \vdots\\
-				a_{n1} & \cdots & a_{nm}\\
-			\end{array}
-		\right ]
-		+
-		\left [
-			\begin{array}{ccc}
-				b_{11} & \cdots & b_{1m}\\
-				\vdots & & \vdots\\
-				b_{n1} & \cdots & b_{nm}\\
-			\end{array}
-		\right ]
-		=
-		\left [
-			\begin{array}{ccc}
-				a_{11} + b_{11} & \cdots & a_{1m} + b_{1m}\\
-				\vdots & & \vdots\\
-				a_{n1} + b_{n1} & \cdots & a_{nm} + b_{nm}\\
-			\end{array}
-		\right ]
-	\end{equation*}
-	\vspace*{\stretch{1}}
+\begin{flashcard}[Definition 1.16]{Regular language}
+\vspace*{\stretch{1}}
+A language is called a \textit{\textbf{regular language}} if some finite atomaton recognizes it.
+\vspace*{\stretch{1}}
 \end{flashcard}
 
-\begin{flashcard}[Definition 1.3.5 b]{Sums of matrices}
-	\vspace*{\stretch{1}}
-	The product of a scalar with a matrix is defined entry by entry:
-	\begin{equation*}
-		k
-		\left [
-			\begin{array}{ccc}
-				a_{11} & \cdots & a_{1m}\\
-				\vdots & & \vdots\\
-				a_{n1} & \cdots & a_{nm}\\
-			\end{array}
-		\right ]
-		=
-		\left [
-			\begin{array}{ccc}
-				ka_{11} & \cdots & ka_{1m}\\
-				\vdots & & \vdots\\
-				ka_{n1} & \cdots & ka_{nm}\\
-			\end{array}
-		\right ]
-	\end{equation*}
-	\vspace*{\stretch{1}}
+\begin{flashcard}[Definition 1.23]{Union, Concatenation, and Star}
+\vspace*{\stretch{1}}
+Let $A$ and $B$ be languages. We define the regular operations, \textit{\textbf{union, concatenation,}} and \textit{\textbf{star}} as follows:
+\begin{itemize}
+	\item \textbf{Union}: $A \cup B = \{x|x \in A \textrm{ or } x \in B\}$.
+	\item \textbf{Concatenation}: $A \circ B = \{xy|x \in A and y \in B\}$.
+	\item \textbf{Star}: $A\ast = \{x_1x_2 \ldots x_k | k \ge 0 \textrm{ and each } x_i \in A\}$.
+\end{itemize}
+\vspace*{\stretch{1}}
 \end{flashcard}
 
-\begin{flashcard}[Definition 1.3.6]{Dot product of vectors}
-	\vspace*{\stretch{1}}
-	Consider two vectors $\vec{v}$ and $\vec{w}$ with components $v_1, \ldots, v_n$ and $w_1, \ldots, w_n$, respectibely. Here $\vec{v}$ and $\vec{w}$ may be column or row vectors, and the two vectors need not be of the same type. The dot product of $\vec{v}$ and $\vec{w}$ is defined to be the scalar
-	\begin{equation*}
-		\vec{v} \cdot \vec{w} = v_1 w_1 + \cdots + v_nw_n.
-	\end{equation*}
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 1.3.7]{The product $A\vec{x}$}
-	\vspace*{\stretch{1}}
-	If $A$ is an $n \times m$ matrix with row vectors $\vec{w}_1, \ldots, \vec{w}_n$, and $\vec{x}$ is a vector in $\mathbb{R}^m$, then
-	\begin{equation*}
-		A\vec{x}=
-		\left [
-			\begin{array}{ccc}
-				- & \vec{w}_1 & -\\
-				& \vdots &\\
-				- & \vec{w}_n & -\\
-			\end{array}
-		\right ]
-		\vec{x} =
-		\left [
-			\begin{array}{c}
-				\vec{w}_1 \cdot \vec{x}\\
-				\vdots\\
-				\vec{w}_n \cdot \vec{x}\\
-			\end{array}
-		\right ].
-	\end{equation*}
-	In words, the $i$th component of $A\vec{x}$ is the dot product of the $i$th row of $A$ with $\vec{x}$. Note that $A\vec{x}$ is a column vector with $n$ components, that is, a vector in $\mathbb{R}^n$.
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 1.3.9]{Linear combinations}
-	\vspace*{\stretch{1}}
-	A vector $\vec{b}$ in $\mathbb{R}^n$ is called a linear combination of the vectors $\vec{v}_1, \ldots, \vec{v}_m$ in $\mathbb{R}^n$ if there exist scalars $x_1, \ldots, x_m$ such that $$\vec{b}=x_1\vec{v}_1 + \cdots + x_m\vec{v}_m.	$$
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 2.1.1]{Linear transformations}
-	\vspace*{\stretch{1}}
-	A function $T$ from $\mathbb{R}^m$ to $\mathbb{R}^n$ is called a \textit{linear transformation} if there exists an $n \times m$ matrix $A$ such that $$T(\vec{x})=A\vec{x}.$$ for all $\vec{x}$ in the vector space $\mathbb{R}^m$.
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 2.2.1 a]{Orthogonal Projections}
-	\vspace*{\stretch{1}}
-	Consider a line $L$ in the coordinate plane, running through the origin. Any vector $\vec{x}$ in $\mathbb{R}^2$ can be written uniquely as $$\vec{x}=\vec{x}^\parallel + \vec{x}^\perp.$$ where $\vec{x}^\parallel$ is parallel to line $L$, and $\vec{x}^\perp$ is perpendicular to $L$.\\
-	\indent The transformation $T(\vec{x}) = \vec{x}^\parallel$ from $\mathbb{R}^2$ to $\mathbb{R}^2$ is called the \textit{orthogonal projection of} $\vec{x}$ \textit{onto} $L$, often denoted by $\textrm{proj}_L(\vec{x})$. If $\vec{w}$ is a nonzero vector parallel to $L$, then $$\textrm{proj}_L(\vec{x})=\left(\frac{\vec{x}\cdot\vec{w}}{\vec{w}\cdot\vec{w}}\right)\vec{w}.$$
-	The transformation $T(\vec{x})=\textrm{proj}_L(\vec{x})$ is linear, with matrix $$P=\frac{1}{w_1^2+w_2^2}
-	\left [
-		\begin{array}{cc}
-			w_1^2 & w_1w_2\\
-			w_1w_2 & w_2^2\\
-		\end{array}
-	\right ] =
-	\left [
-		\begin{array}{cc}
-			u_1^2 & u_1u_2\\
-			u_1u_2 & u_2^2
-		\end{array}
-	\right ]$$
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 2.2.1 b]{Orthogonal Porjections of unit vectors}
-	\vspace*{\stretch{1}}
-	if $\vec{u}=
-	\left [
-		\begin{array}{c}
-			u_1\\
-			u_2
-		\end{array}
-	\right ]$ is a \textit{unit} vector parallel to $L$, then $$\textrm(proj)_L(\vec{x})=(\vec{x}\cdot\vec{u})\vec{u}.$$
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 2.2.2]{Reflections}
-	\vspace*{\stretch{1}}
-	Consider a line $L$ in the coordinate plane, running through the origin, and let
-	$\vec{x} = \vec{x}^\parallel + \vec{x}^\perp$
-	be a vector $\mathbb{R}^2$. The linear transformation
-	$T(\vec{x})=\vec{x}^\parallel - \vec{x}^\perp$
-	is called the \textit{reflection of} $\vec{x}$ \textit{about} $L$, often denoted by
-	$\textrm{ref}_L(\vec{x})$:
-	$$\textrm{ref}_L(\vec{x})=\vec{x}^\parallel-\vec{x}^\perp.$$
-	We have a formula relating
-	$\textrm{ref}_L(\vec{x})$ to
-	$\textrm{proj}_L(\vec{x})$:
-	$$\textrm{ref}_L(\vec{x})=2\textrm{proj}_L(\vec{x})-\vec{x}=2(\vec{x}\cdot\vec{u})\vec{u}-\vec{x}.$$
-	The matrix of $T$ is of the form
-	\begin{math}
-		\left [
-			\begin{array}{cc}
-				a & b\\
-				b & -a
-			\end{array}
-		\right ]
-	\end{math}, where $a^2 + b^2=1$. Conversely, and matrix of this form represents a reflection about a line.
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 2.3.1]{Matrix Multiplication}
-	\vspace*{\stretch{1}}
-	\begin{enumerate}[label=\textbf{\alph*.}]
-		\item Let $B$ be an $n \times p$ matrix and $A$ a $q \times m$ matrix. The product $BA$ is defined if (and only if) $p = q$.
-
-		\item If $B$ is an $n \times p$ matrix and $A$ a $p \times m$ matrix, then the product $BA$ is defined as the matrix of the linear transformation $T(\vec{x}) = B(A\vec{x})$. This means that $T(\vec{x}) = B(A\vec{x}) = (BA)\vec{x}$, for all $\vec{x}$ in the vector space $\mathbb{R}^m$. The product $BA$ is an $n \times m$ matrix.
-	\end{enumerate}
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 2.4.1]{Invertible Functions}
-	\vspace*{\stretch{1}}
-	A function $T$ from $X$ to $Y$ is called invertible if the equation $T(x) = y$ has a unique solution $x$ in $X$ for each $y$ in $Y$.\\
-	\indent In this case, the inverse $T^{-1}$ from $Y$ to $X$ is defined by
-	$$
-	x = T^{-1}(y) \textrm{ means that } y = T(x).
-	$$
-	Note that
-	$$
-	T^{-1}(T(x)) = x \textrm{ and } T(T^{-1}(y)) = y
-	$$
-	for all $x$ in $X$ and for all $y$ in $Y$.\\
-	\indent Conversely, if $L$ is a function from $Y$ to $X$ such that
-	$$
-	L(T(x)) = x \textrm{ and } T(L(y)) = y
-	$$
-	for all $x$ in $X$ and for all $y$ in $Y$, then $T$ is invertible and $T^{-1} = L$.\\
-	\indent If a function $T$ is invertible, then so is $T^{-1}$ and $(T^{-1})^{-1} - T$.
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 2.4.2]{Invertible matrices}
-	\vspace*{\stretch{1}}
-	A square matrix $A$ is said to be \textit{invertible} if the linear transformation $\vec{y} = T(\vec{x}) = A\vec{x}$ is invertible. In this case, the matrix of $T^{-1}$ is denoted by $A^{-1}$. If the linear transformation $\vec{y} = T(\vec{x}) = A\vec{x}$ is invertible, then its inverse is $\vec{x} = T^{-1}(\vec{y}) = A^{-1}\vec{y}$.
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 3.1.1]{Image of a function}
-	\vspace*{\stretch{1}}
-	The \textit{image} of a function consists of all the values the function takes in its target space. If $f$ is a function from $X$ to $Y$, then
-	\begin{equation*}
-		\begin{split}
-			\textrm{image}(f)& = \{f(x):x \textrm{ in } X\}\\
-			&= \{b \textrm{ in } Y: b = f(x), \textrm{ for some } x \textrm{ in } X\}.
-		\end{split}
-	\end{equation*}
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 3.1.2]{Span}
-	\vspace*{\stretch{1}}
-	Consider the vectors $\vec{v}_1, \ldots, \vec{v}_m$ in $\mathbb{R}^n$. The set of all linear combinations $c_1\vec{v}_1 + \cdots + c_m\vec{v}_m$ of the vectors $\vec{v}_1, \ldots, \vec{v}_m$is called their \textit{span}:
-	$$
-	\textrm{span}(\vec{v}_1, \ldots, \vec{v}_m) = \{c_1\vec{v}_1 + \cdots + c_m\vec{v}_m : c_1, \ldots, c_m \textrm{ in } \mathbb{R} \}.
-	$$
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 3.1.5]{Kernel}
-	\vspace*{\stretch{1}}
-	The \textit{kernel} of a linear transformation $T(\vec{x}) = A\vec{x}$ from $\mathbb{R}^m$ to $\mathbb{R}^n$ consists of all zeros of the transformation, that is, the solutions of the equation $T(\vec{x}) = A\vec{x} = \vec{0}$.\\
-	\indent In other words, the kernel of $T$ is the solution set of the linear system
-	$$
-	A\vec{x} = \vec{0}
-	$$
-	We denote the kernel of $T$ by $\textrm{ker}(T)$ or $\textrm{ker}(A)$.
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 3.2.1]{Subspaces of $\mathbb{R}^n$}
-	\vspace*{\stretch{1}}
-	A subset $W$ of the vector space $\mathbb{R}^n$ is called a (linear) \textit{subspace of} $\mathbb{R}^n$ if it has the following three properties:
-	\begin{enumerate}[label=\textbf{\alph*.}]
-		\item $W$ contains the zero vector in $\mathbb{R}^n$.
-		\item $W$ is closed under addition: If $\vec{w}_1$ and $\vec{w}_2$ are both in $W$, then so is $\vec{w}_1 + \vec{w}_2$.
-		\item $W$ is closed under scalar multiplication: If $\vec{w}$ is in $W$ and $k$ is an arbitrary scalar, then $k\vec{w}$ is in $W$.
-	\end{enumerate}
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 3.2.3]{Redundant vectors; linear independence; basis}
-	\vspace*{\stretch{1}}
-	Consider vectors $\vec{v}_1, \ldots, \vec{v}_m$ in $\mathbb{R}^n$
-	\begin{enumerate}[label=\textbf{\alph*.}]
-		\item We say that a vector $\vec{v}_1, \ldots, \vec{v}_m$ is \textit{redundant} if $\vec{v}_i$ is a linear combination of the preceding vectors $\vec{v}_1, \ldots, \vec{v}_{i-1}$.
-		\item The vectors $\vec{v}_1, \ldots, \vec{v}_m$ are called \textit{linearly independent} if none of them is redundant. Otherwise, the vectors are called \textit{linearly dependent} (meaning that at least one of them is redundant).
-		\item We say that the vectors $\vec{v}_1, \ldots, \vec{v}_m$ in a subspac $V$ of $\mathbb{R}^n$ form a \textit{basis} of $V$ if they span $V$ and arelinearly independent.
-	\end{enumerate}
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 3.2.6]{Linear Relations}
-	\vspace*{\stretch{1}}
-	Consider the vectors $\vec{v}_1, \ldots, \vec{v}_m$ in $\mathbb{R}^n$. An equation of the form
-	$$
-	c_1\vec{v}_1 + \cdots + c_m\vec{v}_m = \vec{0}
-	$$
-	is called a (linear) \textit{relation} among the vectors $\vec{v}_1, \ldots, \vec{v}_m$. There is always the \textit{trivial relation}, with $c_1 = \cdots = c_m = 0$. \textit{Nontrivial relations} (where at least one coefficient $c_i$ is nonzero) may or may not exist among the vectors $\vec{v}_1, \ldots, \vec{v}_m$.
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 3.3.3]{Dimension}
-	\vspace*{\stretch{1}}
-	Consider a subspace $V$ of $\mathbb{R}^n$. The number of vectors in a basis of $V$ is called the \textit{dimension} of $V$, denoted by $\mathrm{dim}(V)$.
-	\vspace*{\stretch{1}}
-\end{flashcard}
-
-\begin{flashcard}[Definition 3.4.1]{Coordinates in a subspace of $\mathbb{R}^n$}
-	\vspace*{\stretch{1}}
-	Consider a basis $\mathfrak{B} = (\vec{v}_1, \ldots, \vec{v}_m)$ of a subspace $V$ of $\mathbb{R}^n$. Where $\vec{x}$ in $V$ is
-	$$
-	\vec{x} = c_1\vec{v}_1 + \cdots + c_m\vec{v}_m.
-	$$
-	The scalars $c_1, \ldots, c_m$ are called the $\mathfrak{B}$-\textit{coordinates} of $\vec{x}$, denoted by $[\vec{x}]_\mathfrak{B}$
-	Thus,
-	$$
-	[\vec{x}]_\mathfrak{B} =
-	\left [
-		\begin{array}{c}
-			c_1\\
-			\vdots\\
-			c_m
-		\end{array}
-	\right ]
-	\textrm{ means that } \vec{x} = c_1\vec{v}_1 + c_2\vec{v}_2 + \cdots + c_m\vec{v}_m.
-	$$
-	Note that
-	$$
-	\vec{x} = S[\vec{x}]_\mathfrak{B}, \textrm{ where } S =
-	\left [
-		\begin{array}{cccc}
-			\vec{v}_1 & \cdots & \vec{v}_m\\
-		\end{array}
-	\right ],
-	\textrm{ an }
-	n \times m
-	\textrm{ matrix.}
-	$$
-	\vspace*{\stretch{1}}
-\end{flashcard}
 
 \end{document}

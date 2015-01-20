@@ -57,6 +57,9 @@ Plugin 'kchmck/vim-coffee-script'
 " latex
 Plugin 'LaTeX-Box-Team/LaTeX-Box'
 
+" C++
+Plugin 'vim-scripts/google.vim'
+
 call vundle#end()
 filetype plugin indent on     " required
 " To ignore plugin indent changes, instead use:

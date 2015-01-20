@@ -15,7 +15,6 @@ call vundle#begin()
 "call vundle#rc(path)
 
 
-Plugin 'gmarik/Vundle.vim'
 
 " settings start here
 " let Vundle manage Vundle, required
@@ -47,23 +46,23 @@ Plugin 'scrooloose/syntastic.git'
 Plugin 'kien/ctrlp.vim'
 
 " All the go lang stuff you could need
-Plugin 'fatih/vim-go'
+Plugin 'jnwhiteh/vim-golang'
 
-" To be able to deploy to arduino from vim
-" arduino syntax
-Plugin 'vim-scripts/Arduino-syntax-file'
-Plugin 'jplaut/vim-arduino-ino'
+" sass stuff
+Plugin 'cakebaker/scss-syntax.vim'
 
-Plugin 'madflow/vim-php'
-
-" yaml plugins
-Plugin 'ingydotnet/yaml-vim'
+" coffee
+Plugin 'kchmck/vim-coffee-script'
 
 " latex
 Plugin 'LaTeX-Box-Team/LaTeX-Box'
 
 " python
 Plugin 'tell-k/vim-autopep8'
+
+" C++
+Plugin 'vim-scripts/google.vim'
+Plugin 'rhysd/vim-clang-format'
 
 call vundle#end()
 filetype plugin indent on     " required

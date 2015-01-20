@@ -1,31 +1,118 @@
+#include <stdlib.h>
+#include <fstream>
 #include <iostream>
+#include <vector>
+#include <string>
+#include "./thread.h"
 
-void swap(int *a, int index1, int index2) {
-  int value1 = *(a + index1);
-  int value2 = *(a + index2);
-  *(a + index1) = value1;
-  *(a + index2) = value2;
-  return;
+void remove_requester(int* max_requests, mutex* request_lock) {
+  request_lock->lock();
+  *max_requests = *max_requests - 1;
+  request_lock->unlock();
 }
 
-void doSomething(int *a, int begin, int end) {
-  if (begin == end) {
-    for (int j = 0; j < end; j++) {
-      std::cout << a[j];
-    }
-    std::cout << std::endl;
-    return;
-  }
+struct Request {
+  int requester_id;
+  int request_position;
+};
 
-  for (int i = begin; i < end; i++) {
-    swap(a, begin, i);
-    doSomething(a, begin + 1, end);
-    swap(a, begin, i);
+void add_request(int requester_id, int request_position,
+                 std::vector<Request*>* request_queue, mutex* request_lock,
+                 mutex* cout_lock, cv* submit_signal) {
+  request_lock->lock();
+  cout_lock->lock();
+  std::cout << "requester " << requester_id << " track " << request_position
+            << std::endl;
+  cout_lock->unlock();
+  auto* request = new Request();
+  request->requester_id = requester_id;
+  request->request_position = request_position;
+  request_queue->push_back(request);
+  submit_signal->signal();
+  request_lock->unlock();
+}
+
+struct RequesterArguments {
+  int requester_id;
+  char* filename;
+  std::vector<Request*>* request_queue;
+  mutex* cout_lock;
+  mutex* request_lock;
+  mutex* can_request_lock;
+  cv* submit_signal;
+  cv* request_wait;
+};
+
+void requester(void* arguments) {
+  auto requester_arguments = static_cast<RequesterArguments*>(arguments);
+  int requester_id = requester_arguments->requester_id;
+  char* filename = requester_arguments->filename;
+  std::vector<Request*>* request_queue = requester_arguments->request_queue;
+  mutex* request_lock = requester_arguments->request_lock;
+  mutex* cout_lock = requester_arguments->cout_lock;
+  cv* submit_signal = requester_arguments->submit_signal;
+
+  std::ifstream file;
+  file.open(filename, std::ifstream::in);
+
+  std::string line;
+
+  while (std::getline(file, line)) {
+    int request_position = stoi(line);
+    add_request(requester_id, request_position, request_queue, request_lock,
+                cout_lock, submit_signal);
   }
 }
 
-int main() {
-  int a[4] = {1, 2, 3, 4};
-  doSomething(a, 0, 4);
-  return 0;
+struct FileserverArguments {
+  int number_of_files;
+  int max_requests;
+  char** filenames;
+};
+
+void fileserver(void* arguments) {
+  auto fileserver_arguments = static_cast<FileserverArguments*>(arguments);
+  int number_of_files = fileserver_arguments->number_of_files;
+  char** filenames = fileserver_arguments->filenames;
+
+  auto request_queue = new std::vector<Request*>();
+  auto cout_lock = new mutex();
+  auto request_lock = new mutex();
+  auto submit_signal = new cv();
+
+  request_lock->lock();
+  for (int i = 0; i < number_of_files; ++i) {
+    auto can_request_lock = new mutex();
+    auto requester_arguments = new RequesterArguments();
+    requester_arguments->requester_id = i;
+    requester_arguments->filename = filenames[i];
+    requester_arguments->request_queue = request_queue;
+    requester_arguments->cout_lock = cout_lock;
+    requester_arguments->request_lock = request_lock;
+    requester_arguments->submit_signal = submit_signal;
+    thread t1((thread_startfunc_t)requester,
+              reinterpret_cast<void*>(requester_arguments));
+  }
+
+  while (true) {
+    std::cout << "here" << std::endl;
+    submit_signal->wait(*request_lock);
+  }
+  request_lock->unlock();
+}
+
+int main(int argc, char* argv[]) {
+  int max_requests = atoi(argv[1]);
+  if ((argc - 1) < max_requests) {
+    max_requests = argc - 1;
+  }
+
+  int number_of_files = argc - 2;
+
+  auto fileserver_arguments = new FileserverArguments();
+  fileserver_arguments->number_of_files = number_of_files;
+  fileserver_arguments->max_requests = max_requests;
+  fileserver_arguments->filenames = &argv[2];
+  cpu::boot((thread_startfunc_t)fileserver,
+            reinterpret_cast<void*>(fileserver_arguments), 0);
 }

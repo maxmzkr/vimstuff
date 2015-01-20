@@ -1,10 +1,10 @@
 #ifndef SORTED_PRIORITY_QUEUE_H_
 #define SORTED_PRIORITY_QUEUE_H_
 
+#include <algorithm>
 #include <functional>
 #include <vector>
 #include "./eecs281_priority_queue.h"
-#include "./P2random.h"
 
 // A specialized version of the 'priority_queue' ADT that is implemented with an
 // underlying sorted array-based container.
@@ -126,23 +126,17 @@ sorted_priority_queue<TYPE, COMP_FUNCTOR>::sorted_priority_queue(COMP_FUNCTOR co
 
 template<typename TYPE, typename COMP_FUNCTOR>
 void sorted_priority_queue<TYPE, COMP_FUNCTOR>::fix() {
-  quicksort(0, size());
+	std::sort(data.begin(), data.end(), this->compare);
 }
 
 template<typename TYPE, typename COMP_FUNCTOR>
 void sorted_priority_queue<TYPE, COMP_FUNCTOR>::push(const TYPE& val) {
-	if (size() == 0) {
-		data.push_back(val);
-	} else if (this->compare(data[size() - 1], val)) {
-		data.push_back(val);
-	} else {
-		for (int i = size() - 2; i >= 0; --i) {
-			if (this->compare(data[i], val)) {
-				data.insert(data.begin() + i + 1, val);
-				break;
-			}
-		}
-	}
+  data.push_back(val);
+  for (int i = size() - 1; i > 0; --i) {
+    if (this->compare(data[i], data[i - 1])) {
+      swap_elems(i - 1, i);
+    }
+  }
 }
 
 template<typename TYPE, typename COMP_FUNCTOR>

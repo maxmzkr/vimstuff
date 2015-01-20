@@ -2,6 +2,9 @@
 " ~/.vim/plugin/settings/syntastic.vim
 " used to set settings for syntastic
 " https://github.com/scrooloose/syntastic
+let g:syntastic_cpp_checkers=['gcc', 'cpplint']
+let g:syntastic_cpp_check_headers=1
+
 " custom pylintrc file
 let g:ycm_register_as_syntastic_checker = 0
 let g:ycm_show_diagnostics_ui = 0
@@ -22,3 +25,6 @@ let g:syntastic_enable_signs=1
 
 " this really give me the thing on the bottom
 let g:syntastic_auto_loc_list=0
+
+" c++ 11 support
+let g:syntastic_cpp_compiler_options = ' -std=c++11'

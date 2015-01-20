@@ -15,7 +15,6 @@ call vundle#begin()
 "call vundle#rc(path)
 
 
-Plugin 'gmarik/Vundle.vim'
 
 " settings start here
 " let Vundle manage Vundle, required
@@ -47,24 +46,26 @@ Plugin 'scrooloose/syntastic.git'
 Plugin 'kien/ctrlp.vim'
 
 " All the go lang stuff you could need
-Plugin 'fatih/vim-go'
+Plugin 'jnwhiteh/vim-golang'
 
-" To be able to deploy to arduino from vim
-" arduino syntax
-Plugin 'vim-scripts/Arduino-syntax-file'
-Plugin 'jplaut/vim-arduino-ino'
+" sass stuff
+Plugin 'cakebaker/scss-syntax.vim'
 
-Plugin 'madflow/vim-php'
+" coffee
+Plugin 'kchmck/vim-coffee-script'
 
-" yaml plugins
-Plugin 'ingydotnet/yaml-vim'
+" latex
+Plugin 'LaTeX-Box-Team/LaTeX-Box'
 
 <<<<<<< HEAD
+" python
+Plugin 'tell-k/vim-autopep8'
 =======
-" Latex plugin
-Plugin 'coot/atp_vim'
+" C++
+Plugin 'vim-scripts/google.vim'
+Plugin 'rhysd/vim-clang-format'
+>>>>>>> 0b3f5543e4a84a529573a70697b72ade3debcda8
 
->>>>>>> 0b634f24c849dbdf5386594c8d7847dde824c542
 call vundle#end()
 filetype plugin indent on     " required
 " To ignore plugin indent changes, instead use:

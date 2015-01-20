@@ -7,15 +7,18 @@ LD_RUN_PATH := /usr/um/gcc-4.7.0/lib64
 CXX			= g++
 # list of sources used in project
 SOURCES 	= $(wildcard *.cpp)
+# TESTSOURCES 	= $(wildcard *.cc)
 # list of objects used in project
 OBJECTS		= $(SOURCES:%.cpp=%.o)
+# TESTOBJECTS		= $(TESTSOURCES:%.cc=%.o)
 # name of the executable produced by the top level
-EXECUTABLE 	= proj2
+EXECUTABLE 	= DroneRouting
+# TESTEXECUTABLE = test
 # name of the tar ball created for submission
 SUBMIT_FILE = submit.tar.gz
 
 #Default Flags
-CXXFLAGS = -std=c++11 -Wall -Werror -Wextra -pedantic 
+CXXFLAGS = -std=c++11 -Wall -Werror -Wextra -pedantic -g3
 
 # make release - will compile "all" with $(CXXFLAGS) and the -O3 flag
 #				 also defines NDEBUG so that asserts will not check
@@ -27,23 +30,32 @@ release: all
 debug: CXXFLAGS += -g3 -DDEBUG
 debug: clean all
 
+debuggdb: CXXFLAGS += -g3 -DNDEBUG
+debuggdb: clean all
+
 # make profile - will compile "all" with $(CXXFLAGS) and the -pg flag
 profile: CXXFLAGS += -pg
 profile: clean all
 
 # highest target; sews together all objects into executable
-all: $(OBJECTS)
+all: $(OBJECTS) $(TESTOBJECTS)
 	$(CXX) $(CXXFLAGS) $(OBJECTS) -o $(EXECUTABLE)
+	# $(CXX) $(CXXFLAGS) $(filter-out main.o,$(OBJECTS)) $(TESTOBJECTS) -o $(TESTEXECUTABLE)
 
 # individual dependencies for objects
 # YOU NEED TO ADD YOUR OWN DEPENDENCIES HERE!!!
-#container_of_pointers.cpp  eecs281_priority_queue.h  heap_priority_queue.h  P2random.h	pairing_priority_queue.h  poorman_priority_queue.h  sorted_priority_queue.h
-foo.o: foo.cpp bar.h 
-container_of_pointer.o: container_of_pointers.cpp eecs281_priority_queue.h heap_priority_queue.h P2random.h pairing_priority_queue.h poorman_priority_queue.h sorted_priority_queue.h
+driver.o: driver.cpp
+edge.o: edge.cpp
+node.o: node.cpp
+main.o: main.cpp edge.cpp node.cpp driver.cpp
 
 # rule for creating objects
 %.o:
 	$(CXX) $(CXXFLAGS) -c $*.cpp
+
+# rule for creating objects
+# test.o:
+# 	$(CXX) $(CXXFLAGS) -c test.cc
 
 # make clean - remove .o files, executable, tarball
 clean:

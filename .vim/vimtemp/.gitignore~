@@ -1,5 +1,2 @@
-test-script.sh
-*.sublime-project
-*.sublime-workspace
-*.~lock.*.odt#
-*~
+MineFile
+test

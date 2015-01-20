@@ -62,6 +62,9 @@ Plugin 'ingydotnet/yaml-vim'
 " latex
 Plugin 'LaTeX-Box-Team/LaTeX-Box'
 
+" python
+Plugin 'tell-k/vim-autopep8'
+
 call vundle#end()
 filetype plugin indent on     " required
 " To ignore plugin indent changes, instead use:

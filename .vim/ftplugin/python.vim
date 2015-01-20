@@ -34,7 +34,7 @@ endfunction
 
 let pyindent_nested_paren="&sw*2"
 let pyindent_open_paren="&sw*2"
-set smartindent
+set nosmartindent
 set tabstop=4
 set shiftwidth=4
 set expandtab

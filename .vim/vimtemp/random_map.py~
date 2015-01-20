@@ -1,0 +1,19 @@
+import random
+
+def main():
+    with open('input_file_b_large.txt', 'w') as fp:
+        fp.write('Facilities: 1000\n')
+        for _ in xrange(1000000):
+            fp.write(" ".join([str(random.randrange(10000)),
+                              str(random.randrange(10000)), "\n"]))
+
+    with open('input_file_c_large.txt', 'w') as fp:
+        sample_size = 10
+        fp.write(''.join(['Facilities: ', str(sample_size), "\n"]))
+
+        for _ in xrange(sample_size):
+            fp.write(" ".join([str(random.randrange(sample_size)),
+                              str(random.randrange(sample_size)), "\n"]))
+
+if __name__ == '__main__':
+    main()

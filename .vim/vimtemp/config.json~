@@ -1,0 +1,10 @@
+{
+	"site": "google",
+	"clientId": "1018409327087-m1uopfp5k7nel9bcsklogdce2i46fnfm.apps.googleusercontent.com",
+	"clientSecret": "fQ5bzKHC4Zf-soISKWGn_qpB",
+	"scope": "https://www.googleapis.com/auth/userinfo.profile",
+	"redirectURL": "localhost:8080",
+	"authURL": "https://accounts.google.com/o/oauth2/auth",
+	"tokenURL": "https://accounts.google.com/o/oauth2/token",
+	"requestURL": "https://www.googleapis.com/oauth2/v1/userinfo"
+}

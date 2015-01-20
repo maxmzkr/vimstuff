@@ -1,0 +1,39 @@
+#ifndef NODE_H_
+#define NODE_H_
+
+#include <algorithm>
+#include <vector>
+#include "./edge.h"
+
+struct EdgeCompare;
+
+class Edge;
+
+class Node {
+ public:
+	void set_x(int x);
+
+	void set_y(int y);
+
+	void set_id(int id);
+
+	int x();
+
+	int y();
+
+	int id();
+
+	void add_edge(Edge * edge);
+
+	void finalize();
+
+	std::vector<Edge *>::iterator edge_iter();
+
+ private:
+	int id_;
+	int x_;
+	int y_;
+	std::vector<Edge *> edge_list_;
+};
+
+#endif  // NODE_H_

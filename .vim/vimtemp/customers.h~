@@ -1,0 +1,38 @@
+// Defines the structure of a customer and a way to select a customer by unique
+// id
+#ifndef CUSTOMERS_H_
+#define CUSTOMERS_H_
+
+#include <cstdint>
+#include <string>
+#include <map>
+
+struct Customer {
+	// does not need to be set manually, will be changed when it is added
+	// to the customers data structure
+  uint64_t number_of_stocks_bought = 0;
+  uint64_t number_of_stocks_sold = 0;
+  int64_t net_value_traded = 0;
+  uint64_t unique_id = 0;
+  std::string client_name = "";
+};
+
+class Customers {
+ public:
+  // Allows access to the customer through iterators
+  std::map<std::string, Customer *>::iterator begin();
+
+  // Allows access to the end of customer through iterators
+  std::map<std::string, Customer *>::iterator end();
+
+  // Allows access to find in the equities
+  std::map<std::string, Customer *>::iterator find(const std::string & find_key);
+
+  // Adds a customer to the data structure and assigns it a unique_id
+  void add_customer(Customer * const customer);
+
+ private:
+  std::map<std::string, Customer *> customers_;
+};
+
+#endif  // CUSTOMERS_H_

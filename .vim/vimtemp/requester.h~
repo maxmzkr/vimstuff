@@ -1,0 +1,23 @@
+// This is where the request logic will be defined. Mostly used for defining
+// what the arguments are that will be passed to requester
+
+#ifndef REQUESTER_H_
+#define REQUESTER_H_
+
+#include <string>
+#include <vector>
+#include "./thread.h"
+
+struct RequesterParameters {
+  int requester_number;
+  char *requester_filename;
+  mutex *requester_lock;
+  mutex *request_lock;
+  mutex *stdout_lock;
+  cv *requester_cv;
+	std::vector<int> request_queue;
+};
+
+void requester(void *void_parameters);
+
+#endif  // REQUESTER_H_

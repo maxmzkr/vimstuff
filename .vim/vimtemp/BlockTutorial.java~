@@ -1,0 +1,14 @@
+package com.wuppy.tutorial;
+
+import net.minecraft.block.Block;
+import net.minecraft.block.material.Material;
+import net.minecraft.creativetab.CreativeTabs;
+
+public class BlockTutorial extends Block {
+	public BlockTutorial() {
+		super(Material.rock);
+		setBlockName(Tutorial.MODID + ":" + "tutorialBlock");
+		setBlockName(Tutorial.MODID + "_" + "tutorialBlock");
+		setCreativeTab(CreativeTabs.tabBlock);
+	}
+}

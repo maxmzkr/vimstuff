@@ -1,0 +1,42 @@
+// This is where we will define how to handle the requests.
+
+#include <string>
+#include <fstream>
+#include <iostream>
+#include "./thread.h"
+#include "./requester.h"
+#include "./server.h"
+
+// We will run until we don't have anymore requests
+void requester(void *void_parameters) {
+  RequesterParameters *requester_parameters =
+      reinterpret_cast<RequesterParameters *>(void_parameters);
+
+  int requester_number = requester_parameters->requester_number;
+  char *requester_filename = requester_parameters->requester_filename;
+  mutex *requester_lock = requester_parameters->requester_lock;
+  mutex *request_lock = requester_parameters->request_lock;
+  mutex *stdout_lock = requester_parameters->stdout_lock;
+  cv *requester_cv = requester_parameters->requester_cv;
+  std::vector<int> *request_queue = requester_parameters->request_queue;
+
+  std::ifstream requester_file(requester_filename);
+  std::string request_line;
+  while (getline(requester_file, request_line)) {
+    int request_location = std::stoi(request_line);
+    requester_lock->lock();
+
+    // Submit the request
+    request_lock->lock();
+    request_queue->push(request_location);
+    // Print the request
+    stdout_lock->lock();
+    std::cout << "requester " << requester_number << " track "
+              << request_location;
+    stdout_lock->unlock();
+
+    request_lock->unlock();
+    requester_cv->signal();
+    requester_lock->unlock();
+  }
+}

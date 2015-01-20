@@ -1,0 +1,49 @@
+// Defines the strucure of an order and way to select an order by unique id
+#ifndef ORDERS_H_
+#define ORDERS_H_
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+enum OrderType {buy, sell};
+
+OrderType string_to_order_type(const char * const buy_sell_string);
+
+struct Order {
+	// does not need to be set manually, will be changed when it is added
+	// to the orders data structure
+	uint64_t unique_id = 0;
+	uint64_t timestamp = 0;
+  std::string client_name = "";
+	OrderType order_type = buy;
+  std::string equity_symbol = "";
+	uint64_t price = 0;
+	uint64_t quantity = 0;
+};
+
+uint64_t get_exchange_rate(const Order * const order1, const Order * const order2);
+
+struct LowerBuy {
+	bool operator() (const Order * const lhs, const Order * const rhs) const;
+};
+
+struct HigherSell {
+	bool operator() (const Order * const lhs, const Order * const rhs) const;
+};
+
+class Orders {
+ public:
+	// getters
+	Order * get_order(const uint64_t unique_id) const;
+
+	Order * latest_order() const;
+
+	// Adds an order to the data structure and assigns it a unique_id
+	void add_order(Order * const order);
+
+ private:
+	std::vector<Order *> orders_;
+};
+
+#endif  // ORDERS_H_

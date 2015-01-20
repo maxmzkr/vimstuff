@@ -1,0 +1,33 @@
+#include <getopt.h>
+#include "./driver.h"
+
+int main(int argc, char **argv) {
+  static struct option long_options[] = {
+    {"clientType", required_argument, 0, 'c'},
+    {"help", no_argument, 0, 'h'}
+  };
+  Driver main_driver = Driver();
+  while (1) {
+    int option_index = 0;
+
+    char c = getopt_long(argc, argv, "c:h", long_options, &option_index);
+
+    if (c == -1) {
+      break;
+    }
+
+    switch (c) {
+      case 'c':
+        main_driver.set_client_type(optarg[0]);
+        break;
+
+      case 'h':
+        printf("● -c, --clientType\n"
+				       "	specify the client type A, B, C\n");
+        exit(0);
+        break;
+    }
+  }
+  main_driver.drive();
+  return 0;
+}

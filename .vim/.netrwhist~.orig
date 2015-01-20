@@ -1,0 +1,20 @@
+let g:netrw_dirhistmax  =10
+<<<<<<< HEAD
+let g:netrw_dirhist_cnt =9
+let g:netrw_dirhist_1='/home/max/salt-states/celeryconfig'
+let g:netrw_dirhist_2='/home/max/.vim/plugin/settings'
+let g:netrw_dirhist_3='/home/max/omniauth/src/github.com/maxmzkr/goomniauth/goomniauth'
+let g:netrw_dirhist_4='/home/max/thegoodpear/src/github.com/maxmzkr/thegoodpear/handlers/home'
+let g:netrw_dirhist_5='/home/max/thegoodpear/src/github.com/maxmzkr/thegoodpear/objects'
+let g:netrw_dirhist_6='/home/max/salt-states/rabbitmq-celery'
+let g:netrw_dirhist_7='/home/max/.bash'
+let g:netrw_dirhist_8='/home/max'
+let g:netrw_dirhist_9='/home/max/.bash/.git'
+=======
+let g:netrw_dirhist_cnt =5
+let g:netrw_dirhist_1='/home/max/microwave/microwave'
+let g:netrw_dirhist_2='/home/max/pipedream/lib/deepy'
+let g:netrw_dirhist_3='/home/max/.vim/vimundo'
+let g:netrw_dirhist_4='/home/max/gourlparser'
+let g:netrw_dirhist_5='/home/max/goblog/src/github.com/maxmzkr/goblog/handlers/templates'
+>>>>>>> 0b3f5543e4a84a529573a70697b72ade3debcda8

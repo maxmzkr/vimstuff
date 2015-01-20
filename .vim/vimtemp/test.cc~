@@ -1,0 +1,74 @@
+#include <iostream>
+#include <vector>
+#include <array>
+#include "./eecs281_priority_queue.h"
+#include "./poorman_priority_queue.h"
+#include "./heap_priority_queue.h"
+#include "./sorted_priority_queue.h"
+#include "./pairing_priority_queue.h"
+
+// Comparison functor for integer pointers
+struct intptr_comp {
+  bool operator() (const int *a, const int  *b) const    {
+      return *a < *b;
+  }
+};
+
+int main() {
+	poorman_priority_queue<int *, intptr_comp>
+		poor_man = poorman_priority_queue<int *, intptr_comp>();
+	heap_priority_queue<int *, intptr_comp>
+		heap = heap_priority_queue<int *, intptr_comp>();
+	sorted_priority_queue<int *, intptr_comp>
+		sorted = sorted_priority_queue<int *, intptr_comp>();
+	pairing_priority_queue<int *, intptr_comp>
+		pairing = pairing_priority_queue<int *, intptr_comp>();
+	std::array<eecs281_priority_queue<int *, intptr_comp> *, 4> queues {
+		&poor_man,
+		&heap,
+		&sorted,
+		&pairing
+	};
+	for (auto current_queue : queues) {
+		std::vector<int> owner = {10, 5, 20, 7};
+		for (auto &i : owner) {
+			current_queue->push(&i);
+		}
+
+		owner[2] = 1;
+		current_queue->fix();
+
+		// Process each number in priority order
+		while (!current_queue->empty()) {
+
+			// Pop one int pointer off the Poor Man's Heap
+			// the integer itself is still aive in the vector owner
+
+			std::cout << *current_queue->top() << ' ';
+			current_queue->pop();
+		}
+
+		std::cout << std::endl;
+	}
+
+  std::vector<int> owner = {1, 5, 7, 0};
+  for (int i = 0; i < 3; ++i) {
+    pairing.push(owner.data() + i);
+  }
+  int ten = 10;
+  pairing_priority_queue<int *, intptr_comp>::Node * updatingElt =
+      pairing.add_node(owner.data() + 3);
+  pairing.updateElt(updatingElt, &ten);
+  pairing_priority_queue<int *, intptr_comp> copy_pairing =
+      pairing_priority_queue<int *, intptr_comp>(pairing);
+  while (!pairing.empty()) {
+    std::cout << *pairing.top() << ' ';
+    pairing.pop();
+  }
+  std::cout << std::endl;
+  while (!copy_pairing.empty()) {
+    std::cout << *copy_pairing.top() << ' ';
+    copy_pairing.pop();
+  }
+  std::cout << std::endl;
+}

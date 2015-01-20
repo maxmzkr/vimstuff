@@ -1,0 +1,581 @@
+#include <cstdio>
+#include <cstring>
+#include <algorithm>
+#include <limits>
+#include <queue>
+#include <vector>
+
+#include "./driver.h"
+#include "./edge.h"
+
+static unsigned int edge_count(int n) {
+	return (n*(n + 1))/2;
+}
+
+void Driver::set_client_type(char client_type) {
+	client_type_ = client_type;
+}
+
+char Driver::client_type() {
+	return client_type_;
+}
+
+void Driver::input() {
+	char * line = NULL;
+	size_t len = 0;
+	ssize_t read;
+
+	read = getline(&line, &len, stdin);
+	if (read == -1) {
+		exit(1);
+	}
+	number_of_nodes_ = atoi(line + 12);
+	get_nodes_();
+	if (client_type_ == 'A') {
+		get_edges_();
+	} else if (client_type_ == 'C') {
+		for (unsigned int i = 0; i < number_of_nodes_; ++i) {
+			for (unsigned int j = i + 1; j < number_of_nodes_; ++j) {
+				Edge * new_edge = new Edge();
+				new_edge->set_node1(nodes_[i]);
+				new_edge->set_node2(nodes_[j]);
+				edges_.push_back(new_edge);
+				nodes_[i]->add_edge(new_edge);
+				nodes_[j]->add_edge(new_edge);
+			}
+		}
+		number_of_paths_ = edges_.size();
+	} else {
+		number_of_paths_ = edge_count(number_of_nodes_ - 1);
+	}
+	finalize_();
+}
+
+int Driver::real_id(int node_id, std::vector<int> &set_ids) {
+	if (node_id != set_ids[node_id]) {
+		set_ids[node_id] = real_id(set_ids[node_id], set_ids);
+	}
+	return set_ids[node_id];
+}
+
+bool Driver::connected(int node_id1, int node_id2, std::vector<int> &set_ids) {
+	return real_id(node_id1, set_ids) == real_id(node_id2, set_ids);
+}
+
+// void Driver::my_union(int node_id1, int node_id2, std::vector<int> &set_ids,
+// 		std::vector<int> &set_size) {
+// 	int real_id1 = real_id(node_id1, set_ids);
+// 	int real_id2 = real_id(node_id2, set_ids);
+//
+// 	if (set_size[real_id1] < set_size[real_id2]) {
+// 		set_ids[real_id1] = real_id2;
+// 		set_size[real_id2] = set_size[real_id2] + set_size[real_id1];
+// 	} else {
+// 		set_ids[real_id2] = real_id1;
+// 		set_size[real_id1] = set_size[real_id1] + set_size[real_id2];
+// 	}
+// }
+
+void Driver::minimum_spanning_tree() {
+	if (client_type_ == 'A') {
+		k_mst_();
+	} else {
+		p_mst_();
+	}
+}
+
+void Driver::print_edges() {
+	printf("%f\n", total_distance_);
+	unsigned int j = 0;
+	for (unsigned int i = 0; i < number_of_paths_; ++i) {
+		if (edges_[i]->used()) {
+			j = j + 1;
+			printf("%i %i\n", edges_[i]->node1()->id(), edges_[i]->node2()->id());
+			if (j == number_of_nodes_) {
+				return;
+			}
+		}
+	}
+}
+
+void Driver::drive() {
+	input();
+	if (client_type_ == 'A' || client_type_ == 'B') {
+		minimum_spanning_tree();
+	} else {
+		traveling_salesman();
+	}
+}
+
+double Driver::x_lowest_remaining_edges(std::vector<bool> &visited,
+		std::vector<int> &path, std::vector<TravelingNode *> &nodes,
+		int id, int count) {
+	TravelingNode * node = nodes[id];
+	double accumulated_length = 0;
+	int current_count = 0;
+
+	// add count number of edges not already in the graph
+	for (size_t i = 0; i < node->ordered_connections.size(); ++i) {
+		TravelingEdge * edge = node->ordered_connections[i];
+		int edge_id = edge->connectionId;
+		if ((id != 0 && id != path.back() && (!visited[edge_id] || edge_id == 0)) ||
+				(id == 0 && (!visited[edge_id] &&
+										 static_cast<int>(edge_id) != path.back())) ||
+				(id == path.back() && (!visited[edge_id]))) {
+#ifdef DEBUG
+			printf("edge %i between %i %i\n", current_count, id, edge->connectionId);
+			printf("size: %f\n", edge->length);
+#endif
+			accumulated_length = accumulated_length + edge->length;
+			current_count = current_count + 1;
+			if (current_count == count) {
+				return accumulated_length;
+			}
+		}
+	}
+	return accumulated_length;
+}
+
+bool Driver::promising(std::vector<int> &path, std::vector<bool> &visited,
+		std::queue<int> &unvisited, std::vector<TravelingNode *> &nodes,
+		long double current_length, long double current_best) {
+	int node_id = 0;
+	double lower_bound = 0;
+	if (path.size() == nodes.size()) {
+		return current_length + nodes[path.back()]->connections[0]->length <
+			current_best;
+	} else if (path.size() == 1) {
+		lower_bound = lower_bound +
+			x_lowest_remaining_edges(visited, path, nodes, node_id, 2);
+	} else {
+		lower_bound = lower_bound +
+			x_lowest_remaining_edges(visited, path, nodes, node_id, 1);
+		node_id = path.back();
+		lower_bound = lower_bound +
+			x_lowest_remaining_edges(visited, path, nodes, node_id, 1);
+	}
+	if (!unvisited.empty()) {
+		for (size_t i = 0; i < unvisited.size(); ++i) {
+			node_id = unvisited.front();
+			lower_bound = lower_bound +
+				x_lowest_remaining_edges(visited, path, nodes, node_id, 2);
+			unvisited.push(unvisited.front());
+			unvisited.pop();
+		}
+	}
+#ifdef DEBUG
+	printf("lower bound for:\n");
+	for (size_t i = 0; i < path.size(); ++i) {
+		printf("%i ", path[i]);
+	}
+	printf("\n");
+	printf("is: %Lf\n", lower_bound/2 + current_length);
+	printf("current_length: %Lf\n", current_length);
+#endif
+	if (lower_bound/2 + current_length >= current_best) {
+		return false;
+	}
+	return true;
+}
+
+long double Driver::permute(std::vector<int> &path, std::vector<int> &best_path,
+		std::queue<int> &unvisited, std::vector<bool> &visited,
+		std::vector<TravelingNode *> &nodes, long double current_length,
+		long double current_best) {
+	if (promising(path, visited, unvisited, nodes, current_length, current_best)) {
+		if (unvisited.empty()) { // solution
+			best_path = path;
+			return current_length + nodes[path.back()]->connections[0]->length;
+		}
+		for (size_t i = 0; i < unvisited.size(); ++i) {
+#ifdef DEBUG
+			printf("unvisited\n");
+			for (size_t j = 0; j < unvisited.size(); ++j) {
+				printf("%i ", unvisited.front());
+				unvisited.push(unvisited.front());
+				unvisited.pop();
+			}
+			printf("\n");
+#endif
+			int previous_node_id = path.back();
+			int next_node_id = unvisited.front();
+			path.push_back(next_node_id);
+			unvisited.pop();
+			visited[previous_node_id] = true;
+			TravelingEdge * edge = nodes[previous_node_id]->connections[next_node_id];
+			current_length = current_length + edge->length;
+			current_best = permute(path, best_path, unvisited, visited, nodes,
+					current_length, current_best);
+			current_length = current_length - edge->length;
+			visited[previous_node_id] = false;
+#ifdef DEBUG
+			printf("previous_node_id %i\n", previous_node_id);
+#endif
+			unvisited.push(next_node_id);
+			path.pop_back();
+		}
+	}
+	return current_best;
+}
+
+void Driver::traveling_salesman() {
+	// setup the nodes into traveling form
+	std::vector<TravelingNode *> nodes;
+	for (size_t i = 0; i < nodes_.size(); ++i) {
+		Node * copy_node = nodes_[i];
+		TravelingNode * new_node = new TravelingNode();
+		new_node->id = i;
+		new_node->connections.resize(nodes_.size());
+		// add the edges, both ordered and non ordered
+		for (auto edge_iter = copy_node->edge_iter();
+				edge_iter != copy_node->edge_end_iter();
+				++edge_iter) {
+			Edge * copy_edge = *edge_iter;
+			TravelingEdge * new_edge = new TravelingEdge();
+			new_edge->connectionId = copy_edge->other_node(i);
+			new_edge->length = copy_edge->length();
+			new_node->ordered_connections.push_back(new_edge);
+			new_node->connections[copy_edge->other_node(i)] = new_edge;
+		}
+		nodes.push_back(new_node);
+	}
+
+#ifdef DEBUG
+	for (size_t i = 0; i < nodes.size(); ++i) {
+		printf("%lu \n", i);
+		for (size_t j = 0; j < nodes[i]->ordered_connections.size(); ++j) {
+			printf("%f ", nodes[i]->ordered_connections[j]->length);
+			printf("%i \n", nodes[i]->ordered_connections[j]->connectionId);
+		}
+		printf("\n");
+	}
+#endif
+
+	// run the algorithm
+	std::vector<int> path(1, 0);
+	std::vector<int> best_path;
+	std::queue<int> unvisited;
+	std::vector<bool> visited(nodes.size(), false);
+	long double inf = std::numeric_limits<long double>::infinity();
+	for (size_t i = 1; i < nodes.size(); ++i) {
+		unvisited.push(i);
+	}
+
+	long double best_length = permute(path, best_path, unvisited, visited, nodes,
+			0, inf);
+
+	// print the results
+	printf("%.2Lf\n", best_length);
+	for (size_t i = 0; i < best_path.size(); ++i) {
+		printf("%i ", best_path[i]);
+	}
+	printf("\n");
+}
+
+void Driver::get_nodes_() {
+	char * line = NULL;
+	size_t len = 0;
+	ssize_t read;
+	char * pch;
+	int i = 0;
+
+	while ((read = getline(&line, &len, stdin)) != -1 && line[0] != '\n') {
+		if (line[0] == 'P') {
+			number_of_paths_ = atoi(line + 7);
+#ifdef DEBUG
+			printf("number_of_paths_ %i\n", number_of_paths_);
+#endif
+			break;
+		}
+		pch = strtok(line, " \t\n");
+		int x = atoi(pch);
+		pch = strtok(NULL, " \t\n");
+		int y = atoi(pch);
+		Node * new_node = new Node();
+		new_node->set_x(x);
+		new_node->set_y(y);
+		new_node->set_id(i);
+		nodes_.push_back(new_node);
+		i = i + 1;
+	}
+}
+
+void Driver::get_edges_() {
+	char * line = NULL;
+	size_t len = 0;
+	ssize_t read;
+	char * pch;
+
+	while ((read = getline(&line, &len, stdin)) != -1 && line[0] != '\n') {
+		pch = strtok(line, " \t\n");
+		int node1_index = atoi(pch);
+		pch = strtok(NULL, " \t\n");
+		int node2_index = atoi(pch);
+		Edge * new_edge = new Edge();
+		new_edge->set_node1(nodes_[node1_index]);
+		new_edge->set_node2(nodes_[node2_index]);
+		edges_.push_back(new_edge);
+#ifdef DEBUG
+		printf("new edge %i %i\n", new_edge->node1()->id(),
+				new_edge->node2()->id());
+		printf("distance %f\n", new_edge->length());
+#endif
+		nodes_[node1_index]->add_edge(new_edge);
+		nodes_[node2_index]->add_edge(new_edge);
+	}
+}
+
+void Driver::finalize_() {
+	std::sort(edges_.begin(), edges_.end(), edge_compare);
+	for (unsigned int i = 0; i < number_of_nodes_; ++i) {
+		nodes_[i]->finalize();
+	}
+}
+
+// double Driver::traveling_salesman_(double &current_length,
+// 		double &length_cap, std::vector<int> &path,
+// 		std::vector<bool> &visited_set, std::vector<int> &best_path) {
+// 	if (path.size() == number_of_nodes_) {
+// #ifdef DEBUG
+// 		printf("number_of_nodes_: %u\n", number_of_nodes_);
+// 		printf("actual_number_of_nodes_: %lu\n", path.size());
+// 		for (auto node : path) {
+// 			printf("node %i\n", node);
+// 		}
+// #endif
+// 		double distance = get_length(nodes_[path.front()], nodes_[path.back()]);
+// 		current_length = current_length + distance;
+// 		if (current_length < length_cap) {
+// 			length_cap = current_length;
+// 			best_path = path;
+// 		}
+// 		current_length = current_length - distance;
+// #ifdef DEBUG
+// 		for (auto node : best_path) {
+// 			printf("node %i\n", node);
+// 		}
+// #endif
+// 		return length_cap;
+// 	}
+//
+// 	int current_node_id = path.back();
+// 	Node * current_node_ptr = nodes_[current_node_id];
+// 	for (auto edge_iter = current_node_ptr->edge_iter();
+// 			 edge_iter != current_node_ptr->edge_end_iter();
+// 			 ++edge_iter) {
+// 		int other_node_id = (*edge_iter)->other_node(current_node_id);
+// 		bool visited = visited_set[other_node_id];
+// #ifdef DEBUG
+// 		printf("checking edge %i %i\n", current_node_id, other_node_id);
+// 		printf("other node in %i\n", visited);
+// #endif
+// 		if (!visited) {
+// 			if (current_length + (*edge_iter)->length() < length_cap) {
+// 				current_length = current_length + (*edge_iter)->length();
+// 				path.push_back(other_node_id);
+// 				visited_set[other_node_id] = true;
+// 				traveling_salesman_(current_length, length_cap, path, visited_set,
+// 						best_path);
+// 				visited_set[other_node_id] = false;
+// 				path.pop_back();
+// 				current_length = current_length - (*edge_iter)->length();
+// 			} else {
+// 				break;
+// 			}
+// 		}
+// 	}
+//
+// #ifdef DEBUG
+// 	printf("final\n");
+// 	for (auto node : best_path) {
+// 		printf("node %i\n", node);
+// 	}
+// #endif
+//
+// 	return length_cap;
+// }
+
+// void Driver::k_mst_() {
+// 	std::vector<int> set_size(number_of_nodes_, 1);
+// 	std::vector<int> set_ids(number_of_nodes_, 0);
+// 	for (unsigned int i = 0; i < number_of_nodes_; ++i) {
+// 		set_ids[i] = i;
+// 	}
+// #ifdef DEBUG
+// 	printf("number_of_paths_: %u\n", number_of_paths_);
+// 	printf("actual number_of_paths_: %lu\n", edges_.size());
+// #endif
+// 	for (unsigned int i = 0; i < number_of_paths_; ++i) {
+// 		Edge * edge = edges_[i];
+// #ifdef DEBUG
+// 		printf("checking edge %i to %i\n", edge->node1()->id(), edge->node2()->id());
+// #endif
+// 		if (!connected(edge->node1()->id(), edge->node2()->id(), set_ids)) {
+// #ifdef DEBUG
+// 			printf("not connected\n");
+// #endif
+// 			my_union(edge->node1()->id(), edge->node2()->id(), set_ids, set_size);
+// 			total_distance_ = total_distance_ + edge->length();
+// 			edge->set_used(true);
+// 			number_of_connected_nodes_ = number_of_connected_nodes_ + 1;
+// 			if (number_of_connected_nodes_ == number_of_nodes_) {
+// 				break;
+// 			}
+// 		}
+// 	}
+// }
+
+int Driver::root_id_(std::vector<KruskalsVertex *> &vertex_set, int id) {
+	int referer = vertex_set[id]->referer;
+	if (id != referer) {
+		vertex_set[id]->referer = root_id_(vertex_set, vertex_set[id]->referer);
+	}
+	return vertex_set[id]->referer;
+}
+
+void Driver::my_union(std::vector<KruskalsVertex *> &vertex_set, int id1,
+		int id2) {
+	KruskalsVertex * root_vertex1 = vertex_set[root_id_(vertex_set, id1)];
+	KruskalsVertex * root_vertex2 = vertex_set[root_id_(vertex_set, id2)];
+
+	if (root_vertex1->size < root_vertex2->size) {
+		root_vertex1->referer = root_vertex2->id;
+		root_vertex2->size = root_vertex2->size + root_vertex1->size;
+	} else {
+		root_vertex2->referer = root_vertex1->id;
+		root_vertex1->size = root_vertex1->size + root_vertex2->size;
+	}
+}
+
+void Driver::k_mst_() {
+	std::vector<KruskalsVertex *> vertex_set;
+	std::vector<KruskalsEdge *> edge_set;
+	long double total_distance = 0;
+
+	for (unsigned int i = 0; i < number_of_nodes_; ++i) {
+		KruskalsVertex * vertex = new KruskalsVertex();
+		vertex->id = i;
+		vertex->x = nodes_[i]->x();
+		vertex->y = nodes_[i]->y();
+		vertex->size = 1;
+		vertex->referer = i;
+		vertex_set.push_back(vertex);
+	}
+
+	for (unsigned int i = 0; i < number_of_paths_; ++i) {
+		KruskalsEdge * edge = new KruskalsEdge();
+		edge->nodeId1 = edges_[i]->node1()->id();
+		edge->nodeId2 = edges_[i]->node2()->id();
+		edge->length = edges_[i]->length();
+		edge_set.push_back(edge);
+	}
+
+	unsigned int connected_nodes = 0;
+
+	for (unsigned int i = 0; i < number_of_paths_; ++i) {
+		KruskalsEdge * edge = edge_set[i];
+		if (root_id_(vertex_set, edge->nodeId1) !=
+				root_id_(vertex_set, edge->nodeId2)) {
+			my_union(vertex_set, edge->nodeId1, edge->nodeId2);
+			total_distance = total_distance + edge->length;
+			edge->used = true;
+			connected_nodes = connected_nodes + 1;
+			if (connected_nodes == number_of_nodes_) {
+				break;
+			}
+		}
+	}
+
+	printf("%.2Lf\n", total_distance);
+	for (auto edge : edge_set) {
+		if (edge->used) {
+			int lower_id = edge->nodeId1;
+			int higher_id = edge->nodeId2;
+			if (lower_id > higher_id) {
+				int temp_id = lower_id;
+				lower_id = higher_id;
+				higher_id = temp_id;
+			}
+			printf("%i %i\n", lower_id, higher_id);
+		}
+	}
+}
+
+Edge * Driver::get_min_edge_(std::vector<int> &tree_ids,
+		std::vector<bool> &visited_set) {
+	double min = std::numeric_limits<double>::max();
+	Edge * min_edge = new Edge();
+	for (auto node_id : tree_ids) {
+		Node * node1 = nodes_[node_id];
+		for (unsigned int i = 0; i < visited_set.size(); ++i) {
+			if (visited_set[i]) {
+				continue;
+			}
+			Node * node2 = nodes_[i];
+			if (get_length(node1, node2) < min) {
+				delete min_edge;
+				min_edge = new Edge();
+				min_edge->set_node1(node1);
+				min_edge->set_node2(node2);
+				min = min_edge->length();
+			}
+		}
+	}
+#ifdef DEBUG
+	printf("min: %f\n", min);
+#endif
+	return min_edge;
+}
+
+void Driver::p_mst_() {
+	std::vector<PrimsVertex *> vertex_set;
+	for (unsigned int i = 0; i < number_of_nodes_; ++i) {
+		PrimsVertex * vertex = new PrimsVertex();
+		vertex->id = i;
+		vertex->x = nodes_[i]->x();
+		vertex->y = nodes_[i]->y();
+		vertex->pv = i;
+		vertex_set.push_back(vertex);
+	}
+	for (unsigned int i = 0; i < number_of_nodes_; ++i) {
+		PrimsVertex * min_vertex = vertex_set[0];
+		for (auto vertex : vertex_set) {
+			if (!vertex->kv && vertex->dv < min_vertex->dv) {
+				min_vertex = vertex;
+			}
+		}
+		min_vertex->kv = true;
+		// printf("min vertex id: %i\n", min_vertex->id);
+		for (auto &vertex : vertex_set) {
+			if (!vertex->kv) {
+				double distance = get_quick_length(min_vertex->x, vertex->x,
+						min_vertex->y, vertex->y);
+				if (distance < vertex->dv) {
+					vertex->dv = distance;
+					vertex->pv = min_vertex->id;
+				}
+			}
+		}
+	}
+	long double total_distance = 0;
+	for (auto vertex : vertex_set) {
+		if (vertex->id != vertex->pv) {
+      PrimsVertex * min_vertex = vertex_set[vertex->pv];
+			total_distance = total_distance + get_length(min_vertex->x, vertex->x,
+                                                   min_vertex->y, vertex->y);
+		}
+	}
+	printf("%.2Lf\n", total_distance);
+	for (auto vertex : vertex_set) {
+		if (vertex->id != vertex->pv) {
+			int lower_id = vertex->id;
+			int higher_id = vertex->pv;
+			if (lower_id > higher_id) {
+				int temp_id = lower_id;
+				lower_id = higher_id;
+				higher_id = temp_id;
+			}
+			printf("%i %i\n", lower_id, higher_id);
+		}
+	}
+}

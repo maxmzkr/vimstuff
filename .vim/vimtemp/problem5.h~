@@ -1,0 +1,11 @@
+#ifndef PROBLEM5_H_
+#define PROBLEM5_H_
+
+struct Node {
+  int value;
+  Node * left;
+  Node * right;
+};
+int closestValue(Node * root, int k);
+
+#endif  // PROBLEM5_H_

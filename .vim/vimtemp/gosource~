@@ -1,0 +1,14 @@
+#!/bin/bash
+#
+# Takes the current path and makes it the gopath
+
+gosource() {
+	echo "${GOPATH}"
+  if [[ "${GOPATH}" ]]; then
+    echo "removing ${GOPATH} from the environment"
+  fi
+  export GOPATH="$(readlink -f $1)"
+  echo "GOPATH is now ${GOPATH}"
+}
+
+gosource $1

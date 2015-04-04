@@ -6,6 +6,12 @@ let g:syntastic_cpp_checkers=['gcc', 'cpplint']
 let g:syntastic_cpp_check_headers=1
 
 " custom pylintrc file
+let g:ycm_register_as_syntastic_checker = 0
+let g:ycm_show_diagnostics_ui = 0
+let g:syntastic_cpp_compiler_options = ' -std=c++11 -stdlib=libc++'
+let g:syntastic_cpp_cpplint_exec = 'cpplint'
+let g:syntastic_cpp_checkers = ['gcc', 'cpplint']
+
 let g:syntastic_python_checkers=['pylint']
 let g:syntastic_python_pylint_args='--rcfile=/home/max/.pylintrc'
 let g:syntastic_python_pylint_post_args = '--rcfile=/home/max/.pylintrc'
@@ -22,4 +28,3 @@ let g:syntastic_auto_loc_list=0
 
 " c++ 11 support
 let g:syntastic_cpp_compiler_options = ' -std=c++11'
-

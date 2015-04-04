@@ -45,6 +45,27 @@ Plugin 'scrooloose/syntastic.git'
 " finds files in git repo
 Plugin 'kien/ctrlp.vim'
 
+" All the go lang stuff you could need
+Plugin 'jnwhiteh/vim-golang'
+
+" sass stuff
+Plugin 'cakebaker/scss-syntax.vim'
+
+" coffee
+Plugin 'kchmck/vim-coffee-script'
+
+" latex
+Plugin 'LaTeX-Box-Team/LaTeX-Box'
+
+<<<<<<< HEAD
+" python
+Plugin 'tell-k/vim-autopep8'
+=======
+" C++
+Plugin 'vim-scripts/google.vim'
+Plugin 'rhysd/vim-clang-format'
+>>>>>>> 0b3f5543e4a84a529573a70697b72ade3debcda8
+
 call vundle#end()
 filetype plugin indent on     " required
 " To ignore plugin indent changes, instead use:

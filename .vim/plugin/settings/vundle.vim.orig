@@ -46,7 +46,6 @@ Plugin 'scrooloose/syntastic.git'
 Plugin 'kien/ctrlp.vim'
 
 " All the go lang stuff you could need
-<<<<<<< HEAD
 Plugin 'jnwhiteh/vim-golang'
 
 " sass stuff
@@ -54,22 +53,18 @@ Plugin 'cakebaker/scss-syntax.vim'
 
 " coffee
 Plugin 'kchmck/vim-coffee-script'
-=======
-Plugin 'fatih/vim-go'
-
-" To be able to deploy to arduino from vim
-" arduino syntax
-Plugin 'vim-scripts/Arduino-syntax-file'
-Plugin 'jplaut/vim-arduino-ino'
-
-Plugin 'madflow/vim-php'
-
-" yaml plugins
-Plugin 'ingydotnet/yaml-vim'
->>>>>>> f6d4308410e033b32d1883bc99406a323f71d13e
 
 " latex
 Plugin 'LaTeX-Box-Team/LaTeX-Box'
+
+<<<<<<< HEAD
+" python
+Plugin 'tell-k/vim-autopep8'
+=======
+" C++
+Plugin 'vim-scripts/google.vim'
+Plugin 'rhysd/vim-clang-format'
+>>>>>>> 0b3f5543e4a84a529573a70697b72ade3debcda8
 
 call vundle#end()
 filetype plugin indent on     " required

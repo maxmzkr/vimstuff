@@ -57,6 +57,9 @@ Plugin 'kchmck/vim-coffee-script'
 " latex
 Plugin 'LaTeX-Box-Team/LaTeX-Box'
 
+" python
+Plugin 'tell-k/vim-autopep8'
+
 " C++
 Plugin 'vim-scripts/google.vim'
 Plugin 'rhysd/vim-clang-format'

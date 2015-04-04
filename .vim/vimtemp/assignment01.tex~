@@ -1,100 +1,139 @@
-\documentclass[11pt]{article}
+\documentclass[12pt]{report}
 
-\usepackage{booktabs}
+\usepackage{apacite}
+\usepackage[us]{datetime}
+\usepackage{fancyhdr}
+\usepackage{lipsum}
 \usepackage[margin=1in]{geometry}
-\usepackage{tikz}
-\usetikzlibrary{arrows,automata,calc}
+\usepackage{mathptmx}
 
-\parindent=.25in
-\parskip=2ex
+% setup the title page
+\title{Assignment \#1}
+\date{\today}
+\author{Max Mizikar\\ 7343 2441}
+
+% setup the headings
+\pagestyle{fancy}
+\lhead{Max Mizikar \\ \today}
+\chead{Assignment \#1 \\}
+\rhead{7343 2441 \\}
+\setlength{\headheight}{30pt}
+
+% set to double spacing
+\linespread{2}
+
+\newcommand\notype[1]{\unskip}
 
 \begin{document}
-\centerline{\huge EECS 376 WS 1}
-\centerline{Max Mizikar}
-\begin{enumerate}
-	\item I don't understand in example 1.15 why the delta's are sub i ($\delta_i$). It seems like it is a very specific function. And the function's i is 3. It is even more confusing when it is saying modulo i. I'd be more comfortable if all the i's were replaced with a 3.
-	\item
-		\begin{tikzpicture}[>=stealth',shorten >=1pt,auto,node distance=2cm,baseline={($(current bounding box.north)-(0,1.6ex)$)}]
-			\node[initial,state,accepting] (q0)               {$q_0$};
-			\node[state,accepting]         (q1) [right of=q0] {$q_1$};
-			\node[state,accepting]         (q2) [right of=q1] {$q_2$};
-			\node[state]                   (q3) [right of=q2] {$q_3$};
+\maketitle
+
+% Definition of heritability
+In psychology, heritability is defined as a measurement of how correlated the variation of a behavioral trait in a environment is to the variation of genes between individuals in the environment~\cite{LECTURE2}.
+In other words, a behavioral trait is only a heritable trait if there is some set of genes that can cause the trait to be more or less prevalent.
+\
+% Definition of heritability is a population construct
+Heritability is a population construct means that we cannot know anything about an individual by their genes.
+We are only able to use heritability to understand the variations in individuals in a given environment~\cite{SCHACTER}.
+This means that we cannot look at a person's DNA and predict a person's behavior because heritability does not look at genes.
+However, we can look at two people with the same DNA and predict how likely it is that their behavior will be the same.
+\
+% Example of heriatibily as a population constrcut
+From the Hock reading we see that when comparing the twins, we were not able to guess whether or not the twins will be intelligent or not intelligent when looking at their genetic make up~\cite{HOCK}.
+However, we are able to tell whether or not genetic make up is correlated to whether or not they are intelligent.
+We see that there is a 70\% correlation between the twins when it comes to intelligence, but we were unable to look at a single individual and predict whether or not the individual is intelligent or not.
+\
+% Definition of heritability is not fate
+Heritability is not fate means that we cannot know that intervening will not change the behavioral trait in the individual~\cite{SCHACTER}.
+What this means is there may be environmental conditions that could cause an individual to completely change their behavioral traits regardless of their genetic makeup.
+This allows for individuals to not be bound by their genes and thus not bound by fate.
+\
+% Example of heritability as not fate
+The twins in \textit{Body Doubles}, then named Lori and Reba, who are conjoined both share the same genes but are completely different.
+Reba shows a great love for writing and playing music while Lori shows little aspiration for doing the same.
+Lori shows a desire for having romantic relationships with men while Reba shows no desire to settle down~\cite{BODYDOUBLES}.
+These two twins who are in the same place at all times and share the same DNA show that it is possible for the twins to have very different behavior.
+These twins show that no matter how much DNA affects our behavior, we will always be shaped by our environment.
 
 
-			\path[->] (q0) edge              node {a,b} (q1)
-						    (q1) edge              node {a,b} (q2)
-						    (q2) edge [bend left]  node {a}   (q0)
-							    	 edge              node {b}   (q3)
-						    (q3) edge [loop below] node {a,b} (q3);
-		\end{tikzpicture}
-		\\
-		(\textit{Q}, $\Sigma$, $\delta$, $\textit{q}_0$, \textit{F})
-		\begin{enumerate}
-			\item $Q = {q_0, q_1, q_2, q_3}$,
-			\item $\Sigma = {0,1}$,
-			\item $\delta$ is described as
-				$$
-				\begin{tabular}{ccc}
-					      & a     & b \\ \midrule
-					$q_0$ & $q_1$ & $q_1$ \\
-					$q_1$ & $q_2$ & $q_2$ \\
-					$q_2$ & $q_1$ & $q_3$ \\
-					$q_3$ & $q_3$ & $q_3$ \\
-				\end{tabular}
-				$$
-		\end{enumerate}
-		\item $L(D) = \{w \in \{0, 1\}*: w \textrm{ has even length and when in blocks of 2 an even number of 01 or 10}\}$
-		\item L \\
-			\begin{tikzpicture}[>=stealth',shorten >=1pt,auto,node distance=2cm,baseline={($(current bounding box.north)-(0,1.6ex)$)}]
-				\node[initial,state,accepting] (q0)               {$q_0$};
-				\node[state]                   (q1) [right of=q0] {$q_0$};
+% Describe the biological perspective
+The biological perspective looks to describe the mind and behavior by understanding brain processes.
+This perspective will look closely at the way the brain functions with electrochemical processes of neurons~\cite{LECTURE1}.
+\
+% Describe the behavioral perspective
+The behavioral perspective looks to describe the effect the environment has on an individual's behavior.
+This perspective looks at behavior that is observable as opposed to subconscious~\cite{LECTURE1}.
+\
+% Jerry and Mark
+Jerry and Mark are identical twins that grew up separately but both became fire fighters and have very similar interests.
+\
+% Provide a specific example from Jerry and Mark for the biological perspective
+Since Jerry and Mark are identical twins, they share the same DNA\@.
+From the biological perspective we could say that they both took on the same career because it was in their DNA\@.
+The biological perspective would say this because it looks at the biology of an individual and not at the experiences that the individual has gone through.
+This means that the biological perspective would only be able to correlate the DNA to the career choice.
+\
+% Provide a specific example from Jerry and Mark for the behavioral perspective
+Jerry and Mark also say that they both lived in incredibly similar households. They say that they lived in blue collar, middle class houses. They list many other similarities.
+The behavioral perspective would say that they had they chose the same career because of the environment that they grew up in.
+The behaviorist would say this because they look at the environment that affects the individual.
+They also do not look at the unbearable, so there would be no correlation between the DNA and the career choice.
 
-				\path[->] (q0) edge              node {0, 1} (q1)
-				          (q1) edge [loop below] node {0, 1} (q1);
-			\end{tikzpicture}
-			\\
-			L'\\
-			\begin{tikzpicture}[>=stealth',shorten >=1pt,auto,node distance=2cm,baseline={($(current bounding box.north)-(0,1.6ex)$)}]
-				\node[initial,state] (q0)               {$q_0$};
 
-				\path[->] (q0) edge [loop below] node {0, 1} (q0);
-			\end{tikzpicture}
-		\item
-			\begin{tikzpicture}[>=stealth',shorten >=1pt,auto,node distance=2cm,baseline={($(current bounding box.north)-(0,1.6ex)$)}]
-				\node[initial,state]   (q0)               {$q_0$};
-				\node[state]           (q1) [right of=q0] {$q_1$};
-				\node[state]           (q2) [right of=q1] {$q_2$};
-				\node[state,accepting] (q3) [right of=q2] {$q_3$};
+% Define freedom from coercion
+Freedom from coercion means that the psychologist performing a study should not force an individual to participate.
+Forcing also includes large monetary incentives~\cite{SCHACTER}.
+Consequences should also be avoided.
+For example, if a student is requested to participate in a study, the student should be given an alternative.
+The student should also be given a way out without consequence if the student ever becomes uncomfortable with the study~\cite{LECTURE1}.
+\
+% Explain how this relates to twin research
+While forcing twins into diverse homes at a young age would be beneficial for scientific studies, it would be unethical to do so.
+The children in the studies would go into different homes.
+One home may be a more deprived environment.
+Since the children were not given the option, they were forced into these homes.
+Since forcing someone into a study, especially one where it may be unbeneficial, is not freedom from coercion, the study would be unethical to do~\cite{LECTURE1}.
+\
+% Define informed consent
+Informed consent is an agreement that an adult or their legal guardians makes that says they understand all the risks or implications of participating in the study~\cite{SCHACTER}.
+\
+% Explain how this relates to twin research
+In twin studies you are studying the effect of genes on psychological behavior of a subject.
+Since both twins have the same genes, there is a chance that information learned about one twin would lead to the other twin learning something they did not want to know.
+If one twin learns that a condition the other twin has is unrelated to genetics may lead the other twin to learning something they did not want to know about their own environment.
+Also, one twin should not be able to be the sole part of the reunion process.
+Both twins should give interest to meeting their twin.
+The emotional response that someone may have to finding out they have had a twin their whole life should never be sprung on them.
+\
+% Define risk benefit analysis
+Risk benefit analysis means that the participant can be asked to accept minor risks.
+The participant should always have the option to decline this after weighing it against the benefit that may come.
+The participant should never be asked to accept major risks.~\cite{SCHACTER}
+\
+% Discuss how it relates to twin research discusesed in course materials
+In twin studies it would be beneficial for science if one was placed in a deprived environment.
+Even though this would be beneficial, it would be extremely unethical.
+The twin that was placed in a deprived environment would likely affected too much by it.
+This is too much of a risk to ask anyone to undertake.
+Especially because the twin would likely be too young to weigh the risk and benefit themselves.
+\
+% Choose a side of the argument
+Although many people undergo horrible treatment when psychological studies are performed, I believe that the studies should not be tossed out.
+% Discuss and support your position
+I agree with Arthur Caplan in that ``Nothing can change that''~\cite{SCHACTER}.
+The people who were part of these studies had a terrible thing happen to them.
+We cannot do anything to make that go away.
+What we can do, however is learn something from the studies.
+I see no reason to toss out information simply because it was obtained forcefully.
+With the prison experiment we were able to learn a lot about ethics in psychology~\cite{LECTURE1}.
+Even though we learned more about ethics than psychology, we were still able to learn about authority.
+It would seem absurd to pretend that there was not real science happening.
+I do not see the difference between human based atrocities and natural ones.
+For example, if someone under went a plane crash, we would readily study the person.
+I feel that being forced into an experience by a human and by a horrible accident are not very different.
+Learning from these studies seems too important to me, but I have always not been that good with empathy, so what do I know.
 
-				\path[->] (q0) edge [loop below] node {1} (q0)
-				               edge              node {0} (q1)
-									(q1) edge [bend left]  node {1} (q0)
-									     edge              node {0} (q2)
-								  (q2) edge [loop below] node {0} (q2)
-									     edge              node {1} (q3)
-								  (q3) edge [loop below] node {0,1} (q3);
-			\end{tikzpicture}
-		\item (\textit{Q}, $\Sigma$, $\delta$, $\textit{q}_0$, \textit{F})
-			\begin{enumerate}
-				\item $Q = {q_0, q_1, q_2, q_3}$,
-				\item $\Sigma = {0,1}$,
-				\item $\delta$ is described as
-					$$
-					\begin{tabular}{ccc}
-									& 0     & 1 \\ \midrule
-						$q_0$ & $q_1$ & $q_0$ \\
-						$q_1$ & $q_2$ & $q_0$ \\
-						$q_2$ & $q_2$ & $q_3$ \\
-						$q_3$ & $q_3$ & $q_3$ \\
-					\end{tabular}
-					$$
-			\end{enumerate}
-		\item Take the DFA for $L$ and then make the starting node an accepting node.
-		\item From the starting node, make m new transistions to m new nodes, one for each node. This now represents all the single length strings. For each new node make m new transistions to m new nodes, one for each node. This now represents all the two length strings possible. Do this $w - 2$ more times. This represents all the w length strings. For each node that represents a string in the language, make this node an accepting node and make all the transistion states for this node loops.\\
-			Base case: Let $A_0 = \{\emptyset\}$ $A_1$ is a regular language
-			Inductive step: Let $A_m$ be the language consiting of the $m^{th}$ element in $L$. Let $P(k) = \{A_0 \cup A_1 \cup \ldots \cup A_k\}$ $P(k + 1) = P(k) \cup A_{k+1}$ Since $P(k)$ is a regular language and $A_{k+1}$ is a regular language then so must $P(k + 1)$\\
-			Therefore, for any language L with n elements where n is finite, then L is a regular language
-		\item B is the set of all strings made up of no elements or any number of elements from the alphabet $\Sigma$. For any element $w \in \Sigma^*$ concatenated with any element
-		\item In the case that $B = \Sigma^*$ then $L = A$. Not sure what to do from there. It probably has to do with removing elements from B which means less elements are in L. Don't know how to prove that this requires that L is regular.
-	\end{enumerate}
+
+% setup the bibliography
+\bibliographystyle{apacite}
+\bibliography{assignment01}
 \end{document}

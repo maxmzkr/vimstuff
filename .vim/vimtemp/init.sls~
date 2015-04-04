@@ -1,5 +1,7 @@
-hibernation_file:
-  file.managed:
-    - name: /etc/polkit-1/localauthority/50-local.d/com.ubuntu.enable-hibernate.pkla
-    - source:
-      - salt://hibernate/hibernate.txt
+dropbox-repo:
+  pkgrepo.managed:
+    - ppa: nautilus-dropbox/ppa
+
+dropbox-install:
+  pkg.installed:
+    - name: nautilus-dropbox 

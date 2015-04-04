@@ -1,76 +1,38 @@
-# enables c++11 on CAEN
-PATH := /usr/um/gcc-4.7.0/bin:$(PATH)
-LD_LIBRARY_PATH := /usr/um/gcc-4.7.0/lib64
-LD_RUN_PATH := /usr/um/gcc-4.7.0/lib64
+CXXFLAGS := -Wall -Werror -g -std=c++11
 
-# designate which compiler to use
-CXX			= g++
-# list of sources used in project
-SOURCES 	= $(wildcard *.cpp)
-# TESTSOURCES 	= $(wildcard *.cc)
-# list of objects used in project
-OBJECTS		= $(SOURCES:%.cpp=%.o)
-# TESTOBJECTS		= $(TESTSOURCES:%.cc=%.o)
-# name of the executable produced by the top level
-EXECUTABLE 	= DroneRouting
-# TESTEXECUTABLE = test
-# name of the tar ball created for submission
-SUBMIT_FILE = submit.tar.gz
+PAGER_OBJS = libvm_pager.a
+PAGER_LIB = os_page_table.o os_page_table_holder.o page_information_entry.o page_information_table.o share_table.o vm_pager.o clock.o
+PAGER = pager.out
 
-#Default Flags
-CXXFLAGS = -std=c++11 -Wall -Werror -Wextra -pedantic -g3
+APP_FLAGS := -ldl
+APP_OBJS = libvm_app.a
+TESTS_SRC = $(wildcard test*.cc)
+TESTS_OBJECTS = $(TESTS_SRC:%.cc=%.o)
+TESTS = $(TESTS_SRC:%.cc=%.out)
+TAGS = .tags
 
-# make release - will compile "all" with $(CXXFLAGS) and the -O3 flag
-#				 also defines NDEBUG so that asserts will not check
-release: CXXFLAGS += -O3 -DNDEBUG
-release: all
+all: $(PAGER_LIB) tests $(PAGER)
 
-# make debug - will compile "all" with $(CXXFLAGS) and the -g flag
-#              also defines DEBUG so that "#ifdef DEBUG /*...*/ #endif" works
-debug: CXXFLAGS += -g3 -DDEBUG
-debug: clean all
+debug: CXXFLAGS += -DDO_VALGRIND
+debug: CXXFLAGS += -DDEBUG_BUILD
+debug: all
 
-debuggdb: CXXFLAGS += -g3 -DNDEBUG
-debuggdb: clean all
+%.o: %.cc
+	$(CXX) $(CXXFLAGS) -c $< $(LDFLAGS)
 
-# make profile - will compile "all" with $(CXXFLAGS) and the -pg flag
-profile: CXXFLAGS += -pg
-profile: clean all
+tests: $(TESTS)
 
-# highest target; sews together all objects into executable
-all: $(OBJECTS) $(TESTOBJECTS)
-	$(CXX) $(CXXFLAGS) $(OBJECTS) -o $(EXECUTABLE)
-	# $(CXX) $(CXXFLAGS) $(filter-out main.o,$(OBJECTS)) $(TESTOBJECTS) -o $(TESTEXECUTABLE)
+test%.o: test%.cc
+	$(CXX) $(CXXFLAGS) -c $< $(LDFLAGS)
 
-# individual dependencies for objects
-# YOU NEED TO ADD YOUR OWN DEPENDENCIES HERE!!!
-driver.o: driver.cpp
-edge.o: edge.cpp
-node.o: node.cpp
-main.o: main.cpp edge.cpp node.cpp driver.cpp
+test%.out: test%.o $(THREADLIB)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(APP_OBJS) $(APP_FLAGS)
 
-# rule for creating objects
-%.o:
-	$(CXX) $(CXXFLAGS) -c $*.cpp
+pager.out: $(PAGER_LIB)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(PAGER_OBJS) $(APP_FLAGS)
 
-# rule for creating objects
-# test.o:
-# 	$(CXX) $(CXXFLAGS) -c test.cc
+tags: 
+	ctags -f $(TAGS) *.h *.cc
 
-# make clean - remove .o files, executable, tarball
 clean:
-	rm -f $(OBJECTS) $(EXECUTABLE) $(SUBMIT_FILE)
-
-# make submit.tar.gz - cleans, runs dos2unix, creates tarball
-MY_FILES=$(wildcard Makefile *.h *.cpp test*.txt)
-$(SUBMIT_FILE): $(MY_FILES)
-	dos2unix $(MY_FILES)
-	tar -vczf $(SUBMIT_FILE) $(MY_FILES)
-
-# shortcut for make submit.tar.gz (make submit)
-submit: submit.tar.gz
-
-# these targets do not create any files
-.PHONY: all release debug profile clean submit
-# disable built-in rules
-.SUFFIXES:
+	rm -f *~ *.out *.o .tags

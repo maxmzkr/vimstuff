@@ -1,42 +1,86 @@
-// This is where we will define how to handle the requests.
-
-#include <string>
-#include <fstream>
 #include <iostream>
+#include <fstream>
+#include <string>
+#include <vector>
 #include "./thread.h"
 #include "./requester.h"
-#include "./server.h"
 
-// We will run until we don't have anymore requests
-void requester(void *void_parameters) {
-  RequesterParameters *requester_parameters =
-      reinterpret_cast<RequesterParameters *>(void_parameters);
+void make_request(std::vector<Request *> *requests, int requester_id,
+                  int request_track, bool *handled, mutex *cout_lock,
+                  cv *put_signal) {
+  auto request = new Request();
+  request->requester_id = requester_id;
+  request->request_track = request_track;
+  request->request_handled = handled;
+  requests->push_back(request);
+  cout_lock->lock();
+  std::cout << "requester " << requester_id << " track " << request_track
+            << std::endl;
+  cout_lock->unlock();
+  *handled = false;
+  cout_lock->lock();
+  cout_lock->unlock();
+  put_signal->signal();
+}
 
-  int requester_number = requester_parameters->requester_number;
-  char *requester_filename = requester_parameters->requester_filename;
-  mutex *requester_lock = requester_parameters->requester_lock;
-  mutex *request_lock = requester_parameters->request_lock;
-  mutex *stdout_lock = requester_parameters->stdout_lock;
-  cv *requester_cv = requester_parameters->requester_cv;
-  std::vector<int> *request_queue = requester_parameters->request_queue;
+void requester(void *arguments) {
+  // Handle arguments
+  auto requester_arguments = static_cast<RequesterArguments *>(arguments);
 
-  std::ifstream requester_file(requester_filename);
-  std::string request_line;
-  while (getline(requester_file, request_line)) {
-    int request_location = std::stoi(request_line);
-    requester_lock->lock();
+  int requester_id = requester_arguments->requester_id;
+  char *filename = requester_arguments->filename;
+  std::vector<Request *> *requests = requester_arguments->requests;
 
-    // Submit the request
-    request_lock->lock();
-    request_queue->push(request_location);
-    // Print the request
-    stdout_lock->lock();
-    std::cout << "requester " << requester_number << " track "
-              << request_location;
-    stdout_lock->unlock();
+  int *files_alive = requester_arguments->files_alive;
+  int *max_requests = requester_arguments->max_requests;
 
-    request_lock->unlock();
-    requester_cv->signal();
-    requester_lock->unlock();
+  mutex *server_lock = requester_arguments->server_lock;
+  mutex *cout_lock = requester_arguments->cout_lock;
+  cv *ready_signal = requester_arguments->submit_signal;
+  cv *put_signal = requester_arguments->put_signal;
+
+  // Open file
+  std::ifstream file;
+  file.open(filename, std::ifstream::in);
+
+  std::string line;
+
+  // read in file
+  cout_lock->lock();
+  cout_lock->unlock();
+  int request_track;
+  auto handled = new bool();
+  *handled = true;
+  while (std::getline(file, line)) {
+    server_lock->lock();
+    // wait for the ability to make a request
+    cout_lock->lock();
+    cout_lock->unlock();
+    while (!(*handled) || requests->size() == *max_requests) {
+      cout_lock->lock();
+      cout_lock->unlock();
+      ready_signal->wait(*server_lock);
+    }
+    cout_lock->lock();
+    cout_lock->unlock();
+
+    // make the request
+    request_track = stoi(line);
+    make_request(requests, requester_id, request_track, handled, cout_lock,
+                 put_signal);
+    server_lock->unlock();
   }
+  server_lock->lock();
+  while (!(*handled)) {
+    ready_signal->wait(*server_lock);
+  }
+  *files_alive = *files_alive - 1;
+  if (*files_alive < *max_requests) {
+    *max_requests = *max_requests - 1;
+  }
+  cout_lock->lock();
+  std::cout << "max_requests " << *max_requests << std::endl;
+  cout_lock->unlock();
+  put_signal->signal();
+  server_lock->unlock();
 }

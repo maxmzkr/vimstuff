@@ -1,4 +1,5 @@
 #include <iostream>
+<<<<<<< HEAD
 
 int main() {
   unsigned int vm_page_size = 4096;
@@ -6,4 +7,30 @@ int main() {
   void* intptr = reinterpret_cast<void*>(reinterpret_cast<char*>(message) /
                                          vm_page_size * vm_page_size);
   std::cout << intptr << std::endl;
+=======
+#include <vector>
+#include <string>
+
+#include "./thread.h"
+
+#include "./fileserver.h"
+#include "./requester.h"
+
+int main(int argc, char *argv[]) {
+  auto max_requests = new int();
+  *max_requests = atoi(argv[1]);
+  if ((argc - 1) < *max_requests) {
+    *max_requests = argc - 1;
+  }
+
+	auto number_of_files = new int();
+  *number_of_files = argc - 2;
+
+  auto fileserver_arguments = new FileserverArguments();
+  fileserver_arguments->number_of_files = number_of_files;
+  fileserver_arguments->filenames = &argv[2];
+  fileserver_arguments->max_requests = max_requests;
+  cpu::boot(9, (thread_startfunc_t)fileserver,
+            reinterpret_cast<void *>(fileserver_arguments), false, false, 0);
+>>>>>>> 658382f7e55b87ce8a8be3e8c63e911f22b3bc1b
 }

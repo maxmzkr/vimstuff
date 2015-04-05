@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 CXXFLAGS := -Wall -Werror -g -j4 -std=c++11
 LDFLAGS := -ldl -pthread
 
@@ -27,3 +28,43 @@ test%.out: test%.o $(THREADLIB)
 clean:
 	rm -f *~ *.out
 	find . -type f -name "*.o" | grep -v "threadsol.o" | xargs rm
+=======
+CXXFLAGS := -Wall -Werror -g -std=c++11
+
+PAGER_OBJS = libvm_pager.a
+PAGER_LIB = os_page_table.o os_page_table_holder.o page_information_entry.o page_information_table.o share_table.o vm_pager.o clock.o
+PAGER = pager.out
+
+APP_FLAGS := -ldl
+APP_OBJS = libvm_app.a
+TESTS_SRC = $(wildcard test*.cc)
+TESTS_OBJECTS = $(TESTS_SRC:%.cc=%.o)
+TESTS = $(TESTS_SRC:%.cc=%.out)
+TAGS = .tags
+
+all: $(PAGER_LIB) tests $(PAGER)
+
+debug: CXXFLAGS += -DDO_VALGRIND
+debug: CXXFLAGS += -DDEBUG_BUILD
+debug: all
+
+%.o: %.cc
+	$(CXX) $(CXXFLAGS) -c $< $(LDFLAGS)
+
+tests: $(TESTS)
+
+test%.o: test%.cc
+	$(CXX) $(CXXFLAGS) -c $< $(LDFLAGS)
+
+test%.out: test%.o $(THREADLIB)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(APP_OBJS) $(APP_FLAGS)
+
+pager.out: $(PAGER_LIB)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(PAGER_OBJS) $(APP_FLAGS)
+
+tags: 
+	ctags -f $(TAGS) *.h *.cc
+
+clean:
+	rm -f *~ *.out *.o .tags
+>>>>>>> 658382f7e55b87ce8a8be3e8c63e911f22b3bc1b

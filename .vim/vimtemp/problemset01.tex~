@@ -102,7 +102,13 @@ be created independently.
 
 
 \subsection*{4.1}
+<<<<<<< HEAD
 aetup:
+=======
+Preface:
+Before looking at the proof I realize that we aren't supposed to do a convoluted proof, but we aren't given a good definition of what we are allowed to use in our proofs so I did a long proof that is mathematical as I could be. I would appreciate as much feedback as possible in the comments for the assignment. To solve this I setup two machines $M$ and $M^R$ where $M^R$ is basically the reverse of $M$. I then, by the definition of $M^R$, the acceptance of a string in $M$, and the acceptance of a string in $M^R$, prove that all $w^R$ is accepted by $M^R$ and for all $w^R$ accepted by $M^R$, $w$ is accepted by $M$. Which then proves that $M^R$ is a NFA that defines $A^R$ which mean $A^R$ is regular.
+Setup:
+>>>>>>> 658382f7e55b87ce8a8be3e8c63e911f22b3bc1b
 Let $A$ be a regular language.\\
 Let $w^R = w_n w_{n-1} \ldots w_1$ where $w = w_1 w_2 \ldots w_n$
 Let $A^R = \{w^R : w \in A\}$\\
@@ -134,11 +140,16 @@ Where:\\
 	r_0^{\prime} &= q_0^\prime\\
 	r_{n+1}^\prime &\in \{q_0\}\\
 	r_{1}^\prime &\in \delta^\prime(r_{0}^{\prime}, \epsilon)\\
+<<<<<<< HEAD
 	r_{i+1} &\in \delta^\prime(r_{i}, w_{i})\text{, for }1 \le i \le n+1\\
+=======
+	r_{i+1} &\in \delta^\prime(r_{i}, w_{i})\text{, for }1 \le i \le n\\
+>>>>>>> 658382f7e55b87ce8a8be3e8c63e911f22b3bc1b
 \end{align*}
 Assume $R^\prime = \{q_0^\prime, r_n, r_{n-1}, \ldots, r_0\}$\\
 $R^\prime$ follows all requirements for acceptance by $M^R$.\\
 \begin{align*}
+<<<<<<< HEAD
 	q_0^\prime =& q_0^\prime&\\
 	r_{0} \in& \{q_0\}\text{\ because by definition of acceptance of }w\text{\ by }M\text{\ }r_0 = q_0\\
 	q_n^\prime \in& \delta^\prime(r_{0}^{\prime\prime}, \epsilon)\text{\ by definition of }M^R\\
@@ -177,6 +188,40 @@ $R$ follows all requirements for acceptance by $M$.\\
 \end{align*}
 \\
 Thus for all $L(M^R) \subset \{w^R : w \in A\}$\\
+=======
+	q_0^\prime &= q_0^\prime\\
+	r_{0} &\in \{q_0\}\text{ because by definition of acceptance of }w\text{ by }M\text{ }r_0 = q_0\\
+	q_n^\prime &\in \delta^\prime(r_{0}^{\prime\prime}, \epsilon)\text{ by definition of }M^R\\
+	r_n &\in F\text{ because }r_n \in F\text{ is a requirement by acceptance in M}\\
+	r_{i-1} &\in \delta^\prime(r_{i}, w_{i-1})\text{, for }1 \le i \le m\\
+	&\text{because }r_i = \delta(r_{i-1}, w_i)\text{, for }1 \le i \le m\text{ due to the acceptance in }M\\
+	&\text{and }\delta^\prime(q,  a) = \{p : q = \delta(p, a)\}\text{ by the definition of }M^R\\
+\end{align*}
+\\
+Thus for all $w \in A$, $w^R$ is accepted by $A^R$ \\
+\\
+Let $w^R = \epsilon w_n w_{n-1} \ldots w_1$ where $w^R \in A^R$.\\
+Since $w^R$ is accepted by $M^R$, there exists a set of states $R^\prime = \{r_0^{\prime\prime}, r_n^\prime, r_{n-1}^\prime, \ldots, r_0^\prime\}$\\
+Where:\\
+\indent $r_0^{\prime\prime} = q_0^\prime$\\
+\indent $r_n^\prime \in \{q_0\}$\\
+\indent $r_n^\prime \in \delta^\prime(r_{0}^{\prime\prime}, \epsilon)$\\
+\indent $r_{i-1} \in \delta^\prime(r_{i}, w_{i-1})$, for $1 \le i \le m$\\
+If $w = w_1 w_2 \ldots w_n$ is accepted by $M$, there exists a set of states $R = \{r_0, r_1, \dots, r_n\}$\\
+Where:\\
+\indent $r_0 = q_0$\\
+\indent $r_n \in F$\\
+\indent $r_i = \delta(r_{i-1}, w_i)$, for $1 \le i \le n$\\
+Assume $R = \{r_0^\prime, r_1^\prime, \ldots, r_n^\prime\}$\\
+$R$ follows all requirements for acceptance by $M$.\\
+\indent $r_0^\prime = q_0$ because $r_0^\prime$ is the accept state in $M^R$.\\
+\indent $r_n \in F$ due to the definiton of acceptance in $M^R$.\\
+\indent $r_i = \delta(r_{i-1}, w_i)$, for $1 \le i \le n$\\
+\indent\indent because $r_{i-1} \in \delta^\prime(r_i, w_{i-1})$, for $1 \le i \le m$ from the defintion of acceptance in $M^R$\\
+\indent\indent and $\delta^\prime(q, a) = \{p : q = \delta(p, a)\}$ by the defintion of $M^R$\\
+\\
+Thus for all $w^R \in A^R$, $w$ is accepted by $A$\\
+>>>>>>> 658382f7e55b87ce8a8be3e8c63e911f22b3bc1b
 \\
 Thus $M^R$ accepts ${w^R : w \in A}$\\
 Thus $A^R$ can be defined by the $M^R$\\

@@ -1,3 +1,9 @@
 let g:netrw_dirhistmax  =10
+<<<<<<< HEAD
 let g:netrw_dirhist_cnt =1
 let g:netrw_dirhist_1='/home/max/gopath/src/github.com/maxmzkr/rl/app'
+=======
+let g:netrw_dirhist_cnt =2
+let g:netrw_dirhist_1='/home/max/school-work/EECS482/dambe.maxmzkr.3'
+let g:netrw_dirhist_2='/home/max/my-salt-states'
+>>>>>>> 658382f7e55b87ce8a8be3e8c63e911f22b3bc1b

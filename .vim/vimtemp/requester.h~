@@ -1,23 +1,40 @@
-// This is where the request logic will be defined. Mostly used for defining
-// what the arguments are that will be passed to requester
+// A requester is something that makes a request. The requester should be able
+// to handle the act of making a request.
 
 #ifndef REQUESTER_H_
 #define REQUESTER_H_
 
+#include <iostream>
+#include <fstream>
 #include <string>
 #include <vector>
 #include "./thread.h"
 
-struct RequesterParameters {
-  int requester_number;
-  char *requester_filename;
-  mutex *requester_lock;
-  mutex *request_lock;
-  mutex *stdout_lock;
-  cv *requester_cv;
-	std::vector<int> request_queue;
+struct Request {
+  int requester_id;
+  int request_track;
+  bool *request_handled;
 };
 
-void requester(void *void_parameters);
+struct RequesterArguments {
+  int requester_id;
+  char *filename;
+  std::vector<Request *> *requests;
+
+  bool *handled;
+  int *files_alive;
+  int *max_requests;
+
+  mutex *server_lock;
+  mutex *cout_lock;
+  cv *submit_signal;
+  cv *put_signal;
+};
+
+void make_request(std::vector<Request *> requests, int requester_id,
+                  int request_track, bool *handled, mutex *cout_lock,
+                  cv *put_signal);
+
+void requester(void *arguments);
 
 #endif  // REQUESTER_H_

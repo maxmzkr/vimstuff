@@ -1,3 +1,0 @@
-name=pipelight-multi-add
-scripts=["scripts/pipelight-multi-add.sh"]
-followups=["sudo-apt-add.program"]

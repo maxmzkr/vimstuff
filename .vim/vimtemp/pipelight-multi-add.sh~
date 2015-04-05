@@ -1,4 +1,0 @@
-#!/bin/bash
-#
-# Adds pipelight so that netflix desktop will work properly
-sudo apt-add-repository ppa:pipelight/stable

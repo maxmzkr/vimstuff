@@ -1,7 +1,0 @@
-.topbar-bar {
-	background-color: blue;
-
-	/* dimensions */
-	height: 20px;
-	width: 100%;
-}

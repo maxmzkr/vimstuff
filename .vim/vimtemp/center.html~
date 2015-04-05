@@ -1,7 +1,0 @@
-{{define "center"}}
-	<div class="center-wrapper">
-    <div class="center-content">
-      {{.Content}}
-    </div>
-	</div>
-{{end}}

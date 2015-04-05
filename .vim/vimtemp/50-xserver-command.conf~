@@ -1,3 +1,0 @@
-[SeatDefaults]
-# Dump core
-xserver-command=X -core

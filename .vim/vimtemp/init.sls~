@@ -1,7 +1,0 @@
-dropbox-repo:
-  pkgrepo.managed:
-    - ppa: nautilus-dropbox/ppa
-
-dropbox-install:
-  pkg.installed:
-    - name: nautilus-dropbox 

@@ -1,7 +1,0 @@
-$logo-medium-height: 100px;
-$logo-medium-width: $logo-medium-width;
-
-.logo-medium {
-	height: $logo-medium-height;
-	width: $logo-medium-width;
-}

@@ -1,9 +1,0 @@
-package handlers
-
-import (
-  "fmt"
-)
-
-func RootHandler(w http.ResponseWriter, r *http.Request) {
-  fmt.Fprintf(w, "root")
-}

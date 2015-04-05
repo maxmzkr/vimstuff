@@ -1,5 +1,0 @@
-@import "colors"
-
-#slide1 {
-	background-color: $orange;
-}

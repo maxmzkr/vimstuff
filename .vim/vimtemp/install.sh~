@@ -1,7 +1,0 @@
-#!/bin/bash
-#
-# Used to run the install script
-
-script_dir=${BASH_SOURCE%/*}
-python=$(which python)
-sudo SSH_AUTH_SOCK=${SSH_AUTH_SOCK} $python ${script_dir}/../first_start/make.py

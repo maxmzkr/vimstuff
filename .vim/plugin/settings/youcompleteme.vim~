@@ -1,7 +1,0 @@
-" youcompleteme.vim
-" /home/max/.vim/plugins/settings/youcompleteme.vim
-" 
-" used to setup youcompleteme settings
-
-" blacklist some files
-let g:ycm_extra_conf_globlist = ['!*.go']

@@ -1,5 +1,0 @@
-[SeatDefaults]
-user-session=ubuntu
-# START managed zone synergy-server-autostart -DO-NOT-EDIT
-greeter-setup-script=/usr/bin/synergys --config /etc/synergy.conf
-# END managed zone synergy-server-autostart --

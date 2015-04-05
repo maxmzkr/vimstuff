@@ -1,0 +1,30 @@
+#include <iostream>
+#include "./thread.h"
+#include "./thread_impl.h"
+#include "./cv.h"
+#include "./cv_impl.h"
+
+cv::impl::impl() {}
+
+void cv::impl::add_waiting_thread(thread::impl* add_thread) {
+  waiting_queue.push(add_thread);
+}
+
+thread::impl* cv::impl::get_waiting_thread() {
+  thread::impl* waiting_thread = waiting_queue.front();
+  waiting_queue.pop();
+  return waiting_thread;
+}
+
+bool cv::impl::waiting_thread() { return !waiting_queue.empty(); }
+
+void cv::impl::release_waiting_thread() {
+  if (waiting_thread()) {
+    // take off the first waiting thread
+    thread::impl* wait_thread = get_waiting_thread();
+    wait_thread->set_blocked(false);
+
+    // add to ready queue
+    thread::impl::add_ready_thread(wait_thread);
+  }
+}

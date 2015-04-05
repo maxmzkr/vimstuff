@@ -1,0 +1,25 @@
+#include "./os_page_table.h"
+#include "./os_page_table_holder.h"
+
+pid_t OSPageTableHolder::current_pid() {
+  return current_pid_;
+}
+
+void OSPageTableHolder::set_current_pid(pid_t pid) {
+  current_pid_ = pid;
+}
+
+OSPageTable* OSPageTableHolder::get_page_table(pid_t pid) {
+  return os_page_table_list_.find(pid)->second;
+}
+
+OSPageTable* OSPageTableHolder::get_current_page_table() {
+  return os_page_table_list_.find(current_pid_)->second;
+}
+
+void OSPageTableHolder::add_page_table(pid_t pid, OSPageTable* os_page_table) {
+  os_page_table_list_[pid] = os_page_table;
+}
+
+pid_t OSPageTableHolder::current_pid_ = 0;
+std::unordered_map<pid_t, OSPageTable*> OSPageTableHolder::os_page_table_list_;

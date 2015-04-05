@@ -1,0 +1,530 @@
+import collections
+import datetime
+import string
+import json
+import os.path
+from collections import defaultdict
+import itertools
+
+import builder
+import dateutil
+
+import deepy.impala.tables as impala_tables
+import deepy.build.deepy_targets
+import deepy.build.deepy_expanders
+from deepy.build.deepy_util import basic_substitution, deepy_substitution
+import builder.jobs
+import deepy.cfg
+import deepy.log
+
+class BundleState(builder.jobs.TimestampExpandedJobState):
+    """A state that should always run because bundles should pretty much always
+    run
+    """
+    def __init__(self, job, unique_id, build_context, cache_time, curfew,
+                 config=None):
+        if cache_time is None:
+            cache_time = "2h"
+        super(BundleState, self).__init__(job, unique_id, build_context,
+                                          cache_time, curfew, config=config)
+    # def get_should_run(self, build_graph, cached=True, cache_set=None):
+    #     return True
+
+    # def get_should_run_immediate(self, build_graph, cached=True):
+    #     return True
+
+    # def get_parents_should_not_run(self, build_graph, cache_time, cached=True,
+    #                                cache_set=None):
+    #     return True
+
+class DeepyJob(builder.jobs.Job):
+    """Used to give the jobs the command replacement"""
+    meta = {}
+
+    def __init__(self, config=None):
+        super(DeepyJob, self).__init__(config=config)
+
+    def get_state_type(self):
+        return builder.jobs.JobState
+
+    def get_dimensions(self, build_context=None):
+        """Returns all the dimensions the job has in list form"""
+        if build_context is None:
+            build_context = {}
+
+        return []
+
+    def get_local_only(self):
+        """Returns if the the job should only be run on the local machine"""
+        return False
+
+
+
+
+class DeepyTimestampExpandedJob(DeepyJob, builder.jobs.TimestampExpandedJob):
+    """A timestamp expanded form of deepy job"""
+    def get_state_type(self):
+        return builder.jobs.TimestampExpandedJobState
+
+    def expand(self, build_context):
+        job_type = self.get_state_type()
+        expanded_contexts = (deepy.build.deepy_expanders
+                                  .DeepyTimestampExpander
+                                  .expand_build_context(
+                                            build_context,
+                                            self.get_expandable_id(),
+                                            self.file_step))
+
+        expanded_nodes = []
+        for expanded_id, build_context in expanded_contexts.iteritems():
+            expanded_node = job_type(self, expanded_id,
+                                     build_context, self.cache_time,
+                                     self.curfew, config=self.config)
+            expanded_nodes.append(expanded_node)
+
+        return expanded_nodes
+
+
+class DeepyDictJob(DeepyTimestampExpandedJob):
+    def __init__(self, rule_id, rules_db, config=None,
+                 expander=deepy.build.deepy_expanders.DeepyTimestampExpander):
+        super(DeepyDictJob, self).__init__(config=config)
+        self.unexpanded_id = rule_id
+        self.rule_id = rule_id
+        self.rules_db = rules_db
+        self.expander = expander
+        self.rule = self.rules_db[self.rule_id]
+
+
+        # get the file step using a process that can handle many revisions of
+        # file_step
+        self.file_step = self.rule.get("file_step",
+                                       self.rule.get("make_time_step",
+                                                     self.rule.get("time_step",
+                                                                   None)))
+        self.time_step = self.rule.get("time_step", self.file_step)
+
+        self.cache_time = self.rule.get("cache_time")
+        self.curfew = self.rule.get("curfew", "12h")
+        self.target_type = self.rule.get("target_type", "normal")
+
+        base_datetime = datetime.datetime.now()
+        max_relative_delta = dateutil.relativedelta.relativedelta(minutes=5)
+        max_file_step = "5min"
+
+    def get_state_type(self):
+        """Returns what type of job state the job should expand to"""
+        if self.get_type() == "bundle":
+            return BundleState
+        elif "meta" in self.get_type():
+            return builder.jobs.MetaJobState
+        return builder.jobs.TimestampExpandedJobState
+
+    def get_type(self):
+        """Returns what type of job this is
+        possible:
+            job: A normal job
+            meta: A job that is used for specifying multiple jobs
+            target: A job that only specifies a target
+        """
+        if self.rule.get("type") != "bundle":
+            if self.rule.get("recipe", [None])[0] is not None:
+                return "job"
+            elif self.get_targets()["produces"]:
+                return "target"
+            else:
+                return "meta"
+        else:
+            if self.rule.get("recipe", [None])[0] is not None:
+                return "bundle"
+            else:
+                return "bundle_meta"
+
+    def get_command(self, unique_id, build_context, build_graph):
+        return self._replace_command(
+                self.rule.get("recipe", [None])[0], unique_id, build_context,
+                build_graph)
+
+    def get_id(self):
+        return self.rule_id
+
+    def get_dependencies(self, build_context=None):
+        dependencies = {}
+        depends = []
+        depends_one_or_more = []
+
+        definition = self.rules_db[self.rule_id]
+        for rule_id, time_step in definition.get('depends', {}).iteritems():
+            if not rule_id in self.rules_db:
+                raise ValueError("Job {} depends on a non-existent job {}".format(self.unexpanded_id, rule_id))
+            dependency = DeepyDictJob(rule_id, self.rules_db,
+                                      config=self.config,
+                                      expander=self.expander)
+            targets = dependency.get_targets()
+            depends = depends + targets["produces"]
+
+        for rule_id, time_step in definition.get('depends_one_or_more', {}).iteritems():
+            dependency = DeepyDictJob(rule_id, self.rules_db,
+                                      config=self.config,
+                                      expander=self.expander)
+            targets = dependency.get_targets()
+            depends_one_or_more = depends_one_or_more + targets["produces"]
+
+        for rule_id, rule in definition.get('depends_past', {}).iteritems():
+            dependency = DeepyDictJob(rule_id, self.rules_db,
+                                      config=self.config,
+                                      expander=self.expander)
+            targets = dependency.get_targets()
+            for target in targets["produces"]:
+                target.past = rule.get("past", 0)
+            depends = depends + targets["produces"]
+
+        if depends:
+            dependencies['depends'] = depends
+
+        if depends_one_or_more:
+            dependencies['depends_one_or_more'] = depends_one_or_more
+
+        return dependencies
+
+    def get_alternates(self):
+        definition = self.rules_db[self.rule_id]
+        alternate_ids = definition.get("alternates", [])
+        alternates = []
+        for alternate_id in alternate_ids:
+            alternates.append(self.expander(
+                    deepy.build.deepy_targets.DeepyS3BackedLocalFileSystemTarget,
+                    alternate_id, self.file_step, self.time_step,
+                    meta={'alias': self.rule_id}))
+
+        return alternates
+
+    def get_targets(self, build_context=None):
+        definition = self.rules_db[self.rule_id]
+        target_id = definition.get('target')
+
+        targets = {'produces':[], 'alternates':[], 'untracked': []}
+        target_type = 'produces'
+        if target_id:
+            if self.target_type == "normal":
+                targets[target_type].append(self.expander(
+                    deepy.build.deepy_targets.DeepyS3BackedLocalFileSystemTarget,
+                    target_id, self.file_step, self.time_step,
+                    meta={'alias':self.rule_id})
+                )
+            elif self.target_type == "glob":
+                targets[target_type].append(self.expander(
+                    deepy.build.deepy_targets.DeepyS3BackedGlobLocalFileSystemTarget,
+                    target_id, self.file_step, self.time_step,
+                    meta={'alias':self.rule_id})
+                )
+            else:
+                raise Exception("There is no target type {}".format(self.target_type))
+
+        # Get all of the back-referenced target-only nodes
+        if definition.get('marker'):
+            target_type = 'untracked'
+        for rule_id, rule in self.rules_db.iteritems():
+            if rule.get('depends', {}).get(self.rule_id) and rule.get('target') and (not rule.get('recipe')):
+                # Add target
+                rule_job = DeepyDictJob(rule_id, self.rules_db,
+                        config=self.config, expander=self.expander)
+                rule_targets = rule_job.get_targets()
+                targets[target_type] = (targets['untracked'] +
+                        rule_targets['produces'])
+
+
+        if (not targets["produces"] and
+                self.rule.get("recipe", [None])[0] is not None):
+            deepy.log.warn("{} has a recipe but no target".format(self.rule_id))
+
+        targets["alternates"] = self.get_alternates()
+
+        return targets
+
+    def get_dimensions(self, build_context=None):
+        return self.rule.get('dimensions') or []
+
+    def _replace_command(self, command, unique_id, build_context, build_graph):
+        """Used to replace all of the formatting on the string used for
+        recipes
+        """
+        got_format_args = False
+
+        if "$@" in command:
+            target_edges = build_graph.out_edges(unique_id)
+            target_edges = filter(lambda x: build_graph.get_edge_data(*x).get('label') == 'produces', target_edges)
+            targets = " ".join(map(lambda x: x[1], target_edges))
+            command = command.replace("$@", targets)
+
+        dependencies = []
+        for depends_node in build_graph.predecessors(unique_id):
+            for dependency_id in build_graph.predecessors(depends_node):
+                dependency_id = dependencies.append(dependency_id)
+
+        while True:
+            new_command = basic_substitution(
+                command, build_context["start_time"])
+            new_command = deepy_substitution(new_command, config=deepy.cfg)
+
+            try:
+                new_command = new_command.format()
+                command = new_command
+                break
+            except:
+                if got_format_args == False:
+                    format_args, new_command = self._get_format_args(
+                            dependencies, new_command, build_context,
+                            build_graph)
+                    got_format_args = True
+                new_command = new_command.format(**format_args)
+                command = new_command
+
+        if "$^" in command:
+            prerequisites_string = " ".join(dependencies)
+            command = command.replace("$^", prerequisites_string)
+        if "$D" in command:
+            dimensions = self._get_list_merge("dimensions")
+            dimensions = ",".join(dimensions)
+            command = command.replace("$D", dimensions)
+        if "$A" in command:
+            user_args = build_context.get('user_args') or []
+            user_args = " ".join(user_args)
+            command = command.replace("$A", user_args)
+
+        command = str(command)
+        return command
+
+    def _get_substitution_lookup(self, build_context, build_graph):
+        lookup = defaultdict(list)
+        for job_id, job_dict in build_graph.rule_dependency_graph.node.iteritems():
+            job = job_dict.get('object')
+            if not job:
+                raise ValueError(
+                    "Rule with ID {} is invalid. Remove it from the make rules database. Content: {}".format(
+                        job_id, job_dict))
+
+            job = job_dict['object']
+            if not isinstance(job, builder.jobs.Job): continue
+            targets = job.get_targets()
+            for target_set in itertools.chain(*targets.values()):
+                for expanded_target in target_set.expand(build_context):
+                    lookup[target_set.meta.get('alias')].append((job, expanded_target))
+        return lookup
+
+    def _get_format_args(self, dependencies, command, build_context, build_graph):
+        """Returns a dict of the form
+        {"class_id": [dependencies, ...], ...}
+        """
+        string_formatter = string.Formatter()
+        object_dict = {}
+        dependency_dict = collections.defaultdict(list)
+        lookup = self._get_substitution_lookup(build_context, build_graph)
+
+        for item in string_formatter.parse(command):
+            job_id = item[1]
+            targets = lookup[job_id]
+
+            for job, expanded_target in targets:
+                dependency_dict[job_id].append(expanded_target.unique_id)
+
+        for dependency_id, dependency_list in dependency_dict.iteritems():
+            dependency_dict[dependency_id] = " ".join(dependency_list)
+
+        return dependency_dict, command
+
+    def _get_list_merge(self, key):
+        """Merges in the extend and remove dictionarys"""
+        val = self.rule.get(key, [])
+        # Copy the list so we don't modify the original.
+        val = val[:]
+        ext = self.rule.get(key + '.extend')
+        rem = self.rule.get(key + '.remove')
+        if ext is not None:
+            # preserve order and make unique
+            val += [x for x in ext if x not in val]
+        if rem is not None:
+            val = [x for x in val if x not in rem]
+        return val
+
+    def get_local_only(self):
+        return self.rule.get("local_only", False)
+
+    def expand(self, build_context):
+        job_type = self.get_state_type()
+        expanded_contexts = (deepy.build.deepy_expanders
+                                  .DeepyTimestampExpander
+                                  .expand_build_context(
+                                            build_context,
+                                            self.get_expandable_id(),
+                                            self.file_step))
+        expanded_nodes = []
+        for expanded_id, build_context in expanded_contexts.iteritems():
+            if job_type == builder.jobs.JobState:
+                expanded_node = job_type(self, expanded_id,
+                                         build_context, self.cache_time,
+                                         config=self.config)
+            else:
+                expanded_node = job_type(self, expanded_id,
+                                         build_context, self.cache_time,
+                                         self.curfew, config=self.config)
+            expanded_nodes.append(expanded_node)
+        return expanded_nodes
+
+    def __repr__(self):
+        return str(json.dumps(self.rules_db[self.rule_id], indent=2))
+
+
+class DeepyHourJob(DeepyJob):
+    """Used to default to a 12 hour curfew"""
+    curfew = "12h"
+
+
+class DeepyCachedJob(DeepyJob):
+    """Used to default to a 2 hour cache"""
+    cache_time = "2h"
+
+class DeepyImpalaCompactionJob(DeepyTimestampExpandedJob):
+    """Used to compact impala targets"""
+    def __init__(self, dataset_name, time_step, curfew="6h", config=None):
+        if config is None:
+            config = {}
+
+
+        super(DeepyImpalaCompactionJob, self).__init__(config=config)
+
+        self.unexpanded_id = "deepfield_{}_step{}_compaction".format(
+                dataset_name, time_step)
+        self.dataset_name = dataset_name
+        self.time_step = time_step
+
+        self.table_manager = self._get_table_manager()
+
+        self.file_step = self.table_manager.compacted_file_step
+        self.curfew = curfew
+
+    def _get_table_manager(self):
+        """returns a table manager related to the impala dataset"""
+        return impala_tables.make_cube_data_manager(self.dataset_name,
+                                                    self.time_step)
+
+    def get_dependencies(self, build_context=None):
+        depends_name = "deepfield_{}_step{}_%Y-%m-%d-%H-%M".format(
+                self.dataset_name, self.time_step)
+        return {
+            "depends_one_or_more": [
+                deepy.build.deepy_expanders.DeepyImpalaExpander(
+                        depends_name, self.time_step, self.time_step,
+                        self.dataset_name)
+            ]
+        }
+
+    def get_targets(self, build_context=None):
+        produces_name = "deepfield_{}_step{}_compacted_%Y-%m-%d-%H-%M".format(
+                self.dataset_name, self.time_step)
+        return {
+            "produces": [
+                deepy.build.deepy_expanders.DeepyImpalaExpander(
+                        produces_name, self.time_step, self.file_step,
+                        self.dataset_name, compacted=True)
+            ]
+        }
+
+    def get_command(self, unique_id, build_context, build_graph):
+        start_time = build_context["start_time"].format("YYYY-MM-DD-HH-mm")
+        end_time = start_time
+        time_step = int(deepy.timerange.convert_to_timedelta(
+                self.time_step).total_seconds())
+        return "compact_cubes.py -i {} -s {} -e {} --step {}".format(
+                self.dataset_name, start_time, end_time, time_step)
+
+
+class ImpalaViewUpdate(DeepyJob):
+    """Used to update the view of impala cubes"""
+    def __init__(self, dataset_name, time_step, config=None):
+        if config is None:
+            config = {}
+
+        super(ImpalaViewUpdate, self).__init__(config=config)
+
+        self.unexpanded_id = "deepfield_{}_step{}_view".format(dataset_name,
+                                                               time_step)
+        self.dataset_name = dataset_name
+        self.time_step = time_step
+
+    def get_command(self, unique_id, build_context, build_graph):
+        time_step = int(deepy.timerange.convert_to_timedelta(
+                self.time_step).total_seconds())
+        return "update_view.py -i {} --step {}".format(self.dataset_name,
+                                                       time_step)
+
+class InsertCube(DeepyTimestampExpandedJob):
+    """Used to template a insert cube job"""
+    def __init__(self, dataset_name, time_step, rules_db, pattern, config=None):
+        if config is None:
+            config = {}
+
+        super(InsertCube, self).__init__(config=config)
+
+        self.unexpanded_id = "deepfield_{}_step{}_insert".format(dataset_name,
+                                                                 time_step)
+        self.cube_name = ""
+
+        for rule_id, rule in rules_db.iteritems():
+            meta = rule.get("meta", {})
+            cube_id = meta.get("cube_id", {})
+            if cube_id == dataset_name:
+                file_step = rule.get("file_step", "5min")
+                file_step = deepy.timerange.convert_to_timedelta(file_step)
+                expected_file_step = deepy.timerange.convert_to_timedelta(
+                        time_step)
+                if file_step == expected_file_step:
+                    self.cube_name = rule_id
+                    break
+
+
+        self.dataset_name = dataset_name
+        self.time_step = time_step
+        self.rules_db = rules_db
+        self.file_step = time_step
+        self.pattern = pattern
+        if self.cube_name == "":
+            deepy.log.critical("Could-not-match-cube-name-for-impala-insert-target-{}".format(dataset_name))
+            deepy.log.critical("check-slice-config-for-errors")
+
+    def get_dependencies(self, build_context=None):
+        expander = deepy.build.deepy_expanders.DeepyTimestampExpander
+        if self.pattern is not None:
+            path = os.path.join("$(cache_dir)", self.pattern,
+                                "cube.%Y-%m-%d-%H-%M.h5")
+            return {
+                "depends": [
+                    expander(
+                        deepy.build.deepy_targets.DeepyS3BackedLocalFileSystemTarget,
+                        path, self.file_step, self.time_step)
+                ]
+            }
+
+        dependency = DeepyDictJob(
+                self.cube_name, self.rules_db, config=self.config,
+                expander=expander)
+        dependency_targets = dependency.get_targets()
+        return {
+            "depends": dependency_targets["produces"],
+        }
+
+    def get_targets(self, build_context=None):
+        depends_name = "deepfield_{}_step{}_%Y-%m-%d-%H-%M".format(
+                self.dataset_name, self.time_step)
+        return {
+            "produces": [
+                deepy.build.deepy_expanders.DeepyImpalaExpander(
+                    depends_name, self.time_step, self.time_step,
+                    self.dataset_name)
+            ]
+        }
+
+    def get_command(self, unique_id, build_context, build_graph):
+        insert_cubes = build_graph.get_dependencies(unique_id)
+        insert_cubes = " ".join(insert_cubes)
+        return "insertcube.py -i {}".format(insert_cubes)

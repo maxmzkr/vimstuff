@@ -1,0 +1,29 @@
+#include <sys/types.h>
+#include <unistd.h>
+#include "./vm_app.h"
+
+int main() {
+  char * p = reinterpret_cast<char *>(vm_extend(0));
+  while (p != nullptr) {
+    p[0] = 'a';
+    if (p >= reinterpret_cast<void *>(0x601FE000)) {
+      break;
+    }
+    p = reinterpret_cast<char *>(vm_extend(0));
+  }
+
+  pid_t pid = fork();
+  if (pid == 0) {
+    pid_t pid = fork();
+    if (pid == 0) {
+      return 0;
+    } else {
+      vm_extend(0);
+      vm_extend(0);
+      vm_extend(0);
+      return 0;
+    }
+  } else {
+    return 0;
+  }
+}

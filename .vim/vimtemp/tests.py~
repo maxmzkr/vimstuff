@@ -1,0 +1,12 @@
+import arrow
+import deepy.build.deepy_build
+
+def main():
+    build_manager = deepy.build.deepy_build.DeepyBuildManager()
+    build = build_manager.make_build()
+    build.add_job("cubes_from_h5flow_5min", {"start_time": arrow.get()})
+    build.add_job("cubes_from_h5flow_5min", {"start_time": arrow.get()})
+    build.add_job("cubes_from_h5flow_5min", {"start_time": arrow.get()})
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,5 @@
+#!/bin/bash
+#
+# Installs ycm
+cd ~/.vim/bundle/YouCompleteMe
+./install.sh --clang-completer

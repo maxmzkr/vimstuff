@@ -1,0 +1,325 @@
+#!/usr/bin/env python
+
+import testing
+import argparse
+import os, sys, re
+import deepy.cfg
+import deepy.log as log
+import testing.fixtures
+import testing.util
+import subprocess
+import importlib
+import platform
+import nose
+import funcy
+from nose.util import isclass, tolist
+from nose.loader import defaultTestLoader
+from nose.config import Config, all_config_files
+
+d = os.path.dirname
+HOME = os.path.join(d(d(d(d(os.path.abspath(__file__))))))
+
+# Sub command functions
+def fixture(args):
+
+    if args.subcommand_name == "import":
+        testing.fixtures.import_fixture_from_deployment(args.deployment, args.id, args.cube, start = args.start, stop = args.stop, step = int(args.step))
+    elif args.subcommand_name == "create":
+        if args.id is None:
+            print "Fixture ID must be specified through -i or --id"
+            sys.exit(1)
+        if len(args.inputs) == 0:
+            print "No input files specified, exiting"
+            sys.exit(1)
+        testing.fixtures.save_files_to_fixture(args.id, args.inputs)
+    elif args.subcommand_name == "list":
+        print "Available Fixtures:"
+        for fixture_id in testing.fixtures.list_fixtures():
+            print '\t', fixture_id
+    elif args.subcommand_name == "sync":
+        if args.id is None:
+            print "Synchronizing fixtures"
+            testing.fixtures.sync_all_fixtures()
+        else:
+            print "Synchronizing fixtures: {}".format(' '.join(args.id))
+            map(testing.fixtures.sync_fixture, args.id)
+        print "Fixture synchronization complete"
+    elif args.subcommand_name == "delete":
+        fixture_id = args.fixture_id[0]
+        choice = raw_input("Are you sure you want to delete {} (y/[n])? ".format(fixture_id)).lower()
+        if choice == 'y':
+            print "Deleting fixture with id '{}'".format(fixture_id)
+            testing.fixtures.delete_fixture(fixture_id)
+
+    elif args.subcommand_name == "mock-configuration":
+        if not args.deployment_id:
+            print "Must specify deployment id"
+            sys.exit(1)
+
+        testing.util.make_configuration_fixture(args.deployment_id)
+
+def _run_nose_tests(tests, profile=False, attrs=None, force_coverage=False, verbose=False, xml_output=None, with_socket_reporter=False, with_memoryusage=False):
+    try:
+        import faulthandler
+        faulthandler.enable()
+    except ImportError, e:
+        pass
+    from testing.nose_plugins import MemoryUsagePlugin, SubprocessTestPlugin, SocketTestReporterPlugin
+
+    os.chdir(HOME)
+    nose_config = testing.util.get_nose_config_file()
+    nose_args = [sys.argv[0], '-c', nose_config]
+
+    if profile:
+        nose_args.append("--with-profile")
+    elif (not attrs and len(tests) == 0) or force_coverage:
+        nose_args.append("--with-cov")
+        nose_args.append("--cover-html")
+
+    if verbose:
+        nose_args.append('-s')
+        nose_args.append('--verbosity=3')
+
+    if xml_output:
+        nose_args.append('--with-xunit')
+        nose_args.append('--xunit-file={}'.format(xml_output))
+
+    if attrs is not None:
+        nose_args.append('-A')
+        attrs_arg = ' or '.join(funcy.filter(attrs, attrs.keys()))
+        if attrs_arg:
+            nose_args.append(attrs_arg)
+        else:
+            nose_args.append('not workday')
+
+    plugins = [MemoryUsagePlugin()]
+    if with_socket_reporter:
+        plugins.append(SocketTestReporterPlugin())
+    else:
+        plugins.append(SubprocessTestPlugin())
+
+    if with_memoryusage:
+        nose_args.append('--with-memoryusage')
+
+
+
+    nose_args = nose_args + tests
+
+    test_program = nose.core.TestProgram(argv=nose_args, exit=False, addplugins=plugins)
+    return test_program
+
+def _get_code_dir():
+    platform_name = platform.uname()[0]
+    if platform_name.lower() == "darwin":
+        return '/vagrant'
+    else:
+        return HOME
+
+def _get_pipedream_hood():
+    platform_name = platform.uname()[0]
+    if platform_name.lower() == "linux":
+        return os.environ.get('PIPEDREAM_HOOD')
+    else:
+        return '/pipedream_hood'# Where it's mounted in vagrant VM
+
+def run(args):
+    os.chdir(HOME)
+    if args.docker:
+        # docker run -i -t -v `pwd`:`pwd` -v /pipedream_hood/:/pipedream_hood/  pipedream:dev sudo -u support -H bash -i -l  -c 'sudo chown -R support /home/support/pipedream /pipedream_hood && cd /home/support/pipedream && scons && source setup.sh && pdtest.py run'
+
+        docker_cmd = ['docker', 'run', '-i', '-t']
+
+        if 'PIPEDREAM_HOOD' in os.environ:
+            docker_cmd += ['-v', '{}:/pipedream_hood'.format(_get_pipedream_hood())]
+        if not args.no_mount_code:
+            docker_cmd += ['-v', '{}:/home/support/pipedream'.format(_get_code_dir())]
+        docker_cmd += ['pipedream:dev']
+
+
+        docker_cmd += ['sudo', '-u', 'support', '-H', 'bash', '-i', '-l', '-c']
+        sys_args = sys.argv[1:]
+        sys_args.remove("--docker")
+
+        build_cmd = "cd /home/support/pipedream && source setup.sh"
+        if args.build:
+            build_cmd = build_cmd + " && scons"
+        if args.install:
+            build_cmd = build_cmd + " && sudo scons install"
+
+        build_cmd += " && pdtest.py " + " ".join(sys_args)
+        docker_cmd += [build_cmd]
+        print docker_cmd
+        print " ".join(docker_cmd)
+        return subprocess.call(docker_cmd)
+
+    attrs = None
+    if not args.all:
+        attrs = {}
+        if args.unit:
+            attrs['unit'] = True
+        if args.integration:
+            attrs['integration'] = True
+        if args.workday:
+            attrs['workday'] = True
+
+    if args.list:
+        print "Available tests:"
+        stdout = sys.stdout
+        attrs_keys = attrs.keys() if attrs else None
+        for test_name in sorted(testing.util.list_nose_tests(args.tests, include_attrs=attrs_keys)):
+            print >> stdout, test_name
+        sys.exit(0)
+
+    test_program = _run_nose_tests(args.tests, profile=False, attrs=attrs,
+            force_coverage=args.force_coverage, verbose=args.verbose, xml_output=args.xml, with_socket_reporter=args.with_socket_reporter, with_memoryusage=args.with_memoryusage)
+    if not test_program.success:
+        sys.exit(-1)
+
+
+def style(args):
+    os.chdir(HOME)
+    if len(args.runlist) > 0:
+        runlist = args.runlist
+    else:
+        default_packages = ['deepy']
+        default_modules = ['bgp/bgp.py']
+        runlist = default_packages + default_modules
+
+    args = '--rcfile lib/testing/conf/pylintrc ' + ' '.join(runlist)
+
+    print "Saving style check information to pylint.html"
+    pylint = subprocess.Popen(['pylint', '--rcfile', 'lib/testing/pylintrc'] + runlist, stdout = subprocess.PIPE)
+    report_out = pylint.communicate()[0]
+
+    with open('pylint.html', 'w') as f:
+        f.write(report_out)
+
+
+def profile(args):
+    _run_nose_tests(args.tests, profile = True)
+
+
+def util(args):
+    if not args.log_cfg:
+        log.init('DEBUG')
+
+    for u in args.utilities:
+        module_name, class_and_function = u.split(':')
+        cfsplit = class_and_function.split('.')
+
+        module = importlib.import_module(module_name)
+
+        function = None
+        if len(cfsplit) == 2:
+            clazz = getattr(module, cfsplit[0])
+            inst = clazz()
+            function = getattr(inst, cfsplit[1])
+        else:
+            function = getattr(module, cfsplit[0])
+
+        function(args.sub_argv)
+
+
+def parse_args():
+
+    parser = argparse.ArgumentParser()
+    parser.set_defaults()
+    parser.add_argument('-l', dest='log_cfg')
+    parser.add_argument('-L', dest='force_local', action='store_true')
+    subparsers = parser.add_subparsers(help = "", dest = "command_name")
+
+    # Fixture commands
+    fixture_parser = subparsers.add_parser('fixture', help = "Create, update, inspect test fixtures")
+    fixture_parser.set_defaults(func = fixture)
+    fixture_subparsers = fixture_parser.add_subparsers(help = "", dest = "subcommand_name")
+
+    import_subparser = fixture_subparsers.add_parser('import', help = "Import test fixtures from live data on a specified deployment")
+    import_subparser.add_argument('-d', '--deployment', default = 'merit', help = "Deployment to sync with")
+    import_subparser.add_argument('-s', '--step', default = 300, help = "Time step")
+    import_subparser.add_argument('--start', default = None, help = "The start of the time range to include. Defaults to now.")
+    import_subparser.add_argument('--stop', default = None, help = "The end of the time range of data to include. Defaults to now + step")
+    import_subparser.add_argument('-c', '--cube', default = 'onnet', help = "Cube ID to copy")
+    import_subparser.add_argument('-i', '--id', default = None, help = "Identifier for the fixture--to be used in tests to inject the data")
+    import_subparser.add_argument('--list-cube-ids', action = "store_true", default = False, help = "List cube ids available on target deployment. Requires -d argument")
+    import_subparser.add_argument('--list-cube-timesteps', action = "store_true", default = False, help = "List cube timesteps available for a specified cube ID. Requires -d and -c.")
+
+    create_subparser = fixture_subparsers.add_parser('create', help = "Create test fixture from provided local file paths. Accepts globs, files, and folders")
+    create_subparser.add_argument('-i', '--id', default = None, help = "Identifier for the fixture -- to be used in thests to inject the data")
+    create_subparser.add_argument('inputs', nargs = "+")
+
+    sync_subparser = fixture_subparsers.add_parser('sync', help = "Sync all fixtures to local machine")
+    sync_subparser.add_argument('-i', '--id', nargs = "*", default = None, help = "Identifiers for the fixtures to sync (omit for all)")
+
+    delete_subparser = fixture_subparsers.add_parser('delete',
+            help="Delete a fixture with the given ID")
+    delete_subparser.add_argument('fixture_id', nargs=1, help="Identifier for the fixture")
+
+    list_subparser = fixture_subparsers.add_parser('list', help="List all fixtures available in S3")
+
+    mock_configuration_subparser = fixture_subparsers.add_parser("mock-configuration", help="Create mock configuration fixtures")
+    mock_configuration_subparser.add_argument("--deployment", '-d', dest="deployment_id")
+
+
+    # Test commands
+    run_parser = subparsers.add_parser('run', help = "Run unit and integration tests")
+    run_parser.add_argument('tests', nargs = '*')
+    run_parser.add_argument('--list', default = False, action = "store_true", help = "List tests discovered using the provided test selector and exit")
+    run_parser.add_argument('-i', '--integration', default = False, action = "store_true", help = "Run only integration tests. Will run if no types specified.")
+    run_parser.add_argument('-u', '--unit', default = False, action = "store_true", help = "Run only unit tests. Will run if no types specified.")
+    run_parser.add_argument('-w', '--workday', default = False, action = "store_true", help = "Run only workday tests. Will *not* run if no types specified.")
+    run_parser.add_argument('-a', '--all', default = False, action = "store_true", help = "Run all, including unlabeled and workday tests.")
+    run_parser.add_argument('--force-coverage', default = False, action = "store_true", help = "Override default logic for whether to run coverage analysis. Defaults to running when all tests are being unconditionally run.")
+    run_parser.add_argument('-v', '--verbose', default = False, action = "store_true", help = "Print all output to command line")
+    run_parser.add_argument('--xml', default = None, action = "store", help = "Output test results to XML")
+    run_parser.add_argument('--docker', default = False, action = "store_true", help = "Run tests in docker image")
+    run_parser.add_argument('--build', default = False, action = "store_true", help = "Run build before tests are run")
+    run_parser.add_argument('--install', default = False, action = "store_true", help = "Run install before tests are run")
+    run_parser.add_argument('--no-mount-code', default = False, action = "store_true", help = "Do not mount code directory, use code in image")
+    run_parser.add_argument('--with-socket-reporter', default=False, action="store_true", help="Run with socket reporter")
+    run_parser.add_argument('--with-memoryusage', default=False, action="store_true", help="Run with memory usage reporter")
+
+    run_parser.set_defaults(func = run)
+
+    # Style Checks
+    style_parser = subparsers.add_parser('style', help = "Run style checks on code base")
+    style_parser.add_argument('runlist', nargs = '*')
+    style_parser.set_defaults(func = style)
+
+    # Profile
+    profile_parser = subparsers.add_parser('profile', help = "Profile specific test, module, or python command")
+    profile_parser.add_argument('-f', '--function', dest = "functions", action = "append", default = [], help = "Function to profile with line_profiler. Use syntax package.module:Class.method or package.module:function_name. More than one argument may be specified")
+    profile_parser.add_argument('tests', nargs = '*', help = "List of functions to profile with line_profiler. Use syntax package.module:Class.method or package.module:function_name")
+    profile_parser.set_defaults(func = profile)
+
+    # Utility commands
+    util_parser = subparsers.add_parser('util', help = "Run test utilities. Use '--' to separate utility args from pdtest args")
+    util_parser.add_argument('utilities', nargs = '*')
+    util_parser.add_argument('--list', action = "store_true", help = "List utilities discovered using the provided utility selector and exit")
+    util_parser.set_defaults(func = util)
+
+    argv_left = sys.argv[1:]
+    argv_right = []
+    try:
+        terminator = sys.argv.index('--')
+        argv_left = sys.argv[1:terminator]
+        argv_right = sys.argv[terminator + 1:]
+    except ValueError:
+        pass
+
+    args = parser.parse_args(argv_left)
+    args.sub_argv = argv_right
+    return args
+
+def main():
+    args = parse_args()
+    if args.log_cfg:
+        log.init(level=args.log_cfg)
+    else:
+        # Keep quiet to just show test results by default.
+        log.init('CRITICAL')
+    if args.force_local:
+        deepy.cfg.force_remote = 'local'
+
+    args.func(args)
+if __name__ == "__main__":
+    main()

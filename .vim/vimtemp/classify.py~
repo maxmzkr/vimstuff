@@ -1,0 +1,681 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import time
+import getopt
+import socket
+import ipaddr
+import tables
+import numpy as np
+import shutil
+import random
+import redis
+
+import deepy.map
+import deepy.cfg
+import deepy.util
+import deepy.timerange
+import deepy.log as log
+import deepy.h5flowutil
+import deepy.redis_queue
+import deepy.qwilt
+
+
+import h5classify
+
+#import pdb
+#pdb.set_trace()
+
+# global
+force_flag = False
+service_pos_dict = {}
+
+
+# XXX this appears to be dead code, remove after tests exist
+def build_service_lookup ():
+
+    aws_path = "dimensions/service.json.gz"
+    local_path =  deepy.cfg.cache_dir + "/" + aws_path
+    dim_db = deepy.dimensions.DimensionsDBFrag(db_file=local_path)
+
+    if not dim_db:
+        return
+
+    for pos_id, vals in dim_db["102"]["positions"].iteritems():
+        service_pos_dict[pos_id] = vals
+
+def classify_h5flow_file  (load_h5filename, dns_files, output_path, logflow_file=None):
+
+    num_ipv4_onnet = 0
+
+    if not os.path.exists(load_h5filename):
+        deepy.log.warn("missing-h5file %s" % (load_h5filename))
+        return
+
+    start_sec = time.time()
+
+    # Initialize counters and such
+    h5classify.init_matching ()
+
+    dedupe_ips = []
+    if logflow_file:
+        dedupe_ips = append_flow(load_h5filename, logflow_file)
+    # Classify V4 (unlike V6, this is done in C)
+    ret = h5classify.classify_h5file (load_h5filename, dns_files, dedupe_ips)
+
+    # Open table in Python
+    h5file = tables.open_file(load_h5filename, "r+")
+
+
+    # Classify V6
+    # We have to loop through each row because I did not know how
+    # to reach char[16] addresses directly into a numpy data types
+    for row in h5file.root.flowgroup.flows_v6:
+        ret = h5classify.classify_v6_flow (row['flowip'], row['srcaddr'], row['dstaddr'], row['flowflags'],
+                                           row['srcport'], row['dstport'], row['proto'],
+                                           row['src_peer_as'], row['dst_peer_as'],
+                                           row['src_origin_as'], row['dst_origin_as'],
+                                           row['src_aspath_pos'], row['dst_aspath_pos'],
+                                           row['bytes'], row['sampling'])
+
+        row['service_pos'] = ret['service_pos']
+        row['src_site_pos'] = ret['src_site_pos']
+        row['dst_site_pos'] = ret['dst_site_pos']
+        row.update()
+    h5file.root.flowgroup.flows_v6.flush()
+
+    # -----------------------------
+    # Onnet IPv4 / Subscriber Table
+    try:
+        h5file.remove_node('/flowgroup', 'onnet_v4')
+    except:
+        pass
+
+    ips = h5classify.get_onnet_v4 ()
+    table = h5file.create_table(h5file.root.flowgroup, 'onnet_v4', deepy.h5flowutil.OnnetV4, "These is Onnet IPv4 Summary")
+    rows = np.core.records.fromarrays(ips.values(), names=ips.keys())
+    table.append(rows)
+    table.flush()
+    num_with_dns = 0
+    total_num_dns = 0
+    num_ipv4_onnet = len(ips['srcaddr'])
+    for row in rows:
+        if row['total_num_dns']:
+            total_num_dns += row['total_num_dns']
+            num_with_dns += 1
+    table.attrs.total_num_dns = total_num_dns
+    table.attrs.num_with_dns = num_with_dns
+
+    # -----------------------------
+    # Onnet IPv6 / Subscriber Table
+    try:
+        h5file.remove_node('/flowgroup', 'onnet_v6')
+    except:
+        pass
+
+    ips = h5classify.get_onnet_v6 ()
+    table = h5file.create_table(h5file.root.flowgroup, 'onnet_v6', deepy.h5flowutil.OnnetV6, "These is Onnet IPv6 Summary")
+    rows = np.core.records.fromarrays(ips.values(), names=ips.keys())
+    table.append(rows)
+    num_ipv6_onnet = table.nrows
+    table.flush()
+
+    # -----------------------------
+    # DNSv4
+    try:
+        h5file.remove_node('/flowgroup', 'dns_v4')
+    except:
+        pass
+    table = h5file.create_table(h5file.root.flowgroup, 'dns_v4', deepy.h5flowutil.DNSV4, "These is Onnet DNS IPv4 Summary")
+    ret = h5classify.get_domains()
+    row = table.row
+    for i in range (len(ret['dns'])):
+        row['dns'] = ret['dns'][i][-50:]
+        row['count'] = ret['count'][i]
+        row['bytes'] = ret['bytes'][i]
+        row['site_pos_id'] = ret['site_pos_id'][i]
+        row.append()
+    table.flush()
+
+    # -----------------------------
+    # DNSFiles
+    try:
+        h5file.remove_node('/flowgroup', 'dnsfiles')
+    except:
+        pass
+    table = h5file.create_table(h5file.root.flowgroup, 'dnsfiles', deepy.h5flowutil.DNSFiles, "These are the dnsfiles used in classification")
+    row = table.row
+    for i in range (len(dns_files)):
+        row['filename'] = dns_files[i][-36:]
+        row.append()
+    table.flush()
+
+    # -----------------------------
+    # Some additional stats
+    rows_v4 = len(h5file.root.flowgroup.flows_v4)
+    rows_v6 = len(h5file.root.flowgroup.flows_v6)
+    # -----------------------------
+
+    h5file.close()
+
+    # rename
+    os.rename(load_h5filename, output_path)
+
+    if not os.path.exists(output_path):
+        print "Something went wrong"
+        sys.exit(0)
+
+    log.info("Wrote %s (%2.1f sec) v4-subscribers=%d v6-subscribers=%d v4-rows=%d v6-rows=%d" % (output_path, time.time() - start_sec, num_ipv4_onnet, num_ipv6_onnet, rows_v4, rows_v6))
+
+    # Archive h5flow in S3 (if configured)
+    if deepy.util.vm_or_slice_config_get("archive_h5flow"):
+        if deepy.cfg.is_development:
+            log.warning("Not archiving classified flow to s3 because is_development!!")
+        else:
+            log.debug("archiving-to-s3 %s" % (output_path))
+            deepy.store.cache_save_to_remote(output_path)
+            # No longer need remote copies of input file, remove
+            try:
+                deepy.store.rm_files([load_h5filename])
+            except NotImplementedError as e:
+                # We need to know this is happening but not alert with a traceback
+                log.info("cannot clean up raw h5flow from store: rm_files not implemented")
+
+
+def get_dnsfiles_for_timeperiod (dns_now, dns_files_already_loaded):
+
+    small_dns_files = []
+    large_dns_files = []
+
+    # Sub minute
+    if deepy.util.vm_or_slice_config_get("dnsflow_period_seconds"):
+        # Cached small files over last two hours up to 20 minutes ago (each minute has 6, so 6*60*2)
+        for n in range(120,6*60*2):
+            now_tm = time.gmtime(dns_now - 10*n)
+            dnsfile = time.strftime(deepy.cfg.h5dns_dir + "/dns.%Y-%m-%d-%H-%M-%S.h5.cache", now_tm)
+
+            if dns_files_already_loaded and dnsfile in dns_files_already_loaded:
+                continue
+
+            if not os.path.exists(dnsfile) and deepy.util.vm_or_slice_config_get("archive_h5dns"):
+                deepy.store.cache_load_from_remote(dnsfile)
+
+            if os.path.exists(dnsfile):
+                small_dns_files.insert(0, dnsfile)
+                if dns_files_already_loaded is not None:
+                    dns_files_already_loaded.add(dnsfile)
+
+        # Large files (go back 20 minutes or 1200 seconds or 120 10 second dnsflow files)
+        num_large_files = 120
+        for n in range(num_large_files):
+            now_tm = time.gmtime(dns_now)
+            dnsfile = time.strftime(deepy.cfg.h5dns_dir + "/dns.%Y-%m-%d-%H-%M-%S.h5", now_tm)
+            dns_now -= 10
+
+            if dns_files_already_loaded and dnsfile in dns_files_already_loaded:
+                continue
+
+            if not os.path.exists(dnsfile) and deepy.util.vm_or_slice_config_get("archive_h5dns"):
+                deepy.store.cache_load_from_remote(dnsfile)
+
+            if os.path.exists(dnsfile):
+                log.debug("loading %s " % (dnsfile))
+                large_dns_files.insert(0, dnsfile)
+                if dns_files_already_loaded is not None:
+                    dns_files_already_loaded.add(dnsfile)
+
+        #if deepy.util.vm_or_slice_config_get("dnsflow_enabled") and len(large_dns_files) < num_large_files:
+        #    log.info("Too few DNSFlow files (found %d, need 24), exiting %s", len(large_dns_files), large_dns_files)
+        #    sys.exit(0)
+
+    # Five minutes
+    else:
+        # Cached small files
+        for n in range(4,36):
+            now_tm = time.gmtime(dns_now - 300*n)
+            dnsfile = time.strftime(deepy.cfg.h5dns_dir + "/dns.%Y-%m-%d-%H-%M.h5.cache", now_tm)
+
+            if deepy.util.vm_or_slice_config_get("archive_h5dns"):
+                deepy.store.cache_load_from_remote(dnsfile)
+
+            if os.path.exists(dnsfile):
+                small_dns_files.insert(0, dnsfile)
+
+        # Large files
+        for n in range(4):
+            now_tm = time.gmtime(dns_now)
+            dnsfile = time.strftime(deepy.cfg.h5dns_dir + "/dns.%Y-%m-%d-%H-%M.h5", now_tm)
+            dns_now -= 300
+
+            if deepy.util.vm_or_slice_config_get("archive_h5dns"):
+                deepy.store.cache_load_from_remote(dnsfile)
+
+            if os.path.exists(dnsfile):
+                log.debug("--- loading %s" % (dnsfile))
+                large_dns_files.insert(0, dnsfile)
+
+        if deepy.util.vm_or_slice_config_get("dnsflow_enabled") and len(large_dns_files) != 4:
+            log.info("Too few DNSFlow files, exiting %s", large_dns_files)
+            sys.exit(0)
+
+    dns_files = small_dns_files + large_dns_files
+
+    return dns_files
+
+def get_logfiles_for_timeperiod(now):
+    logflow_file = None
+
+    timeout = 60*60 # 60 minute timeout
+
+    slice_timeout = deepy.util.vm_or_slice_config_get("logflow_timeout")
+    if slice_timeout:
+        timeout = 60*slice_timeout
+
+    if deepy.util.vm_or_slice_config_get("require_h5qwilt"):
+        timeout = -1
+
+    if deepy.util.vm_or_slice_config_get("logflow_enabled"):
+
+        now_tm = time.gmtime(now)
+        logfile = time.strftime(deepy.cfg.h5qwilt_dir + "/qwilt-%Y-%m-%d-%H-%M.h5", now_tm)
+
+        if not os.path.exists(logfile):
+            deepy.store.cache_load_from_remote(logfile)
+
+        if os.path.exists(logfile):
+            log.debug("--- loading {}".format(logfile))
+            logflow_file = logfile
+
+        if not logflow_file and (timeout == -1 or int(time.time()) - now < timeout):
+            log.warn("No Logfile found, exiting.")
+            sys.exit(0)
+<<<<<<< HEAD
+
+=======
+>>>>>>> f577361b6b3a4cc00f871fbd5ab2eaaff5d13ed7
+    return logflow_file
+
+def append_flow (flow, logflow):
+    '''
+    Returns a list of ips to ignore for deduplication
+    '''
+
+    # Get the table to append
+    qwilt_ips = []
+    flow = tables.open_file(flow, mode="r+")
+    flow_group = flow.get_node("/", 'flowgroup')
+    flow_table = flow_group.flows_v4
+
+    log.debug("Number of flows before append - {}".format(flow_table.nrows))
+
+    # Get the table to append from
+    logflow = tables.open_file(logflow, mode="r")
+    # Hard Coded to Qwilt now, can easily be modified to be generic
+    log_group = logflow.get_node("/", "h5qwilt")
+    log_table = log_group.h5qwiltv4
+
+    logs = h5classify.get_logflow_arrays(log_table)
+
+    if len(logs['logflow_arrays']['flowip']):
+        log.debug("Appending {} rows".format (len(logs['logflow_arrays']['flowip'])))
+        rows = logs['logflow_arrays'].values()
+        flow_table.append(rows)
+        qwilt_ips = deepy.qwilt.get_qwilt_server_ips(logflow)
+    else:
+        qwilt_ips = []
+
+    log.debug("Number of flows after append - {}".format(flow_table.nrows))
+    flow_table.flush()
+    flow.close()
+    logflow.close()
+
+    return qwilt_ips
+
+def process_5minute_period (deployment_id, now):
+
+    start_time = time.time()
+
+    now_tm = time.gmtime(now)
+    if  not deepy.util.lock("h5flow.%d.lock" % now, return_on_fail=True):
+        log.warn("classify-already-running-for-this-time-period")
+        return
+
+    # Output
+    h5flow_filename_final = time.strftime(deepy.cfg.h5flow_dir + "/flow.%Y-%m-%d-%H-%M.h5", now_tm)
+
+    if not force_flag:
+        if os.path.exists(h5flow_filename_final):
+            log.warn("file-already-exists %s" % (h5flow_filename_final))
+            return
+        #XXX Check S3 if file doesn't exist on disk
+        elif deepy.util.vm_or_slice_config_get("archive_h5flow"):
+                remote_files = deepy.store.ls_files_remote([h5flow_filename_final])
+                if remote_files:
+                    log.warn("s3-file-already-exists %s" % (h5flow_filename_final))
+                    return
+
+    # Input
+    h5flow_filename = time.strftime(deepy.cfg.h5flow_dir + "/flow.%Y-%m-%d-%H-%M.h5.raw", now_tm)
+    #XXX Check S3 if file doesn't exist on disk
+    if deepy.util.vm_or_slice_config_get("archive_h5flow"):
+        deepy.store.cache_load_from_remote(h5flow_filename)
+
+    if not os.path.exists(h5flow_filename):
+        log.warn("missing-file %s" % (h5flow_filename))
+        return
+
+    # Figure out what DNS files we need
+    dns_files = get_dnsfiles_for_timeperiod (now, None)
+    logflow_files = get_logfiles_for_timeperiod(now)
+
+    log.info("load-flow-and-dns-took %2.1f seconds" % int(time.time() -  start_time))
+
+    # init library
+    h5classify.init (deployment_id, "ignored")
+
+
+    h5flow_filename_source = h5flow_filename
+    h5flow_filename = h5flow_filename + ".tmp"
+    shutil.move(h5flow_filename_source, h5flow_filename)
+
+    # Classify
+    log.info("classifying %s" % (h5flow_filename))
+    classify_h5flow_file (h5flow_filename, dns_files, h5flow_filename_final, logflow_file=logflow_files)
+
+
+
+def redis_connect ():
+
+    redis_server_name = "localhost"
+    if deepy.util.vm_or_slice_config_get("redis_server"):
+        redis_server_name = redis_server_name
+
+    try:
+        r_server = redis.Redis(redis_server_name)
+    except:
+        r_server = None
+
+    try:
+        r_queue_in = deepy.redis_queue.RedisQueue("h5classify", host=redis_server_name)
+    except:
+        r_queue_in = None
+
+    try:
+        r_queue_out = deepy.redis_queue.RedisQueue("h5cube", host=redis_server_name)
+    except:
+        r_queue_out = None
+
+    return (r_server, r_queue_in, r_queue_out)
+
+
+
+def daemonize (deployment_id, daemon_number):
+
+    dns_files_already_loaded = set([])
+
+    # lock
+    fd = deepy.util.lock("h5classify.%d.lock" % daemon_number, return_on_fail=False)
+
+    deepy.log.info("Starting clasify daemon (number=%d)" % daemon_number)
+
+    # Initialize library
+    h5classify.init(deployment_id, deepy.cfg.components_db_file)
+
+    # Load all DNS with sites
+    h5classify.enable_load_most_dns()
+
+    try:
+        os.makedirs(deepy.cfg.h5flow_dir)
+    except:
+        pass
+    try:
+        os.makedirs(deepy.cfg.h5flow_unclassified_dir)
+    except:
+        pass
+    try:
+        os.makedirs(deepy.cfg.h5flow_classified_dir)
+    except:
+        pass
+
+    num_flowd = int(deepy.cfg.vm_config.get('flowd_options', {}).get('num', 1))
+
+    r_server, r_queue_in, r_queue_out = redis_connect ()
+
+    # each minute has 6, so do 6*10 for ten minutes plus some randomness
+    max_count = 60 + random.randint(-6, 10)
+    end_time = time.time() + (max_count * 10)
+
+
+    # Loop
+    while True:
+
+        job = r_queue_in.get(block=True, timeout=1)
+
+        try:
+            path, utc, proc_id = job.split(":")
+        except:
+            if time.time() > end_time:
+                break
+            continue
+
+        now_tm = time.gmtime(int(utc))
+        base = time.strftime('%Y-%m-%d-%H-%M-%S', now_tm)
+        output_path = deepy.cfg.h5flow_classified_dir + "/h5flow.%s.h5" % base
+
+        if num_flowd > 1 and proc_id >= 0:
+            output_path += ".%d" % int(proc_id)
+
+        # already completed
+        if os.path.exists(output_path):
+            log.debug ("Already completed %s" % output_path)
+            continue
+
+
+        # try to fetch remotely
+        if not os.path.exists(path) and deepy.util.vm_or_slice_config_get("archive_h5flow"):
+            deepy.store.cache_load_from_remote(path)
+
+        if not os.path.exists(path):
+            log.warn("Missing input file %s" % path)
+            continue
+
+        # Figure out what DNS files we need
+        if deepy.util.vm_or_slice_config_get("dnsflow_enabled"):
+            dns_filenames = get_dnsfiles_for_timeperiod (int(utc), dns_files_already_loaded)
+        else:
+            dns_filenames = []
+
+        # Figure out what LogFlow files we need
+        logflow_files = get_logfiles_for_timeperiod (int(utc))
+
+        # Classify!
+        classify_h5flow_file (path, dns_filenames, output_path, logflow_file=logflow_files)
+
+        # Queue for h5cube
+        tmp_proc_id = 0
+        if int(proc_id) > 0:
+            tmp_proc_id = int(proc_id)
+        try:
+            r_queue_out.put("%s:%s:%d" % (output_path, utc, tmp_proc_id))
+        except:
+            pass
+
+
+        if time.time() > end_time:
+            log.debug("Hit end_time. Exiting to be restarted by restart_daemons.py (and pick up any config changes)")
+            sys.exit(0)
+
+
+
+def queue_work (queue_num):
+
+    num_flowd = int(deepy.cfg.vm_config.get('flowd_options', {}).get('num', 1))
+
+    r_server, r_queue_in = redis_connect()
+
+    now = time.time()
+
+    # Scan back in time (20 minutes)
+    for i in range (queue_num):
+        t = now - (now % 10)
+        tmp_t = t - i*10
+        now_tm = time.gmtime(tmp_t)
+        base = time.strftime('%Y-%m-%d-%H-%M-%S', now_tm)
+
+        for n in range (num_flowd):
+            path = deepy.cfg.h5flow_unclassified_dir + "/h5flow.%s.h5" % base
+            output_path = deepy.cfg.h5flow_classified_dir + "/h5flow.%s.h5" % base
+            if num_flowd > 1:
+                path += ".%d" % (n + 1)
+                output_path = ".%d" % (n + 1)
+
+            # output already completed local
+            if os.path.exists(output_path) and not force_flag:
+                log.debug ("Already completed %s" % output_path)
+                continue
+
+            # output already completed on store
+            if deepy.util.vm_or_slice_config_get("archive_flow") and not force_flag:
+                if deepy.store.ls_files_remote([output_path]) != {}:
+                    log.debug ("Already completed %s" % output_path)
+                    continue
+
+            # intput not ready
+            if not os.path.exists(output_path):
+                if deepy.util.vm_or_slice_config_get("archive_flow") and deepy.store.ls_files_remote([path]) != {}:
+                    pass
+                else:
+                    log.debug ("Input not ready %s" % path)
+                    continue
+
+            if num_flowd > 1:
+                r_queue_in.put("%s:%d:%d" % (path, tmp_t, (n+1)))
+                deepy.log.debug("queue %s:%d:%d" % (path, tmp_t, (n+1)))
+            else:
+                r_queue_in.put("%s:%d:%d" % (path, tmp_t, 0))
+                deepy.log.debug("queue %s:%d:%d" % (path, tmp_t, 0))
+
+
+def main (argv):
+
+    global force_flag
+
+    load_h5filename = None
+    dns_filenames = []
+    deployment_id = None
+    verbose = False
+    range_num = 10
+    timestamp = None
+    test_ip = None
+    daemon_number = None
+    queue_num = 0
+
+    usage  = "Usage: classify.py [-afLv] [-t timestamp] [-d deployment_id] [-l h5filename] [-D dnsfilename]  \n"
+    usage += "                   [-T testip] [--daemon N] [--queue N] \n"
+
+    try:
+        opts, args = getopt.getopt(argv[1:], 'ad:D:vfl:Lo:r:t:T:', ['daemon=', 'queue='])
+    except getopt.GetoptError:
+        print >>sys.stderr, usage
+        return 1
+
+    for o, a in opts:
+        if o == '-a':
+            ascii_flag = True
+        elif o == '-d':
+            deployment_id = a
+        elif o == '--daemon':
+            daemon_number = int(a)
+        elif o == '-D':
+            dns_filenames.append(a)
+        elif o == '-f':
+            force_flag = True
+        elif o == '-l':
+            load_h5filename = a
+        elif o == '-L':
+            deepy.cfg.force_remote = 'local'
+        elif o == '-o':
+            pass
+        elif o == '-r':
+            range_num = int(a)
+        elif o == '--queue':
+            queue_num = int(a)
+        elif o == '-t':
+            timestamp = deepy.timerange.parse_datetime(a, '-')
+            if not timestamp:
+                log.error("expected-timestamp-format YYYY-MM-DD-HH-MM")
+                sys.exit(0)
+        elif o == '-T':
+            test_ip = a
+        elif o == '-v':
+            verbose = True
+        else:
+            print usage
+            sys.exit(0)
+
+
+    if deployment_id:
+        deepy.cfg.init(deployment_id)
+
+    if not deployment_id:
+        deployment_id = ""
+
+    h5classify.init_log(sys.argv[0])
+    if verbose:
+        log.init(level="DEBUG")
+        h5classify.set_log_level(level="DEBUG")
+
+    # -------- Daemonize --------
+    if daemon_number:
+        daemonize (deployment_id, daemon_number)
+        sys.exit(0)
+    # ----------------------------
+
+
+    if queue_num:
+        queue_work (queue_num)
+        sys.exit(0)
+
+
+    build_service_lookup ()
+
+    # debugging
+    if test_ip:
+        h5classify.init (deployment_id, "ignored")
+        h5classify.init_matching ()
+
+        srcport = 0
+        dstport = 0
+        proto = 6
+
+        dstaddr = socket.htonl(ipaddr.IPv4Address(test_ip)._ip)
+
+        positions = h5classify.classify_v4_flow (0, 0, dstaddr, 0, srcport, dstport, proto)
+
+        for i in range(len(positions["dst_dim"])):
+            log.debug("position-name %s" % (h5classify.get_position_name (positions["dst_dim"][i], positions["dst_pos"][i])))
+        sys.exit(0)
+
+    # debugging, process single file
+    if load_h5filename:
+        logflow_files = []
+        h5classify.init (deployment_id, "ignored")
+        classify_h5flow_file (load_h5filename,  dns_filenames, load_h5filename)
+        sys.exit(0)
+
+    # User specified timestamp
+    if timestamp:
+        process_5minute_period (deployment_id, timestamp)
+        sys.exit(0)
+
+    # Loop over time range
+    now = int(time.time())
+    now -= (now % 300)
+    for n in range (range_num):
+        process_5minute_period (deployment_id, now)
+        now -= 300
+
+if __name__ == '__main__':
+    main(sys.argv)
+

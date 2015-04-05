@@ -1,0 +1,10 @@
+#include <unordered_map>
+#include "./user.h"
+
+class UserMap {
+ public:
+  User *get_user(std::string username)
+
+ private:
+  std::unordered_map<std::string, User*> user_map_;
+};

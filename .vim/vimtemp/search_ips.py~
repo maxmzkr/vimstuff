@@ -1,0 +1,514 @@
+import os, os.path, re, gzip, time, calendar
+
+import base
+import resource
+import deepy.cfg, deepy.util, deepy.store
+import deepy.log as log
+
+import h5classify
+import tables
+import socket
+import struct
+import ipaddr
+
+import json
+import tornado.web
+import tornado.gen
+from deepy.ui_celery.async_decorator import make_async
+
+lookup = {}
+dnslookup = {}
+classify_init_status = False
+
+
+# Load names for pretty output
+def load_names():
+
+    aws_path = 'mine/master_names.json.gz'
+    local_path = deepy.cfg.cache_dir + "/" + aws_path
+
+
+    if os.path.exists(local_path):
+        return
+
+    print "Load", local_path
+    master_names = json.load(gzip.open( local_path))
+
+    global lookup
+    global dnslookup
+
+    for ip, names in master_names.items():
+
+        found = False
+        device = None
+        for name in names:
+            if name.find("H:none") != -1:
+                device = "WebServer"
+                continue
+            if name.find("location") != -1:
+                continue
+            if name.find("sonic") != -1:
+                device = "SonicWall"
+                continue
+            if name.find("apache") != -1:
+                device = "WebServer"
+                continue
+            found = True
+            break
+
+        if not found:
+            if device:
+                name = device
+            else:
+                continue
+
+        lookup[ip] = name
+
+        if 'dns' == name.split('.')[0]:
+            for n in names:
+                if 'akamai' in n or 'llnw' in n:
+                    dnslookup[ip] = n
+                    break
+
+
+
+def lookup_name(ip):
+    name = None
+    name = dnslookup.get(ip)
+    if name:
+        return name
+    name = lookup.get(ip)
+    return name
+
+
+
+class SearchIPHandler(base.TileHandler):
+
+    required_permissions = ['search_ips']
+
+    template = 'templates/search_ips.html'
+
+    template_args = {"title": "Search IPs"}
+    tile_id = 'tile_bandwidth_hogs'
+
+    # Some extra stuff search_ips.html takes. Not used right now.
+    template_args['search'] = ''
+    template_args['ip'] = ''
+    template_args['filter'] = None
+
+def get_search_ips_thumbnail():
+    aws_path = 'search_ips/thumbnail.json.gz'
+    local_path = deepy.cfg.cache_dir + "/" + aws_path
+    store_location = deepy.deepy_redis.cache_read_object("store_location")
+    cache = deepy.store.simple_load_json(local_path, force_remote=store_location)
+
+    if not cache:
+        print "COULD NB  ******", local_path
+        cache = "{}"
+    else:
+        cache = json.dumps(cache, indent=2)
+    return cache
+
+def get_search_ips(timestamp=None, offset=None, direction=None):
+    dir_list_path = deepy.cfg.cache_dir + '/' + 'search_ips/dir_list.json.gz'
+    store_location = deepy.deepy_redis.cache_read_object("store_location")
+    dir_list = deepy.store.simple_load_json(dir_list_path, force_remote=store_location)
+
+    if dir_list is None:
+        store_location = deepy.deepy_redis.cache_read_object("store_location")
+        deepy.store.generate_dir_list(dir_list_path, force_remote=store_location)
+        dir_list = deepy.store.simple_load_json(dir_list_path, force_remote=store_location)
+        if dir_list is None:
+            log.info("No data found")
+            return {}
+    top_ip_filenames = dir_list['dir_list']
+
+    found_file = None
+    last_tstamp_diff = None
+    for file_path in top_ip_filenames:
+        filename = os.path.basename(file_path)
+
+        try:
+            file_tstamp = calendar.timegm(time.strptime(filename, 'summary.%Y-%m-%d-%H-%M.json.gz'))
+        except ValueError:
+            continue
+
+        tstamp_diff = file_tstamp - timestamp
+        if direction == 'b':
+            tstamp_diff *= -1
+
+        if tstamp_diff == 0:
+            found_file = file_path
+            break
+        if tstamp_diff < 0:
+            continue
+        if last_tstamp_diff is None or tstamp_diff < last_tstamp_diff:
+            last_tstamp_diff = tstamp_diff
+            found_file = file_path
+
+    if found_file is None:
+        log.info("No data found")
+        return {}
+
+    if os.path.basename(found_file) == found_file:
+        found_file = deepy.cfg.cache_dir + '/search_ips/' + found_file
+        log.debug("Try loading " + found_file)
+
+    #f not os.path.exists(found_file):
+    #store_location = deepy.deepy_redis.cache_read_object("store_location")
+    #  deepy.store.cache_load_from_remote([found_file], force_remote=store_location, verbose=True)
+
+    #print "Load", found_file
+
+    cache = deepy.store.simple_load_json(found_file)
+    if not cache:
+        log.info("No data found")
+        return {}
+
+<<<<<<< HEAD
+    dimensions_db = deepy.dimensions.DimensionsDB(db_file=deepy.cfg.dimensions_db_file, redis_backed=True)
+=======
+    dimensions_db = deepy.dimensions.DimensionsDB(None, redis_backed=True)
+>>>>>>> origin/master
+    for vals in cache['ips']:
+        tags = set([])
+        for position in vals['positions']:
+
+            # DIMENSION_INTERFACE
+            if position[0] == 116:
+                continue
+            if position[0] == 115:
+                continue
+
+            # DIMENSION_IPVERSION
+            if position[0] == 108:
+                continue
+
+            try:
+                name = dimensions_db.get_pos_by_id(position[0], "%d" % position[1])['name']
+            except:
+                log.warn("get_search_ips missing position %s" % position)
+                continue
+                
+            try:
+                dim_name  = dimensions_db.dim_db['dimensions']["%d" % position[0]]["name"]
+                if isinstance(dim_name, list):
+                    dim_name = dim_name[0]
+                name = "%s:%s" % (dim_name, name)
+            except:
+                pass
+
+            tags.add(name)
+
+        if len(tags):
+            vals["tags"] = list(tags)
+
+    return cache
+class SearchIPListApiHandler(base.ApiHandler):
+
+    required_permissions = ['search_ips']
+    @tornado.web.asynchronous
+    @tornado.gen.coroutine
+    def get(self):
+        # small summary or all
+        try:
+            small = int(self.get_argument("small", default=0))
+        except:
+            small = 0
+
+        # thumbnail
+        if small:
+            cache = yield make_async(get_search_ips_thumbnail)
+            self.set_header("Content-Type", "application/json; charset=UTF-8")
+            self.write(cache)
+            return
+
+        try:
+            timestamp = int(self.get_argument('ts'))
+        except:
+            timestamp = calendar.timegm(time.gmtime())
+
+        # Number of seconds to pivot around timestamp
+        offset = 0
+        try:
+            offset = int(self.get_argument("offset"))
+        except:
+            pass
+
+        direction = self.get_argument('dir', 'b')
+
+        log.debug("timestamp=" + str(timestamp))
+        if offset != 0:
+            log.debug("offset=" + str(offset))
+
+        cache = yield make_async(get_search_ips, timestamp=timestamp, direction=direction, offset=offset)
+        self.write_json(cache, compress=True)
+
+class SearchIPApiHandler(base.ApiHandler):
+    @tornado.web.asynchronous
+    @tornado.gen.coroutine
+    def get(self, ip):
+
+        self.set_header("Content-Type", "application/json; charset=UTF-8")
+        timestamp = self.get_argument('ts', default=None)
+        if timestamp is not None:
+            timestamp = float(timestamp)
+        filter = self.get_argument('filter', default=None)
+        cache = yield make_async(get_ip, ip, timestamp=timestamp, filter=filter)
+        self.write(json.dumps(cache, indent=2))
+        return
+
+def get_ip(ip, timestamp=None, filter=None):
+        classify_init_status = False
+
+<<<<<<< HEAD
+        dimensions_db = deepy.dimensions.DimensionsDB(db_file=deepy.cfg.dimensions_db_file, redis_backed=True)
+=======
+        dimensions_db = deepy.dimensions.DimensionsDB(None, redis_backed=True)
+>>>>>>> origin/master
+ 
+        local_path = deepy.cfg.h5flow_dir + "/" + time.strftime("flow.%Y-%m-%d-%H-%M.h5", time.gmtime(timestamp))
+        if not os.path.exists(local_path) and deepy.util.vm_or_slice_config_get("archive_h5flow"):
+            deepy.store.cache_load_from_remote(local_path, force_remote='s3')
+
+        if not os.path.exists(local_path):
+            print "Not found", local_path
+            return {}
+
+        family = deepy.util.ip_family(ip)
+
+        try:
+            h5file = tables.open_file(local_path)
+        except:
+            print "Not found", local_path
+            return {}
+
+        # XXX -- this is soooo slow! -- XXXX
+        # Needs to move to persistent daemon
+        if classify_init_status is False:
+            resource.setrlimit(resource.RLIMIT_AS, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+            deployment_id_user_arg = deepy.deepy_redis.cache_read_object("deployment_id_user_arg")
+            h5classify.init(deployment_id_user_arg, deepy.cfg.components_db_file)
+            h5classify.init_matching()
+            classify_init_status = True
+            h5classify.enable_ascii_tags()
+            load_names()
+            print "INIT DONE"
+
+
+        if family == 'ipv6':
+            table = h5file.root.flowgroup.flows_v6
+        else:
+            v = socket.inet_aton(ip)
+            l = struct.unpack("!I", v)[0]
+            l = socket.htonl(l)
+            where_clause = "(dstaddr==%d) | (srcaddr==%d)" % (l, l)
+            table = h5file.root.flowgroup.flows_v4.where(where_clause)
+
+        total_bytes = 0
+        total_conv = 0
+        category_other = None
+
+        category_dict = {}
+        for row in table:
+            category_pos = row['category_pos']
+
+            total_conv += 1
+
+            sent_bytes = 0
+            recv_bytes = 0
+            local_port = 0
+            remote_port = 0
+
+            if family == 'ipv4':
+                srcaddr = "%s" % ipaddr.IPv4Address(socket.ntohl(int(row['srcaddr'])))
+                dstaddr = "%s" % ipaddr.IPv4Address(socket.ntohl(int(row['dstaddr'])))
+
+                positions = h5classify.classify_v4_flow (0, row['srcaddr'], row['dstaddr'], 0, row['srcport'], row['dstport'], row['proto'])
+
+                if srcaddr == ip:
+                    remote = dstaddr
+                    sent_bytes = row['bytes'] * row['sampling']
+                    tags = set(positions["dst_tags"].split(" "))
+                    local_port = row['srcport']
+                    remote_port = row['dstport']
+
+                    if positions['dst_site_pos']:
+                        try:
+                            name = dimensions_db.get_pos_by_id(132, "%d" % positions['dst_site_pos'])['name']
+                            tags.add(name)
+                        except:
+                            pass
+
+                    if positions['dst_geoip_pos']:
+                        try:
+                            name = dimensions_db.get_pos_by_id(181, "%d" % positions['dst_geoip_pos'])['name']
+                            tags.add(name)
+                        except:
+                            pass
+                else:
+                    remote = srcaddr
+                    recv_bytes = row['bytes'] * row['sampling']
+                    tags = set(positions["src_tags"].split(" "))
+                    local_port = row['dstport']
+                    remote_port = row['srcport']
+
+                    if positions['src_site_pos']:
+                        try:
+                            name = dimensions_db.get_pos_by_id(132, "%d" % positions['src_site_pos'])['name']
+                            tags.add(name)
+                        except:
+                            pass
+
+                        if positions['src_geoip_pos']:
+                            try:
+                                name = dimensions_db.get_pos_by_id(181, "%d" % positions['src_geoip_pos'])['name']
+                                tags.add(name)
+                            except:
+                                pass
+
+
+            if family == 'ipv6':
+                v = struct.pack("!16B", row['srcaddr'][0], row['srcaddr'][1], row['srcaddr'][2], row['srcaddr'][3],
+                            row['srcaddr'][4], row['srcaddr'][5], row['srcaddr'][6], row['srcaddr'][7],
+                            row['srcaddr'][8], row['srcaddr'][9], row['srcaddr'][10], row['srcaddr'][11],
+                            row['srcaddr'][12], row['srcaddr'][13], row['srcaddr'][14], row['srcaddr'][15])
+                srcaddr =  socket.inet_ntop(socket.AF_INET6, v)
+                v = struct.pack("!16B", row['dstaddr'][0], row['dstaddr'][1], row['dstaddr'][2], row['dstaddr'][3],
+                            row['dstaddr'][4], row['dstaddr'][5], row['dstaddr'][6], row['dstaddr'][7],
+                            row['dstaddr'][8], row['dstaddr'][9], row['dstaddr'][10], row['dstaddr'][11],
+                            row['dstaddr'][12], row['dstaddr'][13], row['dstaddr'][14], row['dstaddr'][15])
+                dstaddr =  socket.inet_ntop(socket.AF_INET6, v)
+                positions = {}
+                tags = []
+
+                if srcaddr == ip:
+                    remote = dstaddr
+                    sent_bytes = row['bytes'] * row['sampling']
+                    local_port = row['dstport']
+                    remote_port = row['srcport']
+                elif dstaddr == ip:
+                    remote = srcaddr
+                    recv_bytes = row['bytes'] * row['sampling']
+                    local_port = row['dstport']
+                    remote_port = row['srcport']
+                else:
+                    continue
+
+
+            proto = row['proto']
+            if proto == 1:
+                proto = "icmp"
+            elif proto == 6:
+                proto = "tcp"
+            elif proto == 17:
+                proto = "udp"
+            elif proto == 47:
+                proto = "gre"
+
+            entry = {
+                "addr": remote,
+                "local_port": local_port,
+                "remote_port": remote_port,
+                "proto": proto,
+                "sent_bytes": sent_bytes,
+                "recv_bytes": recv_bytes,
+                "bytes": recv_bytes + sent_bytes
+            }
+
+            other = {
+                "addr": "other",
+                "local_port": 0,
+                "remote_port": 0,
+                "proto": 0,
+                "sent_bytes":0,
+                "recv_bytes": 0,
+                "bytes": 0
+            }
+
+            name = lookup_name(remote)
+            if name:
+                entry['name'] = name
+
+            tmp_tags = set([])
+            for tag in tags:
+                m = re.search("dim\:([a-zA-Z_\:\.\-,]+)\:[0-9]+\.[0-9]+", tag)
+                if m:
+                    tmp_tags.add(m.group(1))
+                else:
+                    tmp_tags.add(tag)
+            entry["tags"] = list(tmp_tags)
+
+
+            total_bytes += sent_bytes + recv_bytes
+
+            if category_pos in category_dict:
+                category_dict[category_pos]["conv"].append(entry)
+                category_dict[category_pos]["bytes"] += recv_bytes + sent_bytes
+                category_dict[category_pos]["sent_bytes"] += sent_bytes
+                category_dict[category_pos]["recv_bytes"] += recv_bytes
+            else:
+                category_dict[category_pos] = {
+                    "conv": [entry],
+                    "bytes": recv_bytes + sent_bytes,
+                    "sent_bytes": sent_bytes,
+                    "recv_bytes": recv_bytes
+                }
+
+        # Close!
+        h5file.close()
+
+        # Build output
+        cache = {"ip": ip, "services": []}
+        for key, vals in category_dict.iteritems():
+            try:
+                category_name = dimensions_db.get_pos_by_id(44, "%d" % key)["name"]
+            except:
+                if key == 0:
+                    category_name = "other"
+                else:
+                    category_name = "Unknown category (position %d)" % key
+
+
+            if total_conv > 50 and (float(vals['bytes']) / float(total_bytes)) < .05:
+                category_name = "other"
+
+            if category_name == 'other' and category_other:
+                category = category_other
+            else:
+                category = {
+                    "name": category_name,
+                    "bytes": vals["bytes"],
+                    "sent_bytes": vals["sent_bytes"],
+                    "recv_bytes": vals["recv_bytes"],
+                    "conv": []
+                }
+                cache["services"].append(category)
+
+            if category_name == 'other':
+                category_other = category
+
+            # special case
+            other_conv = {
+                "addr": "other",
+                "local_port": 0,
+                "remote_port": 0,
+                "proto": 0,
+                "sent_bytes":0,
+                "recv_bytes": 0,
+                "bytes": 0
+            }
+
+            for entry in vals["conv"]:
+                if len(category["conv"]) > 500:
+                    other['sent_bytes'] += entry['sent_bytes']
+                    other['recv_bytes'] += entry['recv_bytes']
+                    other['bytes'] += entry['bytes']
+                    continue
+                else:
+                    category["conv"].append(entry)
+
+            if other_conv['bytes']:
+                category["conv"].append(other_conv)
+
+        return cache        

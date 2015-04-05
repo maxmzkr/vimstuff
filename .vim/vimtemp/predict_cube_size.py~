@@ -1,0 +1,115 @@
+#!/usr/bin/env python
+
+import argparse
+import funcy
+import os.path
+import os
+import datetime
+
+import deepy.cfg
+import deepy.cube
+import deepy.timerange
+
+def dne(path):
+    return not os.path.exists(path)
+
+def get_total_seconds(f):
+    return sum(deepy.cube.CubeLoader(f, meta_only=True).time['valid_seconds'].values())
+
+def get_cube_size(cube_name, step, sample_size="30 days", total_cubes='364 days'):
+    rule = deepy.cube.get_rule(cube_name, step)
+    if not rule:
+        print "Could not fetch rule for {} {}".format(cube_name, step)
+        return
+
+    freq = step.lower()
+    if "min" in freq:
+        freq = freq.replace("min", "T")
+
+    end = deepy.timerange.floor_timestamp_to(datetime.datetime.utcnow(), freq.upper())
+    print sample_size
+    start = end - deepy.timerange.convert_to_timedelta(sample_size)
+
+    start_ts = int(deepy.timerange.get_timestamp(start.strftime("%Y-%m-%d-%H-%M")))
+    end_ts = int(deepy.timerange.get_timestamp(end.strftime("%Y-%m-%d-%H-%M")))
+    diff_ts = int(deepy.timerange.convert_to_seconds(step))
+
+    timesteps = range(start_ts, end_ts, diff_ts)
+    paths = []
+    expanded_targets = rule.expand(
+        {
+            "start_time": start_ts,
+            "end_time": end_ts
+        }
+    )
+    for expanded_target in expanded_targets:
+        paths.append(expanded_target.unique_id)
+
+    deepy.store.cache_load_from_remote(paths)
+
+    all_files = zip(timesteps, paths)
+    exists = funcy.remove(funcy.compose(dne, funcy.second), all_files)
+
+    average = 0
+    count = 0
+
+    for ts,f in exists:
+        if not os.path.isfile(f):
+            continue
+        size = os.stat(f).st_size
+        if average != 0:
+            diff = size / float(average)
+            if diff > 10.0 or diff < 0.1:
+                print "Ignoring {} too large or too small {}".format(f, diff)
+                continue
+
+        average = float(average*count + size) / (count + 1)
+        count += 1
+
+    start = end - deepy.timerange.convert_to_timedelta(total_cubes)
+
+    start_ts = int(deepy.timerange.get_timestamp(start.strftime("%Y-%m-%d %H:%M")))
+    end_ts = int(deepy.timerange.get_timestamp(end.strftime("%Y-%m-%d %H:%M")))
+    diff_ts = int(deepy.timerange.convert_to_seconds(step))
+
+    timesteps = range(start_ts, end_ts, diff_ts)
+    paths = []
+    expanded_targets = rule.expand(
+        {
+            "start_time": start_ts,
+            "end_time": end_ts
+        }
+    )
+
+    total_num_cubes = len(expanded_targets)
+    total = total_num_cubes * average
+
+    print '{} {} {} cubes used from the last {}'.format(len(exists), cube_name, step, sample_size)
+    print 'Average cube size: {}'.format(deepy.util.human_readable_bytes(average))
+    print 'Total Space Required to store {} [{}] worth of {} = {}'.format(total_cubes, total_num_cubes, cube_name, deepy.util.human_readable_bytes(total))
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=
+        '''
+        Predict how much space we need to store X cube for Y time
+        Example:
+            predict_cube_size.py drill1 1h
+
+        ''', formatter_class=argparse.RawTextHelpFormatter)
+
+    parser.add_argument('-d', '--deployment', help='deployment id')
+
+    parser.add_argument('cube', help='cube name')
+    parser.add_argument('step', help='cube step size')
+    parser.add_argument('--sample_size', action='store', type=str, default='30 days', help='Sample size to calculate average cube size over')
+    parser.add_argument('--predict_range', action='store', type=str, default='364 days', help='Predict size of cube X for this time period')
+
+    args = parser.parse_args()
+    return args
+
+def main():
+    args = parse_args()
+    get_cube_size(args.cube, args.step, sample_size=args.sample_size, total_cubes=args.predict_range)
+
+if __name__ == '__main__':
+    main()

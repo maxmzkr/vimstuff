@@ -1,0 +1,93 @@
+#include <cassert>
+#include <unordered_set>
+#include "./clock.h"
+#include "./page_information_entry.h"
+#include "./page_information_table.h"
+
+void clock::init() { clock_hand_ = clock_queue_.begin(); }
+
+void clock::place(Pie* place_pie) {
+  if (clock_queue_.size() == Pit::memory_pages()) {
+    evict();
+  }
+
+  unsigned int ppage = Pit::get_next_memory_location();
+  place_pie->set_ppage(ppage);
+
+	auto new_hand = clock_queue_.insert(clock_hand_, place_pie);
+  // This is necessary because an empty clock can have the hand moved to end
+  // when doing an insert.
+  if (clock_hand_ == clock_queue_.end()) {
+    clock_hand_ = clock_queue_.begin();
+  }
+  place_pie->set_clock_location(new_hand);
+}
+
+void clock::erase(Pie* erase_pie) {
+  std::list<Pie*>::iterator clock_spot = erase_pie->clock_location();
+  auto new_spot = clock_queue_.erase(clock_spot);
+  if (clock_hand_ == clock_spot) {
+    clock_hand_ = new_spot;
+  }
+  Pit::free_memory_location(erase_pie->ppage());
+}
+
+bool clock::evict() {
+  bool evicted = false;
+  while (true) {
+    switch ((*clock_hand_)->state()) {
+      // SET REF TO 0
+      case Pie::REF:
+        (*clock_hand_)->set_state(Pie::NO_REF);
+        break;
+      case Pie::REF_NO_TOUCH:
+        (*clock_hand_)->set_state(Pie::NO_REF_NO_TOUCH);
+        break;
+      case Pie::DIRTY:
+        (*clock_hand_)->set_state(Pie::NO_REF_DIRTY);
+        break;
+
+      // REF 0 to EVICT
+      case Pie::NO_REF_NO_TOUCH:
+        evicted = true;
+        (*clock_hand_)->set_state(Pie::INIT);
+        free_hand();
+        break;
+
+      case Pie::NO_REF_DIRTY:
+        evicted = true;
+        (*clock_hand_)->store_page();
+        (*clock_hand_)->set_state(Pie::EVICT);
+        free_hand();
+        break;
+
+      case Pie::NO_REF:
+        evicted = true;
+        (*clock_hand_)->set_state(Pie::EVICT);
+        free_hand();
+        break;
+
+      default:
+        assert(false);
+        break;
+    }
+
+    if (evicted) {
+      break;
+    }
+
+    if (++clock_hand_ == clock_queue_.end()) {
+      clock_hand_ = clock_queue_.begin();
+    }
+  }
+  return true;
+}
+
+void clock::free_hand() {
+  // TODO this is duplicate of some of erase
+  Pit::free_memory_location((*clock_hand_)->ppage());
+  clock_hand_ = clock_queue_.erase(clock_hand_);
+}
+
+std::list<Pie*>::iterator clock::clock_hand_;
+std::list<Pie*> clock::clock_queue_;

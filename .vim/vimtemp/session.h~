@@ -1,0 +1,11 @@
+class Session {
+ public:
+  explict Session(unsigned int id);
+
+  // Returns -1 if the new one is less than the old
+  int set_current_sequence_number(unsigned int sequence_number);
+
+ private:
+  unsigned int id_;
+  unsigned int sequence_number_ = 0;
+};

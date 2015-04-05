@@ -1,0 +1,2518 @@
+/*
+ * dimensions.c
+ *
+ */
+
+#define __FAVOR_BSD 1
+
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
+
+#include <limits.h>
+#include <errno.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <time.h>
+#include <zlib.h>
+#include <dirent.h>
+
+#include <arpa/inet.h>
+#include <netinet/ip.h>
+#include <netinet/in.h>
+
+#include <pcre.h>
+
+#include "predicates.h"
+
+#include "assert.h"
+#include "atom.h"
+#include "table.h"
+#include "prefix.h"
+#include "ptrie.h"
+#include "event.h"
+#include "fileutil.h"
+
+#include "prefix.h"
+#include "ptrie.h"
+
+#include "jansson.h"
+#include "bit.h"
+
+#include "pipedream.h"
+#include "tags/tag.h"
+#include "bgp/bgp.h"
+#include "deepylog.h"
+#include "gzslurp.h"
+
+#include "dimensions.h"
+
+#define MAX_NUM_TAGS		65535*4
+
+static Arena_T		arena = NULL;
+
+// Lookup for all (dimension_id, position_id) 
+static Table_T		PositionTable = NULL;
+
+
+static Table_T		RouterTable = NULL;
+
+static Table_T		FlowIPTable = NULL;
+static Table_T		FlowIPLocalTable = NULL;
+static Table_T		TagTable = NULL;
+static Table_T		InterfaceTable = NULL;
+static Table_T		ApplicationTable = NULL;
+static Table_T		TypesTable = NULL;
+static Table_T		DomainsTable;
+static Table_T		SrcAspathTable = NULL;
+static List_T		CommunityDimensionList = NULL;
+static Table_T		SingletonAspathTable = NULL;
+
+static Table_T		ASOriginTable;
+static Table_T		ASPeerTable;
+static Table_T		ASAfterPeerTable;
+
+static int		num_dimensions_loaded = 0;
+static struct dimension *dimensions_id_array[65536];
+static struct dimension *dimensions_offset_array[MAX_NUM_DIMENSIONS];
+
+static struct tag	*site_pos_array[65536];
+
+static List_T		protocol_array[255];
+static List_T		tcpport_array[65536];
+static List_T		udpport_array[65536];
+
+static u_int8_t		backbone_asn_lookup_array[65536];
+static u_int8_t		internal_asn_lookup_array[65536];
+
+static ptrie_t		*onnet_ptrie_v4 = NULL;
+static ptrie_t		*onnet_ptrie_v6 = NULL;
+
+static ptrie_t		*tags_ptrie_v4 = NULL;
+static ptrie_t		*tags_ptrie_v6 = NULL;
+
+static struct tag	*geoip_pos_array[65535];
+static struct tag	*service_pos_array[65535];
+
+
+// special cases used in classification
+static struct tag	*proxy_tag = NULL;
+static struct tag	*consumer_tag = NULL;
+static struct tag	*business_tag = NULL;
+static struct tag	*internal_tag = NULL;
+
+static struct tag	*onnet_tag = NULL;
+static struct tag	*offnet_tag = NULL;
+static struct tag	*multicast_tag = NULL;
+static struct tag	*transit_tag = NULL;
+static struct tag	*dropped_tag = NULL;
+static struct tag	*aspath_null_aspath_tag = NULL;
+static struct tag	*as_origin_null_tag = NULL;
+
+
+static u_int16_t	site_flags_array[65536];
+
+// Hack for TWC https://deepfield.atlassian.net/browse/SUP-62
+static int ignore_ipv6_holes = 0;
+
+struct position_container {
+	u_int32_t	dimension_id;
+	u_int32_t	position_id;
+	struct tag	*tag;
+};
+
+
+void
+dimensions_zero_router_counts (void)
+{
+	int j = 0;
+        for (j=0; j < RouterTable->size; j++) {
+                struct binding          **pp = NULL;
+
+                for (pp = &RouterTable->buckets[j]; *pp; pp = &(*pp)->link) {
+                        struct tag      *flowsrc = (struct tag *) (*pp)->value;
+			flowsrc->telemetry_num_flows 		= 0;
+			flowsrc->telemetry_bytes 		= 0;
+			flowsrc->router_bytes			= 0;
+			flowsrc->bytes_with_bad_duration 	= 0;
+		}
+	}
+
+}
+
+void
+dimensions_set_ignore_ip6_holes (void)
+{
+	ignore_ipv6_holes = 1;
+	deepylog_info("ignoring-ipv6-holes");
+}
+
+struct tag *
+dimension_aspath_null_lookup(void)
+{
+	return aspath_null_aspath_tag;
+}
+
+struct tag *
+dimension_as_origin_null_lookup(void)
+{
+	return as_origin_null_tag;
+}
+
+
+
+int
+dimension_aspath_null_pos_id_lookup(void)
+{
+	struct tag	*aspath_null_tag;
+	int		retval;
+
+	aspath_null_tag = dimension_aspath_null_lookup();
+	if (aspath_null_tag == NULL) {
+		retval = 0;
+	}
+	else {
+		retval = aspath_null_tag->position_id;
+	}
+
+	return retval;
+}
+
+struct tag *
+dimension_srcaspath_lookup (int peeras, int originas)
+{
+	char tmp[100];
+
+	snprintf(tmp, sizeof(tmp), "%d .. %d", peeras, originas);
+
+	return (Table_get (SrcAspathTable, (void *) tmp));
+}
+
+struct tag *
+dimension_singleton_aspath_lookup(int peeras)
+{
+	if (peeras <= 0) {
+		return NULL;
+	}
+
+	return Table_get(SingletonAspathTable, *(void **) &peeras);
+}
+
+
+
+Table_T
+dimensions_get_flowip_table (void)
+{
+	return (FlowIPTable);
+}
+
+
+Table_T
+dimensions_get_router_table (void)
+{
+	return (RouterTable);
+}
+
+char *
+dimensions_get_position_name (u_int16_t dimenion_id, u_int32_t position_id)
+{
+	struct position_container	tmp, *ret;
+	static char			*blank = "";
+
+	tmp.dimension_id = dimenion_id;
+	tmp.position_id = position_id;
+
+	if (!(ret = Table_get(PositionTable, (void *) &tmp))) {
+		return blank;
+	}
+
+	if (!ret->tag)
+		return blank;
+
+	return ret->tag->name;
+}
+
+
+char *
+dimensions_get_position_cname (u_int16_t dimenion_id, u_int32_t position_id)
+{
+	struct position_container	tmp, *ret;
+	static char			*blank = "";
+
+	tmp.dimension_id = dimenion_id;
+	tmp.position_id = position_id;
+
+	if (!(ret = Table_get(PositionTable, (void *) &tmp))) {
+		return blank;
+	}
+
+	if (!ret->tag) {
+		return blank;
+	}
+
+	return (ret->tag->cname); 
+}
+
+
+
+struct tag *
+dimensions_get_position (u_int16_t dimenion_id, u_int32_t position_id)
+{
+	struct position_container	tmp, *ret;
+
+	tmp.dimension_id = dimenion_id;
+	tmp.position_id = position_id;
+
+	if (!(ret = Table_get(PositionTable, (void *) &tmp)))
+		return NULL;
+
+	if (!ret->tag)
+		return NULL;
+
+	return ret->tag;
+}
+
+
+
+int
+dimensions_is_internal_asn (int asn)
+{
+	if (asn == -1) {
+		return 1;
+	}
+
+
+	return internal_asn_lookup_array[asn];
+}
+
+int
+dimensions_is_backbone_asn (int asn)
+{
+
+	if (asn == -1) {
+		return 1;
+	}
+
+	return backbone_asn_lookup_array[asn];
+}
+
+int 
+dimensions_is_private_asn (int asn) 
+{
+	if ((asn >= 64512) && (asn <= 65535)) 
+		return 1;
+    return 0;
+}
+
+
+int
+dimensions_is_business_tag (struct tag *tag)
+{
+	return (tag == business_tag);
+}
+
+int
+dimensions_is_consumer_tag (struct tag *tag)
+{
+	return (tag == consumer_tag);
+}
+
+
+int
+dimensions_is_proxy_tag (struct tag *tag)
+{
+	return (tag == proxy_tag);
+
+}
+
+int
+dimensions_is_internal_tag (struct tag *tag)
+{
+	return (tag == internal_tag);
+
+}
+
+int
+dimensions_get_num_loaded (void)
+{
+	return (num_dimensions_loaded);
+}
+
+struct tag *
+dimensions_get_offnet_tag (void)
+{
+	return offnet_tag;
+}
+
+struct tag *
+dimensions_get_onnet_tag (void)
+{
+	return onnet_tag;
+}
+
+struct tag *
+dimensions_get_transit_tag (void)
+{
+	return transit_tag;
+}
+
+struct tag *
+dimensions_get_dropped_tag (void)
+{
+	return dropped_tag;
+}
+
+
+
+struct tag *
+tag_alloc (const char *name)
+{
+	uint32_t	opt_id;
+	struct tag	*tag;
+
+	if (name == NULL)
+		return NULL;
+
+	tag = Table_get_opt(TagTable, &opt_id, (void *) name);
+	if (tag != NULL)
+		return (tag);
+
+	tag = calloc(1, sizeof(struct tag));
+	tag->name = strdup(name);
+	Table_put_opt(TagTable, opt_id, (void *) tag->name, (void *) tag, arena);
+	return (tag);
+}
+
+
+
+struct tag *
+dimensions_get_multicast_tag (void)
+{
+	return multicast_tag;
+}
+
+struct dimension *
+dimensions_get_by_id (int id)
+{
+	return (dimensions_id_array[id]);
+}
+
+
+struct dimension *
+dimensions_get_by_name (const char *name)
+{
+	int			i = 0;
+	int			len = 0;
+	struct dimension	*dimension;
+	char			*cp;
+
+	if ((cp = strstr(name, ".local"))) {
+		len = cp - name;
+	}
+	else if ((cp = strstr(name, ".remote"))) {
+		len = cp - name;
+	}
+	else {
+		len = strlen(name);
+	}
+
+	for (i=0; i < num_dimensions_loaded; i++) {
+		if (!(dimension = dimensions_offset_array[i]))
+			continue;
+		if (strlen(dimension->name) > len)
+			continue;
+		if (!strncmp(dimension->name, name, len)) 
+			return dimension;
+	}
+
+	return NULL;
+}
+
+
+struct dimension *
+dimensions_get_by_offset (int offset)
+{
+	if ((offset < 0) || (offset > MAX_NUM_DIMENSIONS))
+		return NULL;
+
+	return (dimensions_offset_array[offset]);
+}
+
+
+struct tag *
+get_site_tag_from_pos_id (int pos_id)
+{
+	if (pos_id >= 65536)
+		return NULL;
+
+	return site_pos_array[pos_id];
+}
+
+
+List_T
+get_tag_list_for_domain (char *domain)
+{
+	return Table_get(DomainsTable, domain);
+}
+
+
+List_T
+get_tag_list_for_flow_ip (u_int32_t flowip)
+{
+	return Table_get(FlowIPTable, *(void **) &flowip);
+}
+
+
+List_T
+get_tag_list_for_flow_ip_local (u_int32_t flowip)
+{
+	return Table_get(FlowIPLocalTable, *(void **) &flowip);
+}
+
+
+List_T
+get_tag_list_for_protocol (u_int8_t protocol)
+{
+	return protocol_array[protocol];
+}
+
+
+List_T
+get_tag_list_for_as_peer (int as_peer)
+{
+	if (as_peer <= 0)
+		return NULL;
+
+	return Table_get (ASPeerTable,*(void **) &as_peer);
+}
+
+
+struct tag *
+get_tag_for_as_after_peer (int as_after_peer)
+{
+	if (as_after_peer <= 0)
+		return NULL;
+
+	return Table_get (ASAfterPeerTable,*(void **) &as_after_peer);
+}
+
+
+List_T
+get_tag_list_for_as_origin (int as_origin)
+{
+	if (as_origin <= 0)
+		return NULL;
+
+	return Table_get (ASOriginTable,*(void **) &as_origin);
+}
+
+
+List_T
+get_tag_list_for_type (char *type_str)
+{
+	return Table_get(TypesTable, type_str);
+}
+
+
+static struct tag *
+get_tag_by_name (const char *name) {
+	assert(name);
+	return(Table_get(TagTable, (void *)name));
+}
+
+
+struct tag *
+tag_get_geoip_from_position (int position_id) 
+{
+
+	if ((position_id < 0) || (position_id >= 65535))
+		return NULL;
+
+	return (geoip_pos_array[position_id]);
+}
+
+struct tag *
+tag_get_service_from_position (int position_id) 
+{
+
+	if ((position_id < 0) || (position_id >= 65535))
+		return NULL;
+
+	return (service_pos_array[position_id]);
+}
+
+
+int 
+dimensions_is_p2p_site (int pos_id)
+{
+ 	if ((pos_id < 0) || (pos_id > 65535))
+		return (0);
+
+	if (site_flags_array[pos_id] & TAG_FLAG_IS_P2P)
+		return (1);
+
+	return (0);
+}
+
+void
+dimensions_add_tag_to_ptrie_v4 (prefix_t *prefix, struct tag *tag)
+{
+	struct address_data	*data = NULL;
+	struct address_data	*data_old = NULL;
+
+	static struct address_data	*data_cache = NULL;
+	static prefix_t			prefix_cache;
+	static int			one = 1;
+	static int			negativeone = -1;
+
+	// Special cases
+	if (!strcmp(tag->name, "onnet")) {
+		ptrie_put(onnet_ptrie_v4, prefix, (void *) &one, 0);
+	}
+	if (!strcmp(tag->name, "holes")) 
+		ptrie_put(onnet_ptrie_v4, prefix, (void *) &negativeone, 0);
+
+
+	if (data_cache && !memcmp(&prefix_cache, prefix, sizeof(prefix_t))) {
+		data = data_cache;
+	}
+	else {
+		data = calloc(1, sizeof(struct address_data));
+		data_old = ptrie_put(tags_ptrie_v4, prefix, data, 0);
+	
+		if (data_old) {
+			free(data);
+			data = data_old;
+		}
+
+		data_cache = data;
+		memcpy(&prefix_cache, prefix, sizeof(prefix_t));
+	}
+	
+	data->matched_tags = List_push(data->matched_tags, tag);
+}
+
+void
+dimensions_add_tag_to_ptrie_v6 (prefix_t *prefix, struct tag *tag)
+{
+	struct address_data	*data = NULL;
+	struct address_data	*data_old = NULL;
+	static int		one = 1;
+	static int		negativeone = -1;
+
+	// Special cases
+	if (!strcmp(tag->name, "onnet")) 
+		ptrie_put(onnet_ptrie_v6, prefix, (void *) &one, 0);
+
+	if (!strcmp(tag->name, "holes")) {
+		// Hack for TWC https://deepfield.atlassian.net/browse/SUP-62
+		if (ignore_ipv6_holes)  {
+			// do nothinng
+		}
+		else {
+			ptrie_put(onnet_ptrie_v6, prefix, (void *) &negativeone, 0);
+		}
+	}
+
+	data = calloc(1, sizeof(struct address_data));
+	data_old = ptrie_put(tags_ptrie_v6, prefix, data, 0);
+	
+	if (data_old) {
+		free(data);
+		data = data_old;
+	}
+	
+	data->matched_tags = List_push(data->matched_tags, tag);
+}
+
+
+
+
+
+int 
+dimensions_load_setup (char *filename)
+{
+	json_t		*json;
+	json_error_t	error;
+	json_t		*jval, *jmatch, *jasn, *jcidrs;
+
+	json = json_load_file(filename, 0, &error);
+
+
+	if(!json) {
+		deepylog_error("json-loading-error file=%s line=%d error=%s", 
+            filename, error.line, error.text);
+		return (-1);
+	}
+
+
+	// Onnet
+	if ((jval = json_object_get(json, "onnet")) && 
+	    ((jmatch = json_object_get(jval, "match"))) && 
+	    ((jcidrs = json_object_get(jmatch, "cidrs")))) {
+		json_t		*j_val;
+		int		i, n;
+		//int		asn;
+		
+		n = (int) json_array_size(jcidrs);
+		for (i=0; i < n; i++) {
+			prefix_t		prefix;
+			const char		*prefix_str;
+			static int		one = 1;
+
+			j_val = json_array_get(jcidrs, i);
+
+			prefix_str = json_string_value(j_val);
+			ascii2prefix(AF_INET, prefix_str, &prefix);
+			ptrie_put(onnet_ptrie_v4, &prefix, (void *) &one, 0);
+		}
+	}
+
+
+	// Backbone
+	if ((jval = json_object_get(json, "backbone")) && 
+	    ((jmatch = json_object_get(jval, "match"))) && 
+	    ((jasn = json_object_get(jmatch, "asn")))) {
+		json_t		*jasn_val;
+		int		i, n;
+		int		asn;
+
+		n = (int) json_array_size(jasn);
+		for (i=0; i < n; i++) {
+			jasn_val = json_array_get(jasn, i);
+			asn = (int) json_integer_value(jasn_val);
+			deepylog_debug("backbone-asn %d", asn);
+			backbone_asn_lookup_array[asn] = 1;
+		}
+	}
+	if ((jval = json_object_get(json, "backbone")) && 
+	    ((jmatch = json_object_get(jval, "match"))) && 
+	    ((jasn = json_object_get(jmatch, "origin_as_is")))) {
+		json_t		*jasn_val;
+		int		i, n;
+		int		asn;
+
+		n = (int) json_array_size(jasn);
+		for (i=0; i < n; i++) {
+			jasn_val = json_array_get(jasn, i);
+			asn = (int) json_integer_value(jasn_val);
+			deepylog_debug("backbone-asn %d", asn);
+			backbone_asn_lookup_array[asn] = 1;
+		}
+	}
+
+
+	// Internal
+	if ((jval = json_object_get(json, "internal")) && 
+	    ((jmatch = json_object_get(jval, "match"))) && 
+	    ((jasn = json_object_get(jmatch, "asn")))) {
+		json_t		*jasn_val;
+		int		i, n;
+		int		asn;
+
+		n = (int) json_array_size(jasn);
+		for (i=0; i < n; i++) {
+			jasn_val = json_array_get(jasn, i);
+			asn = (int) json_integer_value(jasn_val);
+			deepylog_debug("internal-asn %d", asn);
+			internal_asn_lookup_array[asn] = 1;
+		}
+	}
+	if ((jval = json_object_get(json, "internal")) && 
+	    ((jmatch = json_object_get(jval, "match"))) && 
+	    ((jasn = json_object_get(jmatch, "origin_as_is")))) {
+		json_t		*jasn_val;
+		int		i, n;
+		int		asn;
+
+		n = (int) json_array_size(jasn);
+		for (i=0; i < n; i++) {
+			jasn_val = json_array_get(jasn, i);
+			asn = (int) json_integer_value(jasn_val);
+			deepylog_debug("internal-asn %d", asn);
+			internal_asn_lookup_array[asn] = 1;
+		}
+	}
+
+
+	return (0);
+}
+
+
+
+
+
+
+
+
+static void
+_tags_resolve_json_names (struct tag *tag, json_t *json_array, List_T *tag_list)
+{
+	int i, n;
+
+	if (json_array == NULL)
+		return;
+
+	n = (int) json_array_size(json_array);
+
+	for (i=0; i < n; i++) {
+		json_t		*jtag;
+		struct tag	*ref_tag = NULL;
+		const char	*tag_str = NULL;
+
+		jtag = json_array_get(json_array, i);
+
+
+		// special case positions
+		if (json_typeof(jtag) == JSON_ARRAY) {
+			json_t		*j_dim, *j_pos;
+			u_int16_t	dim_id;
+			u_int32_t	pos_id;
+
+			if (json_array_size(jtag) !=2 )
+				continue;
+			
+			j_dim = json_array_get(jtag, 0);
+			j_pos = json_array_get(jtag, 1);
+
+			dim_id = json_integer_value(j_dim);
+			pos_id = json_integer_value(j_pos);
+			
+			ref_tag = dimensions_get_position (dim_id, pos_id);
+
+			if(ref_tag == NULL) { continue; }
+
+		}
+		// everything else 
+		else {
+			if (json_string_value(jtag))
+				tag_str = strdup(json_string_value(jtag));
+			else
+				printf("Something bad with %s\n", tag->name);
+		}
+
+
+		// Communities XX -- special case -- XX
+		// Instead of strstr we really need to space seperate communities
+		// Or treat these as a regexp
+		if (tag->json_bgp_communities == json_array) {
+			List_T list2 = CommunityDimensionList;
+			for ( ; list2; list2 = list2->rest) {
+				struct tag *tmp_tag = (struct tag *) list2->first;
+				
+				if (strstr(tmp_tag->name, tag_str)) {
+					*tag_list = List_push(*tag_list, tmp_tag);
+					//tmp_tag->other_tags_including_me = List_push(tmp_tag->other_tags_including_me, tag);
+					tmp_tag->or_tags_including_me = List_push(tmp_tag->or_tags_including_me, tag);
+				}
+			}
+			continue;
+		}
+
+
+		// we support short name references as special case for applications		
+		// XX -- this needs to go before get_tag_by_name for some reason -- XX
+		if (!ref_tag && tag_str)
+			ref_tag = Table_get(ApplicationTable, (void *) tag_str);
+
+		// lookup tag string
+		if (!ref_tag && tag_str)
+			ref_tag = get_tag_by_name(tag_str);
+
+	
+
+		if (!ref_tag) {
+			//deepylog_debug("Could not find tag _tags_resolve_json_names %s in match for tag %s\n", tag_str, tag->name);
+			//ref_tag = tag_alloc (tag_str);
+			continue;
+		}
+	
+		*tag_list = List_push(*tag_list, ref_tag);
+		ref_tag->other_tags_including_me = List_push(ref_tag->other_tags_including_me, tag);
+		if (&tag->or_tags == tag_list) {
+			ref_tag->or_tags_including_me = List_push(ref_tag->or_tags_including_me, tag);
+		}
+	}
+}
+		
+
+
+static void 
+tags_resolve_names_after_loading (void)
+{
+	int		i;
+	Table_T		table = TagTable;
+	struct tag	*tag = NULL;
+	struct tag	*tmp_tag;
+	struct binding	*p;
+
+
+	// Walk through all tags
+	for (i = 0; i < table->size; i++) {
+		for (p = table->buckets[i]; p; p = p->link) {
+
+			tag = (struct tag *) p->value;
+
+			
+			if ((tag->rtr_intf)) {
+				if ((tmp_tag = get_tag_by_flowip(tag->rtr_intf->router_ip))) {
+					tag->rtr_intf->router_tag = tmp_tag;
+					//printf("set %s -> %s\n", tag->name, tmp_tag->name);
+				}
+				else {
+					//printf("Missing router %s  %s\n", tag->name, inet_ntoa(tag->rtr_intf->router_ip));
+					//printf("Router not found %s %s\n", inet_ntoa(
+				}
+			}
+
+		
+			if (tag->json_ors) {
+				_tags_resolve_json_names (tag, tag->json_ors, &(tag->or_tags));
+			}
+
+			if (tag->json_holes) {
+				_tags_resolve_json_names (tag, tag->json_holes, &tag->hole_tags);
+			}
+
+			if (tag->json_ands) {
+				_tags_resolve_json_names (tag, tag->json_ands, &tag->and_tags);
+			}
+
+			if (tag->json_parents) {
+				_tags_resolve_json_names (tag, tag->json_parents, &tag->parent_tags);
+			}
+
+			if (tag->json_application_ports) {
+				_tags_resolve_json_names (tag, tag->json_application_ports, &tag->application_port_tags);
+			}
+
+			if (tag->json_bgp_communities) {
+				_tags_resolve_json_names (tag, tag->json_bgp_communities, &tag->or_tags);
+			}
+		}
+	}
+}
+
+
+
+
+static int 
+_dimension_load_position_match (struct tag *tag, json_t *match)
+{
+	json_t		*tmp;
+
+	if ((tmp = json_object_get(match, "tags")) != NULL) {
+		tag->json_ors = json_incref(tmp);
+	}
+
+	if ((tmp = json_object_get(match, "positions")) != NULL) {
+		tag->json_ors = json_incref(tmp);
+	}
+
+	if ((tmp = json_object_get(match, "holes")) != NULL)
+		tag->json_holes = json_incref(tmp);
+
+	if ((tmp = json_object_get(match, "and")) != NULL)
+		tag->json_ands = json_incref(tmp);
+
+	if ((tmp = json_object_get(match, "application_ports")) != NULL) {
+		tag->json_application_ports = json_incref(tmp);
+	}
+
+	if ((tmp = json_object_get(match, "bgp_communities")) != NULL) {
+		tag->this_is_bgp_match_tag = 1;
+		tag->json_bgp_communities = json_incref(tmp);
+	}
+
+	if ((tmp = json_object_get(match, "origin_as_is")) || (tmp = json_object_get(match, "asn"))) {
+		int		i, n = (int) json_array_size(tmp);
+
+		for (i=0; i < n; i++) {
+			List_T		tag_list;
+			json_t		*j_asn;
+			int		asn;
+			u_int32_t	opt_id;
+
+			j_asn = json_array_get(tmp, i);
+			asn =  (int) json_number_value(j_asn);
+			if (!asn) {
+				deepylog_warning("bad-origin-asn-position %d", tag->position_id);
+				continue;
+			}
+					
+			tag_list = Table_get_opt (ASOriginTable, &opt_id, *(void **) &asn);
+			tag_list = List_push(tag_list, tag);
+			Table_put_opt (ASOriginTable, opt_id, *(void **) &asn, tag_list, NULL);
+		}
+	}
+
+
+
+	
+	if ((tmp = json_object_get(match, "peer_as"))) {
+		int		i, n = (int) json_array_size(tmp);
+
+		for (i=0; i < n; i++) {
+			List_T		tag_list;
+			json_t		*j_asn;
+			int		asn;
+			u_int32_t	opt_id;
+
+			j_asn = json_array_get(tmp, i);
+			asn =  (int) json_number_value(j_asn);
+			if (!asn) {
+				deepylog_warning("bad-peer-asn-position %d", tag->position_id);
+				continue;
+			}
+					
+			tag_list = Table_get_opt (ASPeerTable, &opt_id, *(void **) &asn);
+			tag_list = List_push(tag_list, tag);
+			Table_put_opt (ASPeerTable, opt_id, *(void **) &asn, tag_list, NULL);
+		}
+	}
+
+
+	if ((tmp = json_object_get(match, "udp_ports")) != NULL) {
+		int		i, n = (int) json_array_size(tmp);
+
+		for (i=0; i < n; i++) {
+			json_t		*j_port;
+			int		port;
+
+			j_port = json_array_get(tmp, i);
+			port =  (int) json_number_value(j_port);
+
+			if ((port > 0) && (port < 65536))  {
+				udpport_array[port] = List_push (udpport_array[port], tag);
+			}
+		}
+	}
+
+	if ((tmp = json_object_get(match, "tcp_ports")) != NULL) {
+		int		i, n = (int) json_array_size(tmp);
+
+		for (i=0; i < n; i++) {
+			json_t		*j_port;
+			int		port;
+
+			j_port = json_array_get(tmp, i);
+			port =  (int) json_number_value(j_port);
+
+			if ((port > 0) && (port < 65536))  {
+				tcpport_array[port] = List_push (tcpport_array[port], tag);
+			}
+		}
+	}
+
+	if ((tmp = json_object_get(match, "protocols")) != NULL) {
+		int		i, n = (int) json_array_size(tmp);
+
+		for (i=0; i < n; i++) {
+			json_t		*j_protocol;
+			int		protocol;
+
+			j_protocol = json_array_get(tmp, i);
+			protocol =  (int) json_number_value(j_protocol);
+
+			if ((protocol > 0) && (protocol < 255))  {
+				protocol_array[protocol] = List_push (protocol_array[protocol], tag);
+			}
+		}
+	}
+
+
+	if ((tmp = json_object_get(match, "domains")) != NULL) {
+		int		i, n = (int) json_array_size(tmp);
+
+		for (i=0; i < n; i++) {
+			json_t		*j_domain;
+			char		*domain_str;
+			u_int32_t	opt_id;
+			List_T		tag_list = NULL;
+
+			j_domain = json_array_get(tmp, i);
+			domain_str = strdup((char *) json_string_value(j_domain));
+
+			tag_list = Table_get_opt (DomainsTable, &opt_id, domain_str);
+			tag_list = List_push(tag_list, tag);
+			Table_put_opt (DomainsTable, opt_id, domain_str, tag_list, arena);
+		}
+	}
+
+	if ((tmp = json_object_get(match, "types")) != NULL) {
+		int		i, n = (int) json_array_size(tmp);
+
+		for (i=0; i < n; i++) {
+			json_t		*j_type;
+			char		*type_str;
+			u_int32_t	opt_id;
+			List_T		type_list = NULL;
+
+			j_type = json_array_get(tmp, i);
+			type_str = strdup((char *) json_string_value(j_type));
+
+			type_list = Table_get_opt (TypesTable, &opt_id, type_str);
+			type_list = List_push(type_list, tag);
+			Table_put_opt (TypesTable, opt_id, type_str, type_list, arena);
+		}
+	}
+
+	if ((tmp = json_object_get(match, "cidrs")) != NULL) {
+		int		i, n = (int) json_array_size(tmp);
+
+		for (i=0; i < n; i++) {
+			json_t		*j_cidr;
+			char		*cidr_str;
+			prefix_t	prefix;
+
+			j_cidr = json_array_get(tmp, i);
+			cidr_str = (char *) json_string_value(j_cidr);
+			if (ascii2prefix(AF_INET, cidr_str, &prefix))
+				dimensions_add_tag_to_ptrie_v4 (&prefix, tag);
+			else if (ascii2prefix(AF_INET6, cidr_str, &prefix)) 
+				dimensions_add_tag_to_ptrie_v6 (&prefix, tag);
+			else 
+				deepylog_warning("bad-cidr %s %s", tag->name, cidr_str);
+		}
+	}
+
+
+
+
+	if ((tmp = json_object_get(match, "flow_ip")) != NULL) {
+		int		i, n = (int) json_array_size(tmp);
+
+		for (i=0; i < n; i++) {
+			json_t		*j_cidr;
+			char		*cidr_str;
+			prefix_t	prefix;
+			List_T		tag_list;
+			u_int32_t	opt_id;
+
+			j_cidr = json_array_get(tmp, i);
+			cidr_str = (char *) json_string_value(j_cidr);
+			if (ascii2prefix(AF_INET, cidr_str, &prefix)) {
+				tag_list = Table_get_opt (FlowIPTable, &opt_id, *(void **) &prefix.add);
+				tag_list = List_push(tag_list, tag);
+				Table_put_opt (FlowIPTable, opt_id, *(void **) &prefix.add, tag_list, NULL);
+
+			}
+			//else if (ascii2prefix(AF_INET6, cidr_str, &prefix))  {
+			//_add_tag_to_ptrie_v6 (&prefix, tag);
+			//}
+			else  {
+				deepylog_warning("bad-cidr %s %s", tag->name, cidr_str);
+			}
+		}
+	}
+
+	if ((tmp = json_object_get(match, "flow_ip_local")) != NULL) {
+		int		i, n = (int) json_array_size(tmp);
+
+		for (i=0; i < n; i++) {
+			json_t		*j_cidr;
+			char		*cidr_str;
+			prefix_t	prefix;
+			List_T		tag_list;
+			u_int32_t	opt_id;
+
+			j_cidr = json_array_get(tmp, i);
+			cidr_str = (char *) json_string_value(j_cidr);
+			if (ascii2prefix(AF_INET, cidr_str, &prefix)) {
+				tag_list = Table_get_opt (FlowIPLocalTable, &opt_id, *(void **) &prefix.add);
+				tag_list = List_push(tag_list, tag);
+				Table_put_opt (FlowIPLocalTable, opt_id, *(void **) &prefix.add, tag_list, NULL);
+			}
+			//else if (ascii2prefix(AF_INET6, cidr_str, &prefix))  {
+			//_add_tag_to_ptrie_v6 (&prefix, tag);
+			//}
+			else  {
+				deepylog_warning("bad-cidr %s %s", tag->name, cidr_str);
+			}
+		}
+	}
+
+	return 0;
+}
+
+
+
+// Used in benchmark.c
+void
+dimensions_lookup_infrastructure (prefix_t *prefix, u_int32_t *cdn_pos, u_int32_t *hosting_pos)
+{
+	ptrie_node_t		*stack[PTRIE_MAXBITS + 1];
+	int			i, n = 0;
+
+	struct address_data	*data;
+	struct tag		*tag_tmp = NULL;
+	List_T			list1, list2;
+
+	if (prefix->family == AF_INET)
+		n = ptrie_get_stack_less_specific(tags_ptrie_v4, prefix, stack, 0);
+
+	if (prefix->family == AF_INET6)
+		n = ptrie_get_stack_less_specific(tags_ptrie_v6, prefix, stack, 0);
+
+
+	for (i=0; i < n; i++) {
+
+		data = ptrie_node_get_data(stack[i]);
+
+		list1 = data->matched_tags;
+		for ( ; list1; list1 = list1->rest) {
+			tag_tmp = (struct tag *) list1->first;
+
+			//printf("%s   current: %d   dim: %d  pos: %d\n", tag_tmp->name, tag_tmp->dimension_id, tag_tmp->position_id, *cdn_pos);
+			
+			if (!*cdn_pos) {
+				if (tag_tmp->dimension_id == DIMENSION_CDN) {
+					*cdn_pos = tag_tmp->position_id;
+				}
+				else {
+					list2 = tag_tmp->other_tags_including_me;
+					for ( ; list2; list2 = list2->rest) {
+						struct tag *tag_tmp2 = (struct tag *) list2->first;
+						if (tag_tmp2->dimension_id == DIMENSION_CDN) {
+							*cdn_pos = tag_tmp2->position_id;
+						}
+					}
+				}
+			}
+
+			if (!*hosting_pos) {
+				if (tag_tmp->dimension_id == DIMENSION_HOSTING) {
+					*hosting_pos = tag_tmp->position_id;
+				}
+				else {
+					list2 = tag_tmp->other_tags_including_me;
+					for ( ; list2; list2 = list2->rest) {
+						struct tag *tag_tmp2 = (struct tag *) list2->first;
+						if (tag_tmp2->dimension_id == DIMENSION_HOSTING) {
+							*hosting_pos = tag_tmp2->position_id;
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+
+
+
+
+
+int
+dimensions_loookup_onnet (int family, const void *addr) 
+{
+	prefix_t	prefix, *prefix_less;
+	int		*data;
+	int		ret = 0;
+
+	if (family == AF_INET) {
+		prefix_init(family, addr, 32, &prefix);
+		ret = ptrie_get_less_specific(onnet_ptrie_v4, &prefix, &prefix_less, (void *) &data, 0);
+	}
+
+	if (family == AF_INET6) {
+		prefix_init(family, addr, 128, &prefix);
+		ret = ptrie_get_less_specific(onnet_ptrie_v6, &prefix, &prefix_less, (void *) &data, 0);
+	}
+
+
+
+	if (ret != 0)
+		return 0;
+
+	return *data;
+}
+
+
+
+struct tag *
+add_discovered_telemetry_source (struct in_addr ip, int sampling_rate)
+{
+	char		tag_name[100];
+	struct tag	*tag;
+
+
+	if ((tag = Table_get(RouterTable, *(void **)&ip))) {
+		deepylog_warning("duplicate-router %s", inet_ntoa(tag->flow_ip));
+		return tag;
+	}
+
+
+	snprintf(tag_name, sizeof(tag_name), "%s", inet_ntoa(ip));
+	tag = tag_alloc(tag_name);
+	assert(tag);
+
+	tag->flow_ip = ip;
+
+	tag->user_sampling_rate = sampling_rate;
+
+	//if (!tag->user_sampling_rate)
+	//printf("Adding flow source %s (%d default sampling rate)\n", inet_ntoa(ip), get_default_sampling_rate());
+	//else
+	//printf("Adding flow source %s (%d default sampling rate)\n", inet_ntoa(ip), tag->user_sampling_rate);
+
+
+	// Fast lookup of router / switch flow IP address
+	Table_put(RouterTable, *(void **)&tag->flow_ip, (void *) tag, NULL);
+
+	return(tag);
+}
+
+
+struct tag *
+get_tag_by_flowip (struct in_addr ip)
+{
+	struct tag *tag;
+
+	// IP of 0 is bad
+	if (!(*(int *)&ip))
+		return NULL;
+
+	tag = Table_get(RouterTable, *(void **)&ip);
+	return(tag);
+}
+
+
+
+int 
+position_cmp(const void *x, const void *y)
+{
+
+	return (memcmp (x, y, 8));
+}
+
+
+unsigned 
+position_hash(const void *x) 
+{
+	return (mixer_hash(x, 8));
+}
+
+
+
+
+
+int 
+intf_cmp(const void *x, const void *y)
+{
+	int ret;
+
+	struct rtr_interface *r1 = (struct rtr_interface *) x;
+	struct rtr_interface *r2 = (struct rtr_interface *) y;
+
+	ret = memcmp (&r1->router_ip, &r2->router_ip, 4);
+	if (ret)
+		return ret;
+
+	return (memcmp (&r1->snmp_id, &r2->snmp_id, 4));
+}
+
+unsigned 
+intf_hash(const void *x) 
+{
+	struct rtr_interface *r1 = (struct rtr_interface *) x;
+
+	return (mixer_hash(&r1->router_ip, 4) + mixer_hash(&r1->snmp_id, 4));
+}
+
+
+
+struct tag *
+dimension_get_peer_by_asn (u_int32_t asn)
+{
+	List_T		tag_list;
+	
+    if(!asn){
+        return NULL;
+    }
+
+	if (!(tag_list = Table_get(ASPeerTable, *(void **)&asn)))
+		return NULL;
+
+	for ( ; tag_list; tag_list = tag_list->rest) {
+		struct tag *tag_tmp = (struct tag *) tag_list->first;
+		if (tag_tmp->dimension_id == DIMENSION_PEER)
+			return tag_tmp;
+	}
+	
+	return NULL;
+}
+
+
+struct tag *
+dimension_get_origin_by_asn (u_int32_t asn)
+{
+	List_T		tag_list;
+	
+	if (!(tag_list = Table_get(ASOriginTable, *(void **)&asn)))
+		return NULL;
+
+	for ( ; tag_list; tag_list = tag_list->rest) {
+		struct tag *tag_tmp = (struct tag *) tag_list->first;
+		if (tag_tmp->dimension_id == DIMENSION_ORIGIN_ASN)
+			return tag_tmp;
+	}
+	
+	return NULL;
+}
+
+
+
+struct rtr_interface *
+dimension_add_or_get_interface (struct in_addr router_ip, u_int32_t snmp_id, int add_flag)
+{
+	uint32_t		opt_id;
+
+	struct rtr_interface	tmp_intf;
+	struct rtr_interface	*rtr_interface;
+
+	memcpy(&tmp_intf.router_ip, &router_ip, 4);
+	memcpy(&tmp_intf.snmp_id, &snmp_id, 4);
+
+	rtr_interface = Table_get_opt(InterfaceTable, &opt_id, (void *) &tmp_intf);
+
+	if (rtr_interface != NULL) {
+		//printf("found  %s %d\n", inet_ntoa(tmp_intf.router_ip), tmp_intf.snmp_id);
+		return (rtr_interface);
+	}
+
+	if (!add_flag)
+		return (NULL);
+
+	rtr_interface = calloc(1, sizeof(struct rtr_interface));
+	memcpy(&rtr_interface->router_ip, &router_ip, 4);
+	memcpy(&rtr_interface->snmp_id, &snmp_id, 4);
+	
+	//rtr_interface->router_tag = get_tag_by_flowip (router_ip);
+
+	Table_put_opt(InterfaceTable, opt_id, (void *) rtr_interface, (void *) rtr_interface, arena);
+
+	return (rtr_interface);
+}
+
+
+void
+dimensions_init()
+{
+	arena = Arena_new();
+
+	PositionTable = Table_new(arena, 50000, position_cmp, position_hash);
+
+	ASPeerTable = Table_new(arena, 1000, intcmp, inthash);
+	ASOriginTable = Table_new(arena, 60000, intcmp, inthash);
+	ASAfterPeerTable = Table_new(arena, 60000, intcmp, inthash);
+
+	RouterTable = Table_new(arena, 500, intcmp, inthash);
+	FlowIPTable = Table_new(arena, 500, intcmp, inthash);
+	FlowIPLocalTable = Table_new(arena, 500, intcmp, inthash);
+	TagTable = Table_new(arena, 100000, str_cmp, str_hash);
+	InterfaceTable = Table_new(arena, 10000, intf_cmp, intf_hash);
+	TypesTable = Table_new(arena, 100, str_cmp, str_hash);
+	ApplicationTable = Table_new(arena, 1000, str_cmp, str_hash);
+	DomainsTable = Table_new(arena, 50000, str_cmp, str_hash);
+	SrcAspathTable = Table_new(arena, 50000, str_cmp, str_hash);
+	SingletonAspathTable = Table_new(arena, 1000, intcmp, inthash);
+
+	onnet_ptrie_v4 = ptrie_init(32);
+	onnet_ptrie_v6 = ptrie_init(128);
+
+	tags_ptrie_v4 = ptrie_init(32);
+	tags_ptrie_v6 = ptrie_init(128);
+
+	memset(backbone_asn_lookup_array, 0, sizeof(backbone_asn_lookup_array));
+	memset(internal_asn_lookup_array, 0, sizeof(internal_asn_lookup_array));
+
+	memset(site_pos_array, 0, sizeof(site_pos_array));
+	memset(geoip_pos_array, 0, sizeof(geoip_pos_array));
+	memset(service_pos_array, 0, sizeof(service_pos_array));
+
+	memset(protocol_array, 0, sizeof(protocol_array));
+	memset(tcpport_array, 0, sizeof(tcpport_array));
+	memset(udpport_array, 0, sizeof(udpport_array));
+
+	memset(dimensions_id_array, 0, sizeof(dimensions_id_array));
+	memset(dimensions_offset_array, 0, sizeof(dimensions_offset_array));
+
+	memset(site_flags_array, 0, sizeof(site_flags_array));
+
+	//deepylog_init("dimensions");
+}
+
+
+
+
+static void
+_dimension_load_interface_position (struct tag *tag, json_t *value)
+{
+	struct rtr_interface	*intf;
+	struct in_addr		router_ip;
+	u_int32_t		snmp_id = 0;
+	json_t			*json_cname;
+	json_t			*json_peer_as;
+	json_t			*json_cdn;
+	json_t			*json_description;
+	json_t			*json_public_peering;
+	json_t			*json_internal_peer;
+	json_t			*json_attrs;
+	json_t			*json_computed;
+	json_t			*json_router;
+	json_t			*json_ifindex;
+	json_t			*json_router_ip;
+	json_t			*json_interface;
+	json_t			*json_tmp_val;
+	char			*tmp, *cp;
+	uint32_t		sampling_rate;
+
+	
+	memset(&router_ip, 0, sizeof(router_ip));
+
+	if (((json_attrs = json_object_get(value, "attributes")) != NULL) &&
+	    ((json_computed = json_object_get(json_attrs, "computed")) != NULL) && 
+	    ((json_interface = json_object_get(json_computed, "interface")) != NULL) &&
+	    ((json_router_ip = json_object_get(json_interface, "router_ip")) != NULL) && 
+	    ((json_ifindex = json_object_get(json_interface, "ifindex")) != NULL) && 
+	    ((cp = (char *) json_string_value(json_router_ip)))) {
+		inet_aton(cp, &router_ip);
+		snmp_id = atoi(json_string_value(json_ifindex));
+	}
+	// Old Way
+	else if ((json_cname = json_object_get(value, "cname")) != NULL) {
+		tmp = strdup(json_string_value(json_cname));
+		if (!(cp = strchr(tmp, ':'))) {
+			deepylog_error("bad-interface-position %s", tmp);
+			free(tmp);
+			return;
+		}
+		*cp++ = '\0';
+		if (!inet_aton(tmp, &router_ip)) {
+			deepylog_error("bad-ip %s", tmp);
+			free(tmp);
+			return;
+		}
+		snmp_id = atoi(cp);
+		free(tmp);
+	}
+
+	if ((*(u_int32_t*) &router_ip) == 0) {
+		deepylog_error("could-not-find-router");
+		return;
+	}
+
+	//if (!get_tag_by_flowip (router_ip)) {
+	//printf("Could not find router %s\n", inet_ntoa(router_ip));
+	//}
+	
+	intf = dimension_add_or_get_interface (router_ip, snmp_id, 1);
+	intf->pos_id = tag->position_id;
+
+	if ((json_peer_as = json_object_get(value, "peer_as")) != NULL)  {
+		if ((cp = (char *) json_string_value(json_peer_as))) {
+			intf->peer_as = atoi (cp);
+		}
+	}
+
+	if (((json_attrs = json_object_get(value, "attributes")) != NULL) &&
+	    ((json_computed = json_object_get(json_attrs, "computed")) != NULL) && 
+	    ((json_interface = json_object_get(json_computed, "interface")) != NULL)) {
+
+		if ((json_cdn = json_object_get(json_interface, "cdn_match")) != NULL)  {
+			if (json_integer_value(json_cdn)) {
+				intf->cdn_gid = json_integer_value(json_cdn);
+				intf->boundary_flag = 1;
+			}
+		}
+
+		if ((json_cdn = json_object_get(json_interface, "boundary_match")) != NULL)  {
+                       if (json_integer_value(json_cdn)) {
+                               intf->boundary_flag = 1;
+		       }
+		}
+	}
+
+
+	if ((json_description = json_object_get(value, "description")) != NULL)  {
+		intf->description = strdup ((char *) json_string_value(json_description));
+	}
+	else if ((json_description = json_object_get(value, "name")) != NULL)  {
+		intf->description = strdup ((char *) json_string_value(json_description));
+	}
+
+	if ((json_public_peering = json_object_get(value, "public_peering")) != NULL)  {
+		intf->public_peering = 1;
+	}
+
+	if ((json_internal_peer = json_object_get(value, "internal_peer")) != NULL)  {
+		intf->internal_peer = 1;
+	}
+
+	/* Interface specific sampling rates */
+	if (((json_attrs = json_object_get(value, "attributes")) != NULL)
+	    && ((json_computed = json_object_get(json_attrs, "computed")) != NULL)
+	    && ((json_router = json_object_get(json_computed, "router")) != NULL)) {
+
+          	if ((json_tmp_val = json_object_get(json_router,
+	                                   "sampling_rate_override")) != NULL) {
+			sampling_rate = (int) json_integer_value(json_tmp_val);	
+			add_intf_sampling_interval(router_ip, snmp_id, sampling_rate, 1);
+		}
+          	if ((json_tmp_val = json_object_get(json_router,
+	                                      "sampling_rate")) != NULL) {
+			sampling_rate =  (int) json_integer_value(json_tmp_val);	
+			add_intf_sampling_interval(router_ip, snmp_id,
+						   sampling_rate, 0);
+		}
+	}
+
+	intf->tag = tag;
+	tag->rtr_intf = intf;
+
+	if (dimensions_is_backbone_asn(intf->peer_as)) {
+		intf->backbone_peer = 1;
+	}
+}
+
+
+
+static int 
+_dimension_load (const char *dimension_position_num, json_t *dimension)
+{
+	struct position_container	*position_container = NULL;
+	struct dimension		*dimension_ptr = NULL;
+	json_t				*json_builders = NULL;
+	json_t				*json_builder = NULL;
+	json_t				*json_positions = NULL;
+	json_t				*json_name = NULL;
+	json_t				*json_cname = NULL;
+	json_t				*json_attrs = NULL;
+	json_t				*json_split = NULL;
+	json_t				*json_type = NULL;
+	int				application_flag = 0;
+	int				dim_id = 0;
+	int				i = 0, n = 0;
+	const char			*name;
+	static const char		H5FLOW_BUILDER[] = "h5flow";
+
+
+	/* ignore dimension if 'builders' exists and 'h5flow' not in its value */
+	if ((json_builders = json_object_get(dimension, "builders")) != NULL) {
+
+		if (json_is_array(json_builders)) {
+			n = (int) json_array_size(json_builders);
+			for (i=0; i < n; i++) {
+				json_builder = json_array_get(json_builders, i);
+				if (!strcmp(H5FLOW_BUILDER, json_string_value(json_builder))) {
+					//deepylog_debug("skip-dimension-due-to-builder %s", dimension_position_num);
+					break;
+				}
+			}
+
+			if (i >= n) {
+				/* not found during iteration */
+				deepylog_debug("skip-dimension-due-to-builder %s", dimension_position_num);
+				return (0);
+			}
+		} else {
+			if (strcmp(H5FLOW_BUILDER, json_string_value(json_builders))) {
+				deepylog_debug("skip-dimension-due-to-builder %s", dimension_position_num);
+				return (0);
+			}
+		}
+	}
+
+	if ((json_positions = json_object_get(dimension, "positions")) == NULL) {
+		deepylog_warning("no-positions-found key=%s", dimension_position_num);
+		return (-1);
+	}
+
+	dim_id = atoi(dimension_position_num);
+	
+	if ((dim_id <= 0) || (dim_id >= 65536)) {
+		deepylog_warning("bad-dimension-id %d", dim_id);
+		return (-1);
+	}
+
+	if (dimensions_id_array[dim_id]) {
+		deepylog_warning("duplicate-dimension-id %d offset=%d", dim_id, dimensions_id_array[dim_id]->load_offset);
+		return(-1);
+	}
+
+	// get name (may be an array)
+	if ((json_name = json_object_get(dimension, "name")) == NULL) {
+		deepylog_warning("missing-dimension-name");
+		return (-1);
+	}
+	if (json_is_array(json_name)) {
+		json_name = json_array_get(json_name, 0);
+	}
+	name = json_string_value(json_name);
+
+	dimension_ptr = calloc(1, sizeof(struct dimension));
+	dimension_ptr->dimension_id = dim_id;
+	dimension_ptr->load_offset = num_dimensions_loaded;
+	if (name) 
+		dimension_ptr->name = strdup(name);
+	else 
+		deepylog_debug("bad-dimension-name %d", dim_id);
+
+	dimensions_id_array[dim_id] = dimension_ptr;
+
+	// type
+	if ((json_type = json_object_get(dimension, "type")) != NULL) {
+		const char *dtype = json_string_value(json_type);
+		if (dtype != NULL) {
+			dimension_ptr->type = strdup(dtype);
+		}
+	}
+
+
+	// load attributes
+	if (((json_attrs = json_object_get(dimension, "attributes")) != NULL) &&
+	    ((json_split = json_object_get(json_attrs, "split")) != NULL)) {
+		dimension_ptr->split = 1;
+
+		dimensions_offset_array[num_dimensions_loaded] = dimension_ptr;
+		dimensions_offset_array[num_dimensions_loaded+1] = dimension_ptr;
+		
+		dimension_ptr->split_load_offset[0] = num_dimensions_loaded;
+		dimension_ptr->split_load_offset[1] = num_dimensions_loaded+1;
+
+		//printf("LOAD %-2d   %s\n", num_dimensions_loaded, name);
+		//printf("LOAD %-2d   %s\n", num_dimensions_loaded+1, name);
+		
+		num_dimensions_loaded += 2;
+	}
+	else {
+		dimensions_offset_array[num_dimensions_loaded] = dimension_ptr;
+		dimension_ptr->load_offset = num_dimensions_loaded;
+
+		num_dimensions_loaded += 1;
+	}
+
+
+	// application dimension number
+	if (atoi(dimension_position_num) == DIMENSION_APPLICATION_PORT)
+		application_flag = 1;
+
+	
+	void *iter = json_object_iter(json_positions);
+	while(iter) {
+		const char	*key;
+		json_t		*value;
+		json_t		*json_tag, *json_name, *json_tmp, *json_match;
+		struct tag	*tag;
+		char		json_tag_buf[512];
+
+		key = json_object_iter_key(iter);
+		value = json_object_iter_value(iter);
+
+		// ignore convert to tags
+		if ((json_tmp = json_object_get(value, "convert_to")) != NULL) {
+			iter = json_object_iter_next(json_positions, iter);
+			continue;
+		}
+
+		// name required 
+		if ((json_name = json_object_get(value, "name")) == NULL) {
+			iter = json_object_iter_next(json_positions, iter);
+			continue;
+		}
+
+		if ((json_tag = json_object_get(value, "tag")) == NULL) {
+			snprintf(json_tag_buf, sizeof(json_tag_buf), "dim:%s:%s:%d.%d",
+				 dimension_ptr->name, 
+				 json_string_value(json_name),
+				 dimension_ptr->dimension_id,
+				 atoi(key)
+				);
+			if ((tag = tag_alloc (json_tag_buf)) == NULL)
+				continue;
+		}
+		else {
+			if ((tag = tag_alloc (json_string_value(json_tag))) == NULL)
+				continue;
+		}
+
+		// XXX deprecated XXX
+		if ((json_cname = json_object_get(value, "cname")) != NULL) {
+			const char	*cname = json_string_value(json_cname);
+			tag->cname = strdup (cname);
+		}
+
+		tag->dimension_id = atoi(dimension_position_num);
+
+		if (tag->dimension_id > 60000) {
+			deepylog_error("bad-dimension-tag-id name=%s id=%d", tag->name, tag->dimension_id);
+			exit(0);
+		}
+
+		tag->position_id = atoi(key);
+
+		// Special case positions to store off for later use
+		if (!strcmp (json_string_value(json_name), "Long Tail")) {
+			dimension_ptr->long_tail_pos = tag->position_id;
+		}	
+		if (!strcmp (json_string_value(json_name), "Local")) {
+			dimension_ptr->local_asn_pos = tag->position_id;
+		}
+
+	
+		// Special case handling to store of src aspath name
+		if (dim_id == DIMENSION_ASPATH) {
+			int aspeer, asorigin, aspeer_next;
+
+			if (strstr(tag->name, "..") != NULL) {
+				char *aspath_name = strdup(json_string_value(json_name));
+
+				if (sscanf(tag->name, "dim:aspaths:%d .. %d", &aspeer, &asorigin) == 2) {
+					Table_put(SrcAspathTable, aspath_name, tag, NULL);
+				}
+			}
+			else if (strstr(tag->name, "null-aspath") != NULL) {
+				aspath_null_aspath_tag = tag;
+			}
+			else if (strstr(tag->name, " ") == NULL) {
+				if (sscanf(tag->name, "dim:aspaths:%d:", &aspeer) == 1) {
+					Table_put(SingletonAspathTable, *(void **) &aspeer, tag, NULL);
+				}
+			}
+			else {
+				if (sscanf(tag->name, "dim:aspaths:%d %d", &aspeer, &aspeer_next) == 2) {
+					tag->asn_after_peer = aspeer_next;
+				}
+			}
+		}
+
+		// Special case handling to save of NULL ASOrigin
+		if (dim_id == DIMENSION_ORIGIN_ASN) {
+			if (tag->position_id == POSITION_ORIGIN_ASN_LOCAL)
+				as_origin_null_tag = tag;
+		}
+
+		
+		// Save
+		position_container = calloc(1, sizeof(struct position_container));
+		position_container->dimension_id = dim_id;
+		position_container->position_id = tag->position_id;
+		position_container->tag = tag;
+		Table_put(PositionTable, position_container, position_container, NULL);
+
+
+
+		// Save off for convience
+		if (tag->dimension_id == DIMENSION_SITES) {
+			site_pos_array[tag->position_id] = tag;
+
+			if ((json_tmp = json_object_get(value, "cname"))) {
+				tag->components_tag = get_tag_by_name (json_string_value(json_tmp));
+			}
+
+			if ((tag->components_tag == NULL) && ((json_tmp = json_object_get(value, "name")))) {
+				tag->components_tag = get_tag_by_name (json_string_value(json_tmp));
+			}
+
+			if (tag->components_tag) {
+				tag->flags |= tag->components_tag->flags;
+				if ((tag->flags & TAG_FLAG_IS_P2P) && (tag->position_id < 65536))  {
+					site_flags_array[tag->position_id] |= TAG_FLAG_IS_P2P;
+				}
+			}
+		}
+
+		// Save off
+		if (tag->dimension_id == DIMENSION_PATH) {
+			if (tag->position_id == 1) 
+				onnet_tag = tag;
+			if (tag->position_id == 2) 
+				offnet_tag = tag;
+			if (tag->position_id == 3) 
+				transit_tag = tag;
+			if (tag->position_id == 4) 
+				multicast_tag = tag;
+			if (tag->position_id == 5) 
+				dropped_tag = tag; 
+		}
+
+
+		// Position has rank attribute set
+		if ((json_tmp = json_object_get(value, "rank")) != NULL) {
+			tag->rank = (int) json_integer_value(json_tmp);
+		}
+
+		// Ref used by geoip rocket fule that is replaced when building cubes
+		// "ref": "1185"
+		if (((json_tmp = json_object_get(value, "geoip")) != NULL) &&
+		    (json_tmp = json_object_get(json_tmp, "ref")) != NULL) {
+			if (json_string_value(json_tmp)) {
+				tag->tag_ref = atoi(json_string_value(json_tmp));
+			} 
+		}
+
+
+		// Position has ignore attribute set (just used for flow currently to exclude lab routers)
+		if ((json_tmp = json_object_get(value, "ignore")) != NULL) {
+			tag->flow_ignore = (u_int32_t) json_integer_value(json_tmp);
+		}
+	
+
+		// Flag to let us know this is a BGP based position
+		// And we should not match less specific in lib/classify.c
+		if ((json_tmp = json_object_get(value, "bgp_match_flag")) != NULL) {
+			tag->this_is_bgp_match_tag = 1;
+		}
+
+
+		// Store if this is rocketfuel
+		if (tag->dimension_id == DIMENSION_GEOIP) {
+			json_t		*geoip_json, *geoip_type;
+			const char	*type_str;
+
+			if (((geoip_json = json_object_get(value, "geoip")) != NULL) 
+			    && ((geoip_type = json_object_get(geoip_json, "type")) != NULL)) {
+
+				if ((type_str = json_string_value(geoip_type))) {
+					if (!strcmp(type_str, "rocketfuel")) {
+						tag->is_rocketfuel_tag = 1;
+					}
+				}
+			}
+		}
+
+
+		// Position has types attribute set
+		if ((json_tmp = json_object_get(value, "types")) != NULL) {
+			u_int32_t	i;
+			json_int_t	n = (int) json_array_size(json_tmp); 
+
+			for (i=0; i < n; i++) {
+				json_t		*j_type;
+				char		*type_str;
+				j_type = json_array_get(json_tmp, i);
+				type_str = strdup(json_string_value(j_type));
+
+				tag->types_list = List_push(tag->types_list, type_str);
+
+				if (!strcmp("p2p", type_str) || 
+				    !strcmp("p2ptrackers", type_str) || 
+				    !strcmp("seedbox", type_str) ||
+				    !strcmp("seedboxes", type_str)) {
+					tag->flags |= TAG_FLAG_IS_P2P;
+				}
+			}
+		}
+
+
+		// MATCH
+		if ((json_match = json_object_get(value, "match")) != NULL)  {
+			_dimension_load_position_match (tag, json_match);
+		}
+
+
+
+		// interfaces 
+		if (tag->dimension_id == DIMENSION_INTERFACE) {
+			_dimension_load_interface_position (tag, value);
+		}
+
+
+		// bgp_community
+		if (tag->dimension_id == DIMENSION_COMMUNITY) {
+			CommunityDimensionList = List_push(CommunityDimensionList, tag);
+		}
+		
+
+		// origin
+		if (tag->dimension_id == DIMENSION_ORIGIN_ASN) {
+			if ((json_tmp = json_object_get(value, "asn")) != NULL) {
+				int		asn;
+				List_T		tag_list;
+				u_int32_t	opt_id;
+
+				asn =  (int) json_number_value(json_tmp);
+
+				tag_list = Table_get_opt (ASOriginTable, &opt_id, *(void **) &asn);
+				tag_list = List_push(tag_list, tag);
+				Table_put_opt (ASOriginTable, opt_id, *(void **) &asn, tag_list, NULL);
+			}
+		}
+
+
+		// as_after_peer
+		if (tag->dimension_id == DIMENSION_AS_AFTER_PEER) {
+			if ((json_tmp = json_object_get(value, "asn")) != NULL) {
+				int		asn;
+				//List_T		tag_list;
+				//u_int32_t	opt_id;
+
+				asn =  (int) json_number_value(json_tmp);
+
+				//tag_list = Table_get_opt (ASAfterPeerTable, &opt_id, *(void **) &asn);
+				//tag_list = List_push(tag_list, tag);
+				Table_put (ASAfterPeerTable, *(void **) &asn, tag, NULL);
+			}
+		}
+
+
+		// router
+		if (tag->dimension_id == DIMENSION_ROUTER) {
+			json_t		*json_attrs;
+			json_t		*json_computed;
+			json_t		*json_router;
+			json_t		*json_tmp_val;
+
+		
+
+                	tag->user_sampling_rate = 0;
+			if (((json_attrs = json_object_get(value, "attributes")) != NULL) 
+			    && ((json_computed = json_object_get(json_attrs, "computed")) != NULL)
+			    && ((json_router = json_object_get(json_computed, "router")) != NULL)) {
+				if ((json_tmp_val = json_object_get(json_router, "sampling_rate")) != NULL) {
+					tag->user_sampling_rate = json_integer_value(json_tmp_val);
+					//printf("%s sampling rate default %d\n", tag->name, tag->user_sampling_rate);
+				}
+				if ((json_tmp_val = json_object_get(json_router, "flow_accelerated")) != NULL) {
+					tag->sub_sampling = json_integer_value(json_tmp_val);
+					//printf("%s sub-sampling rate override %d\n", tag->name, tag->sub_sampling);
+				}
+				if ((json_tmp_val = json_object_get(json_router, "sampling_rate_override")) != NULL) {
+					tag->user_sampling_rate_override = json_integer_value(json_tmp_val);
+					//printf("%s sampling rate override %d\n", tag->name, tag->user_sampling_rate);
+				}
+				if ((json_tmp_val = json_object_get(json_router, "flow_ip")) != NULL) {
+					List_T		tag_list;
+					u_int32_t	opt_id;
+					const char	*flow_str = (const char *) json_string_value(json_tmp_val);
+
+					if ((flow_str) && inet_aton(json_string_value(json_tmp_val), &tag->flow_ip)) {
+
+						if (Table_get(RouterTable, *(void **)&tag->flow_ip)) {
+							deepylog_warning("duplicate-flow-ip router=%s", inet_ntoa(tag->flow_ip));
+						}
+						else {
+							Table_put(RouterTable, *(void **)&tag->flow_ip, (void *) tag, NULL);
+						}
+					}
+
+					tag_list = Table_get_opt (FlowIPTable, &opt_id,  *(void **)&tag->flow_ip);
+					tag_list = List_push(tag_list, tag);
+					Table_put_opt (FlowIPTable, opt_id,  *(void **)&tag->flow_ip, tag_list, NULL);
+				}
+
+				if ((json_tmp_val = json_object_get(json_router, "bgp_ip")) != NULL) {
+					const char	*bgp_str = (const char *) json_string_value(json_tmp_val);
+
+					if (bgp_str) {
+						inet_aton(json_string_value(json_tmp_val), &tag->bgp_ip);
+					}
+				}
+
+				if ((json_tmp_val = json_object_get(json_router, "sflow_src_ip")) != NULL) {
+					const char	*flow_str = (const char *) json_string_value(json_tmp_val);
+					struct in_addr	sflow_src_ip;
+
+					if ((flow_str) && inet_aton(json_string_value(json_tmp_val), &sflow_src_ip)) {
+
+						memcpy(&tag->sflow_src_ip, &sflow_src_ip, 4);
+						
+						if (Table_get(RouterTable, *(void **)&tag->sflow_src_ip)) {
+							deepylog_warning("duplicate-sflow-ip router=%s", inet_ntoa(tag->sflow_src_ip));
+						}
+						else {
+							Table_put (RouterTable, *(void **)&tag->sflow_src_ip, tag, NULL);
+						}
+						//printf("Add sflow %s\n", inet_ntoa(sflow_src_ip));
+					}
+				}
+
+				// Router Type is used at Comcast to distinguish between CR, AR and PR routers
+				if  ((json_tmp = json_object_get(value, "router_type")) != NULL) {
+					tag->router_type = (int) json_integer_value(json_tmp);
+				}
+			}
+			else {
+				deepylog_warning("missing-tag name=%s", tag->name);
+			}
+		}
+
+
+		// save off geoip for convenience
+		if (tag->dimension_id == DIMENSION_GEOIP) {
+			assert(tag->position_id < 65535);
+			geoip_pos_array[tag->position_id] = tag;
+		}
+			
+		// save off geoip for convenience
+		if (tag->dimension_id == DIMENSION_SERVICE) {
+			assert(tag->position_id < 65535);
+			service_pos_array[tag->position_id] = tag;
+		}
+
+		// kind of a special case use in matches: application_port
+		if (application_flag) {
+			char	*str = strdup(json_string_value(json_name));
+			Table_put(ApplicationTable, str, tag, NULL);
+		}
+
+		 iter = json_object_iter_next(json_positions, iter);
+	}
+
+	return 0;
+}
+
+
+int 
+dimensions_load_components_db (char *filename)
+{
+	json_t		*json;
+	json_error_t	error;
+	const char	*key;
+	json_t		*value;
+
+	json = json_load_file(filename, 0, &error);
+
+	if(!json) {
+		deepylog_error("json-loading-error file=%s line=%d error=%s",
+		    filename, error.line, error.text);
+		exit(0);
+	}
+
+	void *iter = json_object_iter(json);
+	while(iter) {
+		json_t		*tmp;
+		json_t		*json_match;
+		struct tag	*tag;
+
+		key = json_object_iter_key(iter);
+		value = json_object_iter_value(iter);
+		iter = json_object_iter_next(json, iter);
+
+		if (!(tag = Table_get(TagTable, key))) {
+			//printf("Adding tag in components_db.json but not binary %s\n", key);
+			tag = tag_alloc (key);
+		}
+
+		// save off
+		if (!strcmp("proxy", key))
+			proxy_tag = tag;
+		if (!strcmp("consumer", key))
+			consumer_tag = tag;
+		if (!strcmp("business", key))
+			business_tag = tag;
+		if (!strcmp("internal", key))
+			internal_tag = tag;
+
+		// MATCH
+		if ((json_match = json_object_get(value, "match")) != NULL)  {
+			_dimension_load_position_match (tag, json_match);
+		}
+
+
+		// ASN
+		if ((tmp = json_object_get(value, "asn"))) {
+			int             i, n = (int) json_array_size(tmp);
+			
+                       for (i=0; i < n; i++) {
+                               List_T          tag_list;
+                               json_t          *j_asn;
+                               int             asn;
+                               u_int32_t       opt_id;
+ 
+                               j_asn = json_array_get(tmp, i);
+                               asn =  (int) json_number_value(j_asn);
+                               if (!asn) {
+                                       deepylog_warning("bad-origin-asn-position %d", tag->position_id);
+                                       continue;
+                               }
+ 
+                               tag_list = Table_get_opt (ASOriginTable, &opt_id, *(void **) &asn);
+                               tag_list = List_push(tag_list, tag);
+                               Table_put_opt (ASOriginTable, opt_id, *(void **) &asn, tag_list, NULL);
+			       //printf("ADD ASN %d %s\n", asn, tag->name);
+                       }
+		}
+
+
+		// Types
+		if ((tmp = json_object_get(value, "types")) != NULL) {
+			int		i, n = (int) json_array_size(tmp);
+
+			for (i=0; i < n; i++) {
+				json_t		*j_type;
+				char		*type_str;
+				
+				j_type = json_array_get(tmp, i);
+				type_str = strdup(json_string_value(j_type));
+
+				tag->types_list = List_push(tag->types_list, type_str);
+				//printf("found component type %s\n", type_str);
+
+				if (!strcmp("p2p", type_str) || 
+				    !strcmp("p2ptrackers", type_str) || 
+				    !strcmp("seedbox", type_str) ||
+				    !strcmp("seedboxes", type_str)) {
+					tag->flags |= TAG_FLAG_IS_P2P;
+				}
+			}
+		}
+
+
+		// ASN
+		if ((tmp = json_object_get(value, "asn"))) {
+			int		i, n = (int) json_array_size(tmp);
+
+			for (i=0; i < n; i++) {
+				List_T		tag_list;
+				json_t		*j_asn;
+				int		asn;
+				u_int32_t	opt_id;
+
+				j_asn = json_array_get(tmp, i);
+				asn =  (int) json_number_value(j_asn);
+				if (!asn) {
+					deepylog_warning("bad-origin-asn-position %d", tag->position_id);
+					continue;
+				}
+					
+				tag_list = Table_get_opt (ASOriginTable, &opt_id, *(void **) &asn);
+				tag_list = List_push(tag_list, tag);
+				Table_put_opt (ASOriginTable, opt_id, *(void **) &asn, tag_list, NULL);
+			}
+		}
+	}
+
+	json_decref(json);
+
+	return(0);
+}
+
+
+List_T
+get_tag_list_for_port (int protocol, u_int16_t port)
+{
+
+	if (protocol == 6) {
+		return tcpport_array[port];
+	}
+
+	if (protocol == 17) {
+		return udpport_array[port];
+	}
+
+	return NULL;
+}
+
+
+
+
+struct tag *
+dimensions_match_application_port (int protocol, u_int16_t local_port, u_int16_t remote_port) 
+{
+
+	struct tag	*tag1 = NULL;
+	struct tag	*tag2 = NULL;
+	List_T		tmp_list;
+
+	if (protocol == 6) {
+		for (tmp_list = tcpport_array[local_port]; tmp_list; tmp_list = tmp_list->rest) {
+			struct tag *tmp_tag = (struct tag *) tmp_list->first;
+			if (tmp_tag->dimension_id == DIMENSION_APPLICATION_PORT) {
+				tag1 = tmp_tag;
+				break;
+			}
+		}
+	}
+	else if (protocol == 17) {
+		for (tmp_list = udpport_array[local_port]; tmp_list; tmp_list = tmp_list->rest) {
+			struct tag *tmp_tag = (struct tag *) tmp_list->first;
+			if (tmp_tag->dimension_id == DIMENSION_APPLICATION_PORT) {
+				tag1 = tmp_tag;
+				break;
+			}
+		}
+	}
+
+	if (protocol == 6) {
+		for (tmp_list = tcpport_array[remote_port]; tmp_list; tmp_list = tmp_list->rest) {
+			struct tag *tmp_tag = (struct tag *) tmp_list->first;
+			if (tmp_tag->dimension_id == DIMENSION_APPLICATION_PORT) {
+				tag2 = tmp_tag;
+				break;
+			}
+		}
+	}
+	else if (protocol == 17) {
+		for (tmp_list = udpport_array[remote_port]; tmp_list; tmp_list = tmp_list->rest) {
+			struct tag *tmp_tag = (struct tag *) tmp_list->first;
+			if (tmp_tag->dimension_id == DIMENSION_APPLICATION_PORT) {
+				tag2 = tmp_tag;
+				break;
+			}
+		}
+	}
+
+	if (!tag1 && !tag2)
+		return NULL;
+
+	if (tag1 && !tag2) {
+		//printf("Matched %s\n", tag1->name);
+		return tag1;
+	}
+
+	if (tag2 && !tag1) {
+		//tag_match (seq_num, part, tag2);
+		//tag_add_to_evaluation (tag2, seq_num);
+		return tag2;
+	}
+
+	// -----------------------------------------
+	// Both matched
+	// Some logic to choose one 
+
+	if ((local_port == 80) || (local_port == 443)) {
+		//tag_match (seq_num, part, tag1);
+		return tag1;
+	}
+		
+	if ((remote_port == 80) || (remote_port == 443)) {
+		//tag_match (seq_num, part, tag2);
+		return tag2;
+	}
+
+	if (local_port < remote_port) {
+		//tag_match (seq_num, part, tag1);
+		return tag1;
+	}
+
+	if (local_port >= remote_port) {
+		//tag_match (seq_num, part, tag2);
+		return tag2;
+	}
+
+	return NULL;
+}
+
+
+static void
+print_ptrie_entries (prefix_t *prefix, void *indata, void *arg)
+{
+	struct address_data	*data;
+	struct tag		*tag_tmp = NULL;
+	List_T			list;
+
+	
+	data = (struct address_data *) indata;
+
+	list = data->matched_tags;
+	for ( ; list; list = list->rest) {
+		tag_tmp = (struct tag *) list->first;
+		printf("%-30s %s\n", prefix_toax(prefix), tag_tmp->name);
+	}
+}
+
+
+int
+dimensions_lookup_cloudmap_return_array (char *prefix_str)
+{
+	int			n = 0, i;
+	ptrie_node_t		*stack[PTRIE_MAXBITS + 1];
+	prefix_t		prefix;
+
+
+	if (strlen(prefix_str) < 1) {
+		ptrie_apply(tags_ptrie_v4, print_ptrie_entries, NULL);
+		ptrie_apply(tags_ptrie_v6, print_ptrie_entries, NULL);
+		return 0;
+	}
+
+	if (strchr(prefix_str, ':')) 
+		ascii2prefix(AF_INET6, prefix_str, &prefix);
+	else
+		ascii2prefix(AF_INET, prefix_str, &prefix);
+
+	if (prefix.family == AF_INET) {
+		n = ptrie_get_stack_less_specific(tags_ptrie_v4, &prefix, stack, 0);
+	}
+
+	if (prefix.family == AF_INET6)
+		n = ptrie_get_stack_less_specific(tags_ptrie_v6, &prefix, stack, 0);
+
+	deepylog_debug("searching %s n=%d", prefix_toax(&prefix), n);
+	
+
+	//printf("LOOKING UP %s (n=%d ptriesize=%d)\n", prefix_toax(&prefix), n, 	ptrie_num_active_node (tags_ptrie_v4));
+
+	for (i = 0; i < n; i++) {
+		struct address_data	*data;
+		struct tag		*tag_tmp = NULL;
+		List_T			list;
+		prefix_t		*prefix;
+
+		data = ptrie_node_get_data(stack[i]);
+		prefix = ptrie_node_get_prefix(stack[i]);
+
+		list = data->matched_tags;
+		for ( ; list; list = list->rest) {
+			tag_tmp = (struct tag *) list->first;
+			printf("  tag-name %s %s\n", tag_tmp->name, prefix_toax(prefix));
+		}
+	}
+
+	return n;
+}
+
+
+
+int
+dimensions_lookup_cloudmap(prefix_t *prefix, ptrie_node_t **stack)
+{
+	int			n = 0;
+
+	if (prefix->family == AF_INET)
+		n = ptrie_get_stack_less_specific(tags_ptrie_v4, prefix, stack, 0);
+
+	if (prefix->family == AF_INET6)
+		n = ptrie_get_stack_less_specific(tags_ptrie_v6, prefix, stack, 0);
+
+	return n;
+}
+
+
+
+static int
+dimensions_load_inner (json_t *json)
+{
+
+	const char	*key;
+	json_t		*value;
+
+	json_t		*json_dimensions;
+
+	if ((json_dimensions = json_object_get(json, "dimensions")) == NULL) {
+		deepylog_error("no-dimensions-found");
+		return -1;
+	}
+
+	void *iter = json_object_iter(json_dimensions);
+	while(iter) {
+		key = json_object_iter_key(iter);
+		value = json_object_iter_value(iter);
+		_dimension_load (key, value);
+
+		iter = json_object_iter_next(json_dimensions, iter);
+	}
+
+	return 0;
+}
+
+
+// XXX Deprecated XXX
+// (though used in lib/routemap/routemap.c)
+int 
+dimensions_load_filename (const char *filename)
+{
+	json_t		*json;
+	int		chunksize = 150000000;
+	int		osize = 0;
+	char		*buf = NULL;
+	json_error_t	error;
+<<<<<<< HEAD
+
+	if (!(buf = gzslurp(filename, chunksize, &osize))) {
+		deepylog_error("gzslurp-failed=%s", filename);
+		return (-1);
+	}
+	
+	if (!(json = json_loads (buf, 0, &error))) {
+		deepylog_error("json-loading-error file=%s line=%d error=%s",
+			       filename, error.line, error.text);
+		return(-1);
+	}
+
+=======
+
+	if (!(buf = gzslurp(filename, chunksize, &osize))) {
+		deepylog_error("gzslurp-failed=%s", filename);
+		return (-1);
+	}
+	
+	if (!(json = json_loads (buf, 0, &error))) {
+		deepylog_error("json-loading-error file=%s line=%d error=%s",
+			       filename, error.line, error.text);
+		return(-1);
+	}
+
+>>>>>>> origin/master
+	dimensions_load_inner (json);
+	tags_resolve_names_after_loading ();
+	json_decref(json);
+	free (buf);
+
+	return(0);
+}
+
+
+int 
+dimensions_load_directory (void)
+{
+	struct dirent		*dir = NULL;
+	DIR			*d;
+	char			path[512];
+
+	snprintf(path, sizeof(path), "%s", pd_get_path(CACHE_DIR "/dimensions/"));
+	if (!(d = opendir(path))) {
+		deepylog_warning("no-dimensions-found %s", path);
+		return -1;
+	}
+	while ((dir = readdir(d)) != NULL) {
+		json_t		*json;
+		int		chunksize = 150000000;
+		int		osize = 0;
+		char		*buf = NULL;
+		json_error_t	error;
+		char		tmp[512];
+
+		if (strstr(dir->d_name, ".json.gz") == NULL)
+			continue;
+		if (strstr(dir->d_name, "dimensions_db.json.gz") != NULL)
+			continue;
+		if (strstr(dir->d_name, "dimensions_db_small.json.gz") != NULL)
+			continue;
+<<<<<<< HEAD
+=======
+		// grrr, this conflicts with other system dimensions
+		if (strstr(dir->d_name, "onnet.json.gz") != NULL)
+			continue;
+>>>>>>> origin/master
+		snprintf(tmp, sizeof(tmp), "%s/%s", path, dir->d_name);
+
+		if (!(buf = gzslurp(tmp, chunksize, &osize))) {
+			deepylog_error("gzslurp-failed=%s", tmp);
+			continue;
+		}
+	
+		if (!(json = json_loads (buf, 0, &error))) {
+			deepylog_error("json-loading-error file=%s line=%d error=%s",
+				       tmp, error.line, error.text);
+			free(buf);
+			continue;
+		}
+
+		dimensions_load_inner (json);
+		json_decref(json);
+		free (buf);
+	}
+	closedir(d);
+
+	tags_resolve_names_after_loading ();
+
+	return(0);
+}

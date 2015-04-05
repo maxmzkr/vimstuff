@@ -1,0 +1,70 @@
+import itertools
+import copy
+import collections
+import funcy
+import os
+
+import deepy.build
+import deepy.build.deepy_util
+
+PruneTarget = collections.namedtuple('PruneTarget', ('target_id', 'directory', 'template', 'prune_ratio', 'file_step'))
+
+class RulesDB(object):
+    def __init__(self, rules_dict):
+        self.rules = copy.deepcopy(rules_dict)
+
+    @property
+    def count(self):
+        return len(self.rules)
+
+    @staticmethod
+    def extract_prunes((rule_id, rule)):
+        '''
+        Returns sequence of prune targets for a rule, or empty if there are no
+        valid targets for the rule.
+        '''
+        prunes = []
+        prune_ratio = rule.get('prune_ratio')
+        file_step = RulesDB.file_step(rule)
+
+        def make_prune_target(n, r):
+            target = r.get('target')
+            if target is None:
+                return None
+            assert isinstance(target, basestring)
+
+            tsub = deepy.build.deepy_util.deepy_substitution(target)
+            directory = os.path.dirname(tsub)
+            template = os.path.basename(tsub)
+
+            if n is None:
+                name = rule_id
+            else:
+                name = '{}_{}'.format(rule_id, n)
+
+            pr = r.get('prune_ratio', prune_ratio)
+
+            return PruneTarget(name, directory, template, pr, file_step)
+
+        for n, r in [(None, rule),] + rule.get('queries', {}).items():
+            prunes.append(make_prune_target(n, r))
+
+        return filter(None, prunes)
+
+    def get_prune_targets(self):
+        '''
+        Returns list of prune targets for all with valid targets.
+        '''
+        nested = map(RulesDB.extract_prunes, self.rules.iteritems())
+        return [x for x in itertools.chain.from_iterable(nested)]
+
+    @staticmethod
+    def file_step(rule):
+        # TODO there is more complicated logic in deepy/build modules for this
+        # that I haven't incorporated here because I'm not sure how necessary
+        # it is.
+
+        priority = ('file_step', 'make_time_step', 'time_step')
+        getter = lambda p: rule.get(p)
+        return funcy.some(map(getter, priority))
+

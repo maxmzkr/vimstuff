@@ -1,0 +1,206 @@
+#include <assert.h>
+#include <ucontext.h>
+#include <iostream>
+#include <queue>
+#include "./cpu.h"
+#include "./cpu_impl.h"
+#include "./thread.h"
+#include "./thread_impl.h"
+
+void run(thread_func_t func, void* params) {
+  // when we run the function, the thing swapping to us has the guard and has
+  // interrupts disabled thus we need to release the guard and enable interrupts
+  // again
+  cpu::impl::release_guard();
+  cpu::interrupt_enable();
+  thread::impl::clear_finished_queue();
+  func(params);
+
+  // finish and release joining queue to ready queue
+  cpu::interrupt_disable();
+  cpu::impl::get_guard();
+
+  thread::impl* this_thread = thread::impl::self();
+  this_thread->finish();
+
+  cpu* this_cpu = cpu::self();
+  this_cpu->impl_ptr->run_next_thread();
+
+  cpu::impl::release_guard();
+  cpu::interrupt_enable();
+}
+
+thread::impl::impl(thread* parent_thread) { init(parent_thread, false); }
+
+thread::impl::impl(thread_startfunc_t func, void* params,
+		   thread* parent_thread) {
+  init(parent_thread, true);
+  // Setup the context so it calls run with the func and params
+  // We need to do this because we are wrapping the actual function with things
+  // that it needs as a prefix, such as enabling interrupts and releasing a
+  // guard and we also need to run a function after the thread is done that will
+  // release the cpu and do everything a thread needs to do when finishing
+  makecontext(thread_context_, (void (*)())run, 2,
+	      reinterpret_cast<thread_func_t>(func), params);
+  set_thread_context(thread_context_);
+
+  // add the thread to the ready queue and wake up any cpu that is currently
+  // ideling
+  thread::impl::add_thread_to_ready_queue(this);
+}
+
+thread::impl::~impl() {
+  char* stack_space = static_cast<char*>(thread_context_->uc_stack.ss_sp);
+  delete stack_space;
+  delete thread_context_;
+  delete joining_queue_;
+
+  if (parent_thread_ != nullptr) {
+    parent_thread_->impl_ptr = nullptr;
+  }
+}
+
+/////////////
+// Getters //
+/////////////
+
+ucontext_t* thread::impl::thread_context() { return thread_context_; }
+
+thread* thread::impl::parent_thread() { return parent_thread_; }
+
+bool thread::impl::done() { return done_; }
+
+int thread::impl::id() { return id_; }
+
+bool thread::impl::init_thread() { return init_thread_; }
+
+
+/////////////
+// Setters //
+/////////////
+
+void thread::impl::set_thread_context(ucontext_t* context) {
+  thread_context_ = context;
+}
+
+void thread::impl::set_parent_thread(thread* parent_thread) {
+  parent_thread_ = parent_thread;
+}
+
+void thread::impl::set_done() { done_ = true; }
+
+///////////////////////////////
+// General purpose functions //
+///////////////////////////////
+
+void thread::impl::add_thread_to_joining_queue(thread::impl* join_thread) {
+  joining_queue_->push(join_thread);
+}
+
+bool thread::impl::joining_queue_empty() { return joining_queue_->empty(); }
+
+thread::impl* thread::impl::get_thread_from_joining_queue() {
+  thread::impl* joining_thread = joining_queue_->front();
+  joining_queue_->pop();
+  return joining_thread;
+}
+
+void thread::impl::finish() {
+  while (!joining_queue_empty()) {
+    thread::impl* join_thread = get_thread_from_joining_queue();
+    thread::impl::add_thread_to_ready_queue(join_thread);
+  }
+  thread::impl::add_thread_to_finished_queue(this);
+  set_done();
+}
+
+//////////////////////
+// Static functions //
+//////////////////////
+
+void thread::impl::add_thread_to_ready_queue(thread::impl* ready_thread) {
+  assert(!ready_thread->init_thread());
+
+  ready_queue_.push(ready_thread);
+  cpu::impl::signal_cpu();
+}
+
+bool thread::impl::ready_queue_empty() { return ready_queue_.empty(); }
+
+thread::impl* thread::impl::get_thread_from_ready_queue() {
+  thread::impl* ready_thread = ready_queue_.front();
+  ready_queue_.pop();
+  return ready_thread;
+}
+
+thread::impl* thread::impl::self() {
+  cpu* this_cpu = cpu::self();
+  return this_cpu->impl_ptr->current_thread();
+}
+
+void thread::impl::add_thread_to_finished_queue(thread::impl* finished_thread) {
+  finished_queue_.push(finished_thread);
+}
+
+bool thread::impl::finished_queue_empty() { return finished_queue_.empty(); }
+
+thread::impl* thread::impl::get_thread_from_finished_queue() {
+  thread::impl* finished_thread = finished_queue_.front();
+  finished_queue_.pop();
+  return finished_thread;
+}
+
+void thread::impl::clear_finished_queue() {
+  assert_interrupts_disabled();
+  while (!finished_queue_empty()) {
+    thread::impl* finished_thread = get_thread_from_finished_queue();
+    delete finished_thread;
+  }
+}
+
+void thread::impl::yield() {
+  // run the next avaliable thread on this cpu
+  cpu* this_cpu = cpu::self();
+  thread::impl* this_thread = thread::impl::self();
+  if (!this_cpu->impl_ptr->suspended()) {
+    thread::impl::add_thread_to_ready_queue(this_thread);
+  }
+  this_cpu->impl_ptr->run_next_thread();
+}
+
+///////////////////////////////
+// Private memeber functions //
+///////////////////////////////
+
+void thread::impl::init(thread* parent_thread, bool stack) {
+  joining_queue_ = new std::queue<thread::impl*>();
+  thread_context_ = new ucontext_t;
+  parent_thread_ = parent_thread;
+
+  id_ = id_count;
+  id_count = id_count + 1;
+
+  getcontext(thread_context_);
+
+  // Setup the new stack
+  if (parent_thread != nullptr || stack) {
+    // Setup the new stack
+    char* stack = new char[STACK_SIZE];
+    thread_context_->uc_stack.ss_sp = stack;
+    thread_context_->uc_stack.ss_size = STACK_SIZE;
+    thread_context_->uc_stack.ss_flags = 0;
+    thread_context_->uc_link = nullptr;
+
+    init_thread_ = false;
+  } else {
+    init_thread_ = true;
+  }
+}
+
+std::queue<thread::impl*> thread::impl::ready_queue_ =
+    std::queue<thread::impl*>();
+
+std::queue<thread::impl*> thread::impl::finished_queue_ =
+    std::queue<thread::impl*>();
+
+int thread::impl::id_count = 0;

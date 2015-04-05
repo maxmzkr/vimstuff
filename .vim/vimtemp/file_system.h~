@@ -1,0 +1,14 @@
+#include "./fs_server.h"
+
+class FileSystem {
+ public:
+  read_in_file_system();
+
+  int read_block(std::string pathname, unsigned int block_offset, std::string data);
+
+  int write_block(std::string pathname, unsigned int block_offset, std::string data);
+
+  create_block(std::string pathname);
+
+  delete_block(std::string pathname);
+};

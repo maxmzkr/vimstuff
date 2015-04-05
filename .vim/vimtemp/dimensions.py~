@@ -1,0 +1,2021 @@
+#!/usr/bin/env python
+
+import copy
+import re
+import time
+import redis
+import msgpack
+import hashlib
+import gzip
+import os, json, fnmatch
+import deepy.deepy_redis
+import deepy.cfg, deepy.store
+import deepy.log as log
+import deepy.deepy_redis
+from deepy.stats import DeepStats
+#
+# XXX Starting to define things here. Needs some more work.
+
+# Define special positions. Value is id. Key is also name.
+special_positions = {
+        'None': None,
+        'Other': -1
+        }
+special_positions_by_id = dict((v,k) for k,v in special_positions.iteritems())
+
+# XXX Need better way. Would prefer that the values be strings.
+class DIM_TYPES(object):
+    null = 0
+    system_global = 1
+    system_local = 2
+    user_local = 3
+    ephemeral = 4
+
+# Impala uses signed uint32's
+MAX_POS_ID = 2**31-1
+
+#These dimensions don't actually exist in the dimensions db and we should not be
+#   checking the cache for them
+DONT_CACHE_DIMENSIONS = ['timestamp', 'user', 'page', 'subip', 'id']
+
+# Dimension id allocation. unisigned ints? see FIRST_USER_DIM_ID comment
+# Python ranges: (n, m) = n..m-1
+_DIDRS = {
+        # null dimension
+        'didr_null':                (0,             1),
+        # XXX Add chaos range to cover what's currently allocated?
+        # System dimensions used by all deployments, e.g. cdn
+        'didr_system_global':       (1,             100000000),
+        # System dimensions specific to a deployment (connectors?)
+        'didr_system_local':        (100000000,     101000000),
+        # User (UI) created dimensions
+        'didr_user_local':          (101000000,     102000000),
+        # Used for aggregate dimensions. Only valid within single cube.
+        'didr_ephemeral':           (102000000,     103000000),
+        }
+
+# XXX Dimensions added by GUI must have id >= 10000 in case they have early
+# binding matches such as contains_as. localmap.py et al. currently have a
+# hard-coded ignore of dim_id < 10000 (system dimensions).
+FIRST_USER_DIM_ID = 10000
+
+class POS_TYPES(object):
+    null = ['pidr_null']
+    general = ['pidr_general0']
+    global_reserved = ['pidr_global_reserved']
+    local_extend = ['pidr_local_extend']
+
+# Position id range allocation. These need to fit into position_t which is
+# currently uint32_t.
+# Python ranges: (n, m) = n..m-1
+_PIDRS = {
+        # null position
+        'pidr_null':                (0,             1),
+        # General use
+        'pidr_general0':            (1,             100000000),
+        # Reserved for things like Other.
+        'pidr_global_reserved':     (100000000,     101000000),
+        # Extend a global dimension with local positions (e.g. local CDNs)
+        'pidr_local_extend':        (101000000,     102000000),
+        }
+
+# End defines
+
+def get_skipped_dimension_files():
+    # XXX we don't have a good way to delete / rename dimension files already
+    # deployed. We should move deployment_sync to use s3cmd sync
+    make_dimfile = lambda x: os.path.join(deepy.cfg.dimensions_dir, "{}.json.gz".format(x))
+
+    SKIPPED_DIMS = ["onnet", "interfaces_peer", "backbone", "method"]
+    return map(make_dimfile, SKIPPED_DIMS)
+
+# Use with position and dimension id ranges to get next id.
+# rng is the range tuple.
+# curr_ids is a list of all allocated ids; can include ids outside the scope
+# of the range, which will be ignored.
+def range_get_next(rng, curr_ids):
+    global MAX_POS_ID
+    curr_in = [curr_id for curr_id in curr_ids
+            if curr_id >= rng[0] and curr_id < rng[1]]
+    if len(curr_in) == 0:
+        return rng[0]
+    max_id = max(curr_in)
+    if max_id == rng[1] - 1:
+        raise ValueError('range exhausted')
+    if max_id >= MAX_POS_ID:
+        raise ValueError('Max position ID reached')
+    return max_id + 1
+
+# Like range_get_next, but just increments from max. Can pass in None to
+# start (no max yet).
+def range_get_next_max(rng, max_id):
+    global MAX_POS_ID
+    if max_id is None:
+        return rng[0]
+    assert max_id >= rng[0] and max_id < rng[1]
+    if max_id == rng[1] - 1:
+        raise ValueError('range exhausted')
+    if max_id >= MAX_POS_ID:
+        raise ValueError('Max position ID reached')
+    return max_id + 1
+
+
+# Recursively remove unecessary keys from a dict
+def remove_attributes(bad_keys, d):
+    if isinstance(d, dict):
+        d = \
+        {
+            key: remove_attributes(bad_keys, value)
+            for key, value in d.iteritems() if key not in bad_keys
+        }
+    return d
+
+
+# Separate base name/id from local/remote.
+def dim_name_split(dim_name_id):
+    if isinstance(dim_name_id, int):
+        dim_name_id = str(dim_name_id)
+    if dim_name_id.endswith('.local') or dim_name_id.endswith('.remote'):
+        name, suffix = dim_name_id.rsplit('.', 1)
+        suffix = '.' + suffix
+    else:
+        # No suffix
+        name = dim_name_id
+        suffix = ''
+    return name, suffix
+
+
+class DimensionsDB(dict):
+
+    data_objects = ["dim_db", "dim_idx", "pos_idx", "pos_apv_idx"]
+
+    db_file = None
+
+    # Current dimension within file to work on
+    dim_id_cursor = None
+
+    #Ok to include for all instances since the connection isn't actually opened until
+    #  the first connection
+    conn = redis.Redis('localhost')
+
+    # Normal case, pass nothing and default dim_db will be loaded.
+    # For loading from redis pass the db dict already in memory with db
+<<<<<<< HEAD
+    def __init__(self, db_file=None, empty=False, db=None, redis_backed=False, no_disk_load=False, force_remote=None):
+=======
+    def __init__(self, db_file=None, files=None, empty=False, db=None, redis_backed=False, no_disk_load=False, force_remote=None):
+>>>>>>> origin/master
+        self.no_disk_load = no_disk_load
+
+        if db_file is None:
+            db_file = self._get_default_dimensions_db_file()
+        self.db_file = db_file
+
+        if redis_backed:
+            self._lazy_loader = self.lazy_load_redis
+            empty=True
+        else:
+            self._lazy_loader = self.lazy_load_noop
+
+        if db is not None:
+            self.dim_db = db
+        else:
+            # Store the raw db in dim_db property.
+            if empty:
+                self.dim_db = self._get_empty_db()
+            else:
+<<<<<<< HEAD
+                self.dim_db = self._load_db(db_file, force_remote=force_remote)
+=======
+                self.dim_db = self._load_db(db_file, files=files, force_remote='local')
+>>>>>>> origin/master
+
+        self.ephemeral_dim_ids = set()
+
+        # Load self dict.
+        self.parse_raw()
+
+    def lazy_load_redis(self, dim_id=None, pos_id=None, dim_idx=False, pos_idx=False, lite=False):
+        #special dimensions that don't actually exist in the dimensions db
+        if dim_id and dim_id in DONT_CACHE_DIMENSIONS:
+            return
+        try:
+            if pos_idx:
+                if not dim_id:
+                    log.warn('cannot-load-pos-idx-without-dim-id')
+                    return
+                try:
+                    data= self.pos_idx[dim_id]
+                    if data:
+                        return
+                except KeyError:
+                    pass
+
+                log.debug('lazy-load-pos-idx-for-dim-%s' % (dim_id))
+                data = load_pos_idx(self.db_file, dim_id, conn=self.conn)
+                if data:
+                    self.pos_idx[dim_id] = data
+                else:
+                    self.dim_db = self._load_db(None, force_remote='local')
+                    self.parse_raw()
+                return
+
+            if dim_idx:
+                if self.dim_idx:
+                    return
+                log.debug('lazy-loading-dim-idx')
+                data = load_dim_idx(self.db_file, conn=self.conn)
+                if data:
+                    self.dim_idx = data
+                else:
+                    self.dim_db = self._load_db(None, force_remote='local')
+                    self.parse_raw()
+                return
+
+            if dim_id and pos_id:
+                try:
+                    pos = self[dim_id]['positions'][pos_id]
+                    if pos:
+                        return
+                except KeyError:
+                    pass
+
+                log.debug('lazy-loading-dim:%s:pos:%s' % (str(dim_id), str(pos_id)))
+                self.lazy_load_redis(dim_id=dim_id)
+
+                data = load_position(self.db_file, dim_id, pos_id, conn=self.conn)
+                if data:
+                    if 'dimensions' not in self.dim_db:
+                        self.dim_db['dimensions'] = {}
+                    if 'positions' not in self[dim_id]:
+                        self[dim_id]['positions'] = {}
+                        self.dim_db['dimensions'][dim_id]['positions'] = {}
+                    self[dim_id]['positions'][pos_id] = data
+                    self.dim_db['dimensions'][dim_id]['positions'][pos_id] = data
+                else:
+                    self.dim_db = self._load_db(None, force_remote='local')
+                    self.parse_raw()
+                return
+            elif dim_id:
+                try:
+                    if lite:
+                        dim_test = self[dim_id]
+                        if dim_test:
+                            return
+                    else:
+                        dim_test = self[dim_id]["positions"]
+                        if dim_test:
+                            return
+                except KeyError:
+                    pass
+
+                log.debug('lazy-loading-dim:%s' % (str(dim_id)))
+                data = load_dimension(self.db_file, dim_id, lite=lite, conn=self.conn)
+                if data:
+                    self[dim_id] = data
+                    if 'dimensions' not in self.dim_db:
+                        self.dim_db['dimensions'] = {}
+                    self.dim_db['dimensions'][dim_id] = data
+                else:
+                    self.dim_db = self._load_db(None, force_remote='local')
+                    self.parse_raw()
+
+                return
+            return
+        except RedisDown:
+            log.warn('redis-down-loading-entire-dim-db')
+            self.dim_db = self._load_db(None, force_remote='local')
+            self.parse_raw()
+    def lazy_load_noop(self, *args, **kwags):
+        return
+    def parse_raw(self):
+        # Sanitized dimensions stored directly in dict. For most purposes,
+        # use the dict for access.
+        self._parse_dim_db()
+
+    # Return new dim_db with only the requested dim_ids. Used to create
+    # cube local dim_dbs.
+    def get_db_subset(self, dim_ids):
+        for dim_id in dim_ids:
+            self._lazy_loader(dim_id=dim_id)
+        new_db = DimensionsDB(empty=True)
+        new_db.copy_dimensions(self, dim_ids)
+        return new_db
+
+    # Test if a dimension is valid for a given builder. If dimension has no
+    # builder configuration, 'h5flow' is assumed.
+    def _check_builder(self, dim, builder='h5flow'):
+        # wrap bare strings in a list
+        _listify = lambda v: [v] if isinstance(v, basestring) else v
+
+        return builder in _listify(dim.get('builders', 'h5flow'))
+
+    # Return new dim_db with only the dimensions appropriate for the specified
+    # builder (e.g. 'h5flow' would not return stuff used only by 'heartbeat').
+    def get_db_for_builder(self, builder):
+        self._lazy_loader(dim_idx=True)
+        for dim_name, dim_id in self.dim_idx.iteritems():
+            self._lazy_loader(dim_id=dim_id)
+
+        dim_ids = [dim_id for dim_id, dim in self.dim_db['dimensions'].iteritems() if self._check_builder(dim, builder)]
+        return self.get_db_subset(dim_ids)
+
+    def get_dimension_iterator(self, builder='h5flow'):
+        self._lazy_loader(dim_idx=True)
+        for dim_name, dim_id in self.dim_idx.iteritems():
+            self._lazy_loader(dim_id=dim_id)
+
+        for dim_id, dim in self.dim_db['dimensions'].iteritems():
+            if self._check_builder(dim, builder):
+                yield dim
+
+    # Copy specified dimensions from ddb_src. Intended to be used to
+    # incrementally create a subset ddb; so doesn't ensure dim_id
+    # uniqueness (will overwrite duplicates).
+    def copy_dimensions(self, ddb_src, dim_ids, parse_raw=True):
+        for dim_id in dim_ids:
+            self._lazy_loader(dim_id=dim_id)
+            dim = ddb_src.dim_db['dimensions'].get(dim_id)
+            if dim is None:
+                raise KeyError('dim_id missing: %s' % (dim_id))
+            dim_copy = copy.deepcopy(dim)
+            self.dim_db['dimensions'][dim_id] = dim_copy
+        if parse_raw:
+            self.parse_raw()
+
+    def _get_empty_db(self):
+        return {'dimensions': {}}
+
+    def _get_default_dimensions_db_file(self):
+        return deepy.cfg.dimensions_db_file
+
+<<<<<<< HEAD
+    def _load_db(self, db_file, force_remote=None):
+=======
+    def _load_db(self, db_file, files=None, force_remote=None):
+>>>>>>> origin/master
+        if self.no_disk_load:
+            log.debug('not-loading-dimensions-db-from-disk')
+            return self.dim_db
+
+        # Load all files in directory
+        if db_file:
+            # XXX deprecated XXX
+            files = [db_file]
+            
+        if db_file is None and files is None:
+            files = []
+            for filename in os.listdir(deepy.cfg.dimensions_dir):
+                if not filename.endswith(".json.gz"):
+                    continue
+                if filename in ['dimensions_db.json.gz', 'dimensions_db_small.json.gz', 'onnet.json.gz']:
+                    continue
+                path = deepy.cfg.dimensions_dir + "/" + filename
+                files.append(path)
+
+        log.debug('dimensions-db-loading %s' % (files))
+        dim_db = None
+<<<<<<< HEAD
+        if db_file is not None:
+            dim_db = deepy.store.simple_load_json(db_file, force_remote=force_remote)
+=======
+        for filename in files:
+            tmp = deepy.store.simple_load_json(filename, force_remote=force_remote)
+
+            try:
+                dim_id, vals = tmp['dimensions'].items()[0]
+            except:
+                #log.warn
+                continue
+            for pos_id, data in vals['positions'].iteritems():
+                if 'attributes' not in data:
+                    data['attributes'] = {}
+                if 'computed' not in data['attributes']:
+                    attributes_compute(data)
+                add_dynamic_attributes(dim_id, pos_id, data)
+                
+            
+            if tmp and dim_db is None:
+                dim_db = {}
+            if tmp:
+                dim_db.update(tmp)
+            
+>>>>>>> origin/master
+        if dim_db is None:
+            dim_db = self._get_empty_db()
+        return dim_db
+
+    # Puts sanitized db in the self dict. Also builds the name index.
+    def _parse_dim_db(self):
+        self.clear()
+        self.dim_idx = {}
+        self.pos_idx = {}
+        self.pos_apv_idx = {}
+
+        for dim_id, dim_info in self.dim_db['dimensions'].iteritems():
+            # Name must exist and be unique.
+            names = dim_info.get('name')
+            if names is None:
+                log.warn('dimension-missing-name %s' % (dim_id))
+                continue
+            # Name can be a single string, or a list (aliases).
+            if isinstance(names, basestring):
+                names = [names]
+
+            names = set(names)
+            if not names.isdisjoint(set(self.dim_idx)):
+                log.warn('duplicate-dimension-name %s (dim_id: %s)' % (str(names), dim_id))
+                continue
+
+            self[dim_id] = dim_info
+            for name in names:
+                self.dim_idx[name] = dim_id
+
+            # Store position index based on dimension id
+            self.pos_idx[dim_id] = {}
+            self.pos_apv_idx[dim_id] = {}
+
+            for pos_id, pos_info in self.dim_db['dimensions'][dim_id]['positions'].iteritems():
+                try:
+                    self.pos_idx[dim_id][pos_info['name']] = pos_id
+                except:
+                    log.error("bad-dimension id={} position-id={} position-info={}".format(
+                        dim_id, pos_id, pos_info))
+
+    def is_local_remote(self, dim_id):
+        self._lazy_loader(dim_id=dim_id, lite=True)
+        dim = self.get(dim_id)
+        if dim is None:
+            return False
+        lr = False
+        try:
+            if dim['attributes']['split'] == ['local', 'remote']:
+                lr = True
+        except KeyError:
+            pass
+        return lr
+
+    def get_all(self):
+        self._lazy_loader(dim_idx=True)
+        for dim_name, dim_id in self.dim_idx.iteritems():
+            self._lazy_loader(dim_id=dim_id)
+        return self
+
+    #Ensure that dimension and its position have been loaded
+    def ensure_dimension_loaded(self, dim):
+        #Determine if its a name or id
+        dim_test = self.get_by_name(dim)
+        if dim_test:
+            dim_id = self.get_id_by_name(dim)
+        else:
+            dim_id = dim
+        self._lazy_loader(pos_idx=True, dim_id=dim_id)
+        pos_idx = self.pos_idx.get(dim_id)
+        if not pos_idx:
+            return
+        for pos_name, pos_id in pos_idx.iteritems():
+            self._lazy_loader(dim_id=dim_id, pos_id=pos_id)
+
+    # First try to lookup by name. If that fails, try looking up by id.
+    def get_by_name_or_id(self, dim_str):
+        dim = self.get_by_name(dim_str)
+        if dim is None:
+            dim = self.get_by_id(dim_str)
+        return dim
+
+    # Returns None if name doesn't exist (like get()).
+    # Also handles local/remote.
+    def get_by_name(self, name):
+        #if name is None:
+        #    return None
+        name, suffix = self.dim_name_split(name)
+        self._lazy_loader(dim_idx=True)
+        idx = self.dim_idx.get(name)
+        if idx is None:
+            return None
+        self._lazy_loader(dim_id=idx)
+        return self[idx]
+
+    # Get multiple dimensions by name. Return dict keyed by dimension ids.
+    # names is a list.
+    def get_by_names(self, names, efficient=False):
+        dims = {}
+        for name in names:
+            if name is None:
+                continue
+            dim_id = self.get_id_by_name(name)
+            if dim_id is None:
+                continue
+            dims[dim_id] = self.get_by_id(dim_id)
+
+        # Try to cut down the amount of data returned
+        if efficient:
+            bad_keys = ['match', 'site', 'tag', 'cname']
+            dims = remove_attributes(bad_keys, dims)
+        return dims
+
+    # Returns None if id doesn't exist. Also handles local/remote.
+    def get_by_id(self, dim_id):
+        dim_id, suffix = self.dim_name_split(dim_id)
+        self._lazy_loader(dim_id=dim_id)
+        return self.get(dim_id)
+
+    # Get multiple dimensions by id. Return dict keyed by dimension ids.
+    # dim_ids is a list.
+    def get_by_ids(self, dim_ids):
+        dims = {}
+        for dim_id in dim_ids:
+            self._lazy_loader(dim_id=dim_id)
+            dim = self.get_by_id(dim_id)
+            if dim is None:
+                continue
+            dims[dim_id] = dim
+        return dims
+
+    # Returns dimension id or None if name doesn't exist.
+    # Preserves local/remote. e.g., market.local -> 3.local, cdn -> 6
+    def get_id_by_name(self, name):
+        name, suffix = self.dim_name_split(name)
+        self._lazy_loader(dim_idx=True)
+        idx = self.dim_idx.get(name)
+        if idx is None:
+            return None
+        return idx + suffix
+
+    # Returns list of all names for a dimension.
+    # By default, does *not* preserve local/remote.
+    # Returns None if id doesn't exist.
+    def get_names_by_id(self, dim_id, preserve_local_remote=False):
+        dim_id, _suffix = self.dim_name_split(dim_id)
+        self._lazy_loader(dim_id=dim_id, lite=True)
+        dim = self.get(dim_id)
+        if dim is None:
+            return None
+        names = dim['name']
+        # Name can be a single string, or a list (aliases).
+        if isinstance(names, basestring):
+            names = [names]
+
+        suffix = ''
+        if preserve_local_remote:
+            suffix = _suffix
+
+        return [x + suffix for x in names]
+
+    # Preserves local/remote. e.g., 3.local -> market.local
+    # Returns None if id doesn't exist.
+    def get_name_by_id(self, dim_id):
+        dim_id, suffix = self.dim_name_split(dim_id)
+        self._lazy_loader(dim_id=dim_id, lite=True)
+        dim = self.get(dim_id)
+        if dim is None:
+            return None
+        names = dim['name']
+        # Name can be a single string, or a list (aliases).
+        if isinstance(names, basestring):
+            names = [names]
+        return names[0] + suffix
+
+    # Returns dict. Keys are dimension names; values are dimension ids.
+    # Multiple names (aliases) may map to the same dimension. Names and
+    # ids will include local/remote for split dimensions.
+    def get_names_to_id(self):
+        dim_names = {}
+        self._lazy_loader(dim_idx=True)
+
+        for dim_name, dim_id in self.dim_idx.iteritems():
+            if self.is_local_remote(dim_id):
+                dim_names[dim_name + '.local'] = dim_id + '.local'
+                dim_names[dim_name + '.remote'] = dim_id + '.remote'
+            else:
+                dim_names[dim_name] = dim_id
+        return dim_names
+
+    # Returns dict. Keys are ids; values are the list of names for ids.
+    def get_id_to_names(self):
+        dim_ids = {}
+        self._lazy_loader(dim_idx=True)
+        for dim_name, dim_id in self.dim_idx.iteritems():
+            self._lazy_loader(dim_id=dim_id, lite=True)
+        for dim_id, dim in self.iteritems():
+            names = dim.get('name')
+            if isinstance(names, basestring):
+                names = [names]
+            if self.is_local_remote(dim_id):
+                dim_ids[dim_id + '.local'] = [n + '.local' for n in names]
+                dim_ids[dim_id + '.remote'] = [n + '.remote' for n in names]
+            else:
+                dim_ids[dim_id] = names
+        return dim_ids
+
+    # Returns None if dim_name or pos_name doesn't exist.
+    def get_pos_by_name(self, dim_name, pos_name):
+        if dim_name is None:
+            return None
+        dim_id = self.get_id_by_name(dim_name)
+        if dim_id is None:
+            return None
+        dim_id, suffix = self.dim_name_split(dim_id, lite=True)
+        self._lazy_loader(dim_id=dim_id, pos_idx=True)
+        pos_id = self.pos_idx.get(dim_id).get(pos_name)
+        if pos_id is None:
+            return None
+        return self[dim_id]['positions'][pos_id]
+
+    # Why not another?
+    def get_pos_by_id(self, dim_id, pos_id, none_on_noexist=False):
+        dim_id, suffix = self.dim_name_split(dim_id)
+        if pos_id is None:
+            return None
+        self._lazy_loader(dim_id=dim_id, pos_id=pos_id)
+        if none_on_noexist:
+            return self[dim_id]['positions'].get(pos_id)
+        return self[dim_id]['positions'][pos_id]
+
+    # This is getting silly.
+    def get_pos_by_name_and_id(self, dim_name, pos_id):
+        if dim_name is None:
+            return None
+        dim_id = self.get_id_by_name(dim_name)
+        if dim_id is None:
+            return None
+        dim_id, suffix = self.dim_name_split(dim_id)
+        self._lazy_loader(dim_id=dim_id, pos_id=pos_id)
+        return self[dim_id]['positions'].get(pos_id)
+
+    def add_builder(self, builder, dim_id=None):
+        if dim_id is None:
+            dim_id = self.dim_id_cursor
+        dim = self.get_by_id(dim_id)
+        builders = set(dim.get("builders", []))
+        builders.add(builder)
+        dim['builders'] = list(builders)
+
+    # MOAR
+    def get_pos_by_id2(self, pos_id, dim_id=None, none_on_noexist=False):
+        if dim_id is None:
+            dim_id = self.dim_id_cursor
+        return self.get_pos_by_id(dim_id, pos_id,
+                                  none_on_noexist=none_on_noexist)
+
+    # Slightly faster version for when you already have the dim_id.
+    # Returns None if dim_id or pos_name doesn't exist.
+    def get_pos_by_id_and_name(self, dim_id, pos_name):
+        dim_id, suffix = self.dim_name_split(dim_id)
+        self._lazy_loader(dim_id=dim_id, pos_idx=True)
+        pos_idx = self.pos_idx.get(dim_id)
+        if pos_idx is None:
+            return None
+        pos_id = pos_idx.get(pos_name)
+        if pos_id is None:
+            return None
+        self._lazy_loader(dim_id=dim_id, pos_id=pos_id)
+        return self[dim_id]['positions'][pos_id]
+
+    def get_pos_idx(self, dim_id):
+        '''
+        Returns the position index for a given dimension id
+        Returns none if that dimension doesn't exist
+        '''
+        self._lazy_loader(dim_id=dim_id, pos_idx=True)
+        return self.pos_idx.get(dim_id)
+
+    # Same as get_pos_by_id_and_name(), but dim_id is optional
+    # (dim_id_cursor must be set)
+    def get_pos_by_name2(self, pos_name, dim_id=None):
+        if dim_id is None:
+            dim_id = self.dim_id_cursor
+        return self.get_pos_by_id_and_name(dim_id, pos_name)
+
+    #XXX Don't touch any paths that write to dim_db yet for redis
+    def set_description(self, descr, dim_id=None):
+        if dim_id is None:
+            dim_id = self.dim_id_cursor
+        dim = self.get_by_id(dim_id)
+        dim['description'] = descr
+
+    def set_attribute(self, attr, val, dim_id=None):
+        if dim_id is None:
+            dim_id = self.dim_id_cursor
+        dim = self.get_by_id(dim_id)
+        attrs = dim.setdefault('attributes', {})
+        attrs[attr] = val
+
+    # Returns None if dim_name or pos_name doesn't exist.
+    def get_pos_id_by_name(self, dim_name, pos_name):
+        if dim_name is None:
+            return None
+        dim_id = self.get_id_by_name(dim_name)
+        if dim_id is None:
+            return None
+        dim_id, suffix = self.dim_name_split(dim_id)
+        self._lazy_loader(dim_id=dim_id, pos_idx=True)
+        return self.pos_idx.get(dim_id).get(pos_name)
+
+    def get_pos_id_by_name2(self, pos_name, dim_id=None):
+        '''
+        Like get_pos_id_by_id_and_name(), but dim_id is optional if
+        dim_id_cursor is set
+        '''
+        if dim_id is None:
+            dim_id = self.dim_id_cursor
+        return self.get_pos_id_by_id_and_name(dim_id, pos_name)
+
+    # Slightly faster version for when you already have the dim_id.
+    # Returns None if dim_name or pos_name doesn't exist.
+    def get_pos_id_by_id_and_name(self, dim_id, pos_name):
+        dim_id, suffix = self.dim_name_split(dim_id)
+        self._lazy_loader(dim_id=dim_id, pos_idx=True)
+        pos_idx = self.pos_idx.get(dim_id)
+        if pos_idx is None:
+            return None
+        return pos_idx.get(pos_name)
+
+    # Xpath-like query. Given a position, return the value at path.
+    # NOTE: raises LookupError or one of its derived classes if there's no
+    # match. (can't just return None, since the value could be None.)
+    def get_pos_path(self, dim_id, pos_id, path, require_scalar_result=False):
+        try:
+            return self._get_pos_path(dim_id, pos_id, path,
+                                 require_scalar_result=require_scalar_result)
+        except LookupError:
+            return self._get_pos_path(dim_id, pos_id,
+                                 'attributes.computed.' + path,
+                                 require_scalar_result=require_scalar_result)
+
+    def _get_pos_path(self, dim_id, pos_id, path, require_scalar_result=False):
+        sep = '.'   # Provide arg?
+        dim_id, suffix = self.dim_name_split(dim_id)
+        pos = self[dim_id]['positions'][pos_id]
+        curr_val = pos
+        for part in path.strip(sep).split(sep):
+            if isinstance(curr_val, dict) and part in curr_val:
+                curr_val = curr_val[part]
+            elif isinstance(curr_val, list):
+                # Treat as index into list.
+                try:
+                    part = int(part)
+                except ValueError:
+                    raise IndexError(part)
+                curr_val = curr_val[part]
+            else:
+                # Don't try to index into scalars.
+                raise LookupError(part)
+
+        if require_scalar_result and isinstance(curr_val, (dict,list)):
+            raise LookupError(path)
+
+        return curr_val
+
+    # Iterates through positions, returning all pos_ids that match.
+    def get_pos_path_ids(self, dim_id, path, match_set):
+        self._lazy_loader(dim_id=dim_id)
+        dim = self[dim_id]
+        if isinstance(match_set, (basestring,int,float)):
+            # Allow singleton match sets.
+            match_set = [match_set]
+        match_set = set(match_set)
+        # Only glob match if it's string.
+        match_set_glob = []
+        for pat in match_set:
+            if isinstance(pat, basestring):
+                match_set_glob.append(pat)
+
+        # Iterate positions, looking for matches.
+        match_ids = []
+        self._lazy_loader(dim_id=dim_id, pos_idx=True)
+        for pos_id in dim['positions'].iterkeys():
+            try:
+                val = self.get_pos_path(dim_id, pos_id, path)
+            except LookupError:
+                # No match, path doesn't exist.
+                continue
+            if val in match_set:
+                # Exact match
+                match_ids.append(pos_id)
+            else:
+                for pat in match_set_glob:
+                    if fnmatch.fnmatchcase(val, pat):
+                        match_ids.append(pos_id)
+                        break
+
+        return match_ids
+
+    def dim_name_split(self, dim_name_id):
+        return dim_name_split(dim_name_id)
+
+    # Copy split from src to dst. I.e., return dst with the same split that
+    # src has.
+    def dim_copy_split(self, src_nmid, dst_nmid):
+        src_pref, src_suf = self.dim_name_split(src_nmid)
+        dst_pref, dst_suf = self.dim_name_split(dst_nmid)
+        return dst_pref + src_suf
+
+    def dim_set_split(self, dst_nmid, dst_suf):
+        return self.dim_copy_split('dimname.{}'.format(dst_suf), dst_nmid)
+
+    ##
+    # Dimension/position adding - used for aggregate/ephemeral dimensions.
+    # Use DimensionsDBFrag for making regular dimensions.
+    #
+
+    # Return new dim_id and dimension on success, or None if it's a duplicate
+    # dim name. This updates dim_db, not the self dict.
+    def add_dimension(self, dim_type, dim_name, parse_raw=True, dry_run=False):
+        # Validate type.
+        if dim_type == DIM_TYPES.ephemeral:
+            didr_id = 'didr_ephemeral'
+        else:
+            assert False, 'Unknown dim_type'
+
+        # Validate name.
+        dim_name = str(dim_name)
+        # XXX This should check the dimensions index
+        if self.get_by_name(dim_name) is not None:
+            return None
+
+        dim_id = self.get_next_dim_id(didr_id)
+        new_dim = {
+                # Add name as str rather than list. I think code will work
+                # with this.
+                'name': dim_name,
+                'positions': {},
+                # XXX Make this a string.
+                'type': dim_type,
+                # Track max id used for each pidr_id.
+                'max_ids': {}
+                }
+        self.dim_db['dimensions'][dim_id] = new_dim
+
+        if parse_raw:
+            self.parse_raw()
+
+        if dim_type == DIM_TYPES.ephemeral:
+            self.ephemeral_dim_ids.add(dim_id)
+
+        return dim_id, new_dim
+
+    def get_next_dim_id(self, didr_id):
+        # dim_ids are strs in the dict.
+        curr_dim_ids = [int(dim_id) for dim_id in
+                self.dim_db['dimensions'].iterkeys()]
+        next_dim_id = range_get_next(_DIDRS[didr_id], curr_dim_ids)
+        return str(next_dim_id)
+
+    # Add skeleton position, and return it. Based on DimensionsDBFrag
+    # add_position2().
+    # dim is the dim dict.
+    # pos_type should be an attribute of POS_TYPES.
+    def add_position(self, dim, pos_type, pos_name):
+        # Currently pos_info is just the list of pidrs. Need some way to
+        # verify this is an attribute.
+        pos_info = pos_type
+        # XXX Only supporting 1 pidr. Will eventually support multiple per
+        # type, especially for general.
+        pidr_id = pos_info[0]
+        pos_id = self.get_next_pos_id(dim, pidr_id)
+        # XXX Check for duplicate name. Just append pos_id to make unique in
+        # case of duplicates.
+
+        pos = {}
+        pos['name'] = pos_name
+
+        # Gah. I guess we're storing pos_ids as strs. Stupid json.
+        dim['positions'][str(pos_id)] = pos
+
+        return pos_id, pos
+
+    # Tracks ids via dimension max_ids. Need to track max in case highest
+    # position gets deleted. Don't want to reuse. Although, should we never
+    # delete?
+    # Note: This updates the dimension max_ids.
+    def get_next_pos_id(self, dim, pidr_id):
+        pos_id = range_get_next_max(_PIDRS[pidr_id],
+                dim['max_ids'].get(pidr_id))
+        dim['max_ids'][pidr_id] = pos_id
+        return pos_id
+
+    # For ephemeral dimensions. In general, we don't want to delete real
+    # dimensions. Just mark them as unused?
+    def del_dimension(self, dim_id, parse_raw=True):
+        del self.dim_db['dimensions'][dim_id]
+
+        if dim_id in self.ephemeral_dim_ids:
+            self.ephemeral_dim_ids.remove(dim_id)
+
+        if parse_raw:
+            self.parse_raw()
+
+    def del_ephemeral_dimensions(self, parse_raw=True):
+        for edid in self.ephemeral_dim_ids.copy():
+            self.del_dimension(edid, parse_raw)
+
+    # Return json version of dim_db "raw" version. Used to serialize to h5 cubes.
+    def get_json(self, indent=None):
+        return json.dumps(self.dim_db, default=list, indent=indent)
+
+
+class DimensionsDBFragNameMismatch(Exception):
+    pass
+
+
+class DimensionsDBFragMissingPositionName(Exception):
+    pass
+
+
+class DimensionsDBFragDuplicatePositionName(Exception):
+    pass
+
+class DimensionsDBFragDuplicatePositionId(Exception):
+    pass
+
+
+# DimensionsDB fragment w/ added ability to edit tags
+class DimensionsDBFrag(DimensionsDB):
+
+    default_dim_type = 'user'
+    pos_archive = None
+    pos_archive_file = None
+
+    def _get_default_dimensions_db_file(self):
+        return None
+
+    def _get_empty_db(self):
+        return {'dimensions': {}}
+
+    def __init__(self, *args, **kwargs):
+        DimensionsDB.__init__(self, *args, **kwargs)
+        for dim_id, dim_info in self.dim_db['dimensions'].iteritems():
+            self.pos_apv_idx[dim_id] = {}
+            for pos_id, pos_info in self.dim_db['dimensions'][dim_id]['positions'].iteritems():
+                # XXX Also build up the applies index for fragments
+                if 'meta_apply' in pos_info:
+                    for apply_name in pos_info['meta_apply']:
+                        apply_dict = pos_info['meta_apply'][apply_name]
+                        if 'path_in' not in apply_dict \
+                           or 'path_val_in' not in apply_dict:
+                            continue
+                        path_in = apply_dict['path_in']
+                        path_val_in = apply_dict['path_val_in']
+                        self.pos_apv_idx[dim_id][(apply_name, path_in, path_val_in)] = pos_id
+
+
+    def get_pos_by_apply_path_val(self, apply_name, path, val, dim_id=None):
+        if dim_id is None:
+            dim_id = self.dim_id_cursor
+        dim_id, suffix = self.dim_name_split(dim_id)
+        pos_id = self.pos_apv_idx.get(dim_id, {}).get((apply_name, path, val))
+        retval = None
+        if pos_id is not None:
+            retval = self[dim_id]['positions'][pos_id]
+        return retval
+
+    def _load_pos_archive(self, dim_id, dim_idx=None):
+        dim_id = str(dim_id)
+        if dim_idx is None:
+            dim_idx = deepy.dimensions.DimensionsIdx()
+        frag_file = dim_idx.get_frag_file(dim_id)
+        self.pos_archive_file = deepy.cfg.pos_archive_dir + '/' + frag_file
+        self.pos_archive = deepy.store.simple_load_json(self.pos_archive_file)
+        if self.pos_archive is None:
+            self.pos_archive = self._get_empty_db()
+        self.pos_archive['dimensions'].setdefault(dim_id, {})
+        self.pos_archive['dimensions'][dim_id].setdefault('positions', {})
+
+    def archive_position(self, pos_id, dim_id=None):
+        if dim_id is None:
+            dim_id = self.dim_id_cursor
+        dim = self.get_by_id(dim_id)
+        if self.pos_archive is None:
+            self._load_pos_archive(dim_id)
+        dim['positions'][pos_id]['archived'] = True
+        self.pos_archive['dimensions'][dim_id]['positions'][pos_id] = \
+              dim['positions'][pos_id]
+        del dim['positions'][pos_id]
+
+    def restore_archived_position(self, pos_id, dim_id=None):
+        if dim_id is None:
+            dim_id = self.dim_id_cursor
+        dim = self.get_by_id(dim_id)
+        if self.pos_archive is None:
+            self._load_pos_archive(dim_id)
+        dim['positions'][pos_id] = \
+            self.pos_archive['dimensions'][dim_id]['positions'][pos_id]
+        del dim['positions'][pos_id]['archived']
+        del self.pos_archive['dimensions'][dim_id]['positions'][pos_id]
+
+    # Full positions list of working set and archive.  The dict itself is
+    # a copy, with references to objects from both databases.
+    def get_all_positions(self, dim_id=None):
+        if dim_id is None:
+            dim_id = str(self.dim_id_cursor)
+        if self.pos_archive is None:
+            self._load_pos_archive(dim_id)
+        dim = self.get_by_id(dim_id)
+        retval = {}
+        dim_id = str(dim_id)
+        retval.update(self.pos_archive['dimensions'][dim_id]['positions'])
+        retval.update(dim['positions'])
+        return retval
+
+    # Includes archived positions
+    def get_pos_id_name_map(self, dim_id=None):
+        positions = self.get_all_positions(dim_id)
+        return dict([(i, v['name']) for (i, v) in positions.items()])
+
+    # Load / return dim_db with dim_id_cursor set
+    @classmethod
+    def load_dimension(cls, name, return_dim_info=False):
+        dim_idx = deepy.dimensions.DimensionsIdx()
+        dim_idx_entry = dim_idx.get_dim_by_name(name)
+        if dim_idx_entry is None:
+            return None
+        frag_file = deepy.cfg.dimensions_dir + '/' + dim_idx_entry['file']
+        dims = deepy.dimensions.DimensionsDBFrag(frag_file)
+        dims.dim_id_cursor = dim_idx_entry['id']
+
+        if return_dim_info:
+            return dims, dims.get_current_dim_id(), dims.get_current_dim()
+        return dims
+
+    # Also sets dim_id_cursor.
+    @classmethod
+    def load_or_add_dimension(cls, cname, name=None, dim_idx=None,
+                              frag_file=None, frag_file_prefix=None,
+                              builders=None, return_dim_info=False, dim_id_out=None,
+                              dry_run=False):
+        '''
+        Note: saves dimensions index immediately after adding, but does not
+        save new fragment file.
+        '''
+
+        #XXX Special Case Handling to Prevent Creation of Timestamp Dimension
+        dont_create = ['timestamp.json.gz']
+        if frag_file in dont_create:
+            #Its is absolutely an error if we are attempting to load/create this dimension. Error out.
+            log.critical('attempting-to-create-dimension-frag-%s' % (frag_file))
+            raise ValueError('attempting-to-create-bad-dimension-frag-%s' % (frag_file))
+
+        dims = deepy.dimensions.DimensionsDBFrag(frag_file)
+        if dim_idx is None:
+            dim_idx = deepy.dimensions.DimensionsIdx()
+        if name is None:
+            name = cname
+
+        dim = dim_idx.get_dim_by_name(cname)
+        if dim is None:
+            dim_id = dims.add_dimension(cname, dim_idx=dim_idx, name=name,
+                    db_file=frag_file, dim_id=dim_id_out,
+                    builders=builders, dry_run=dry_run)['dim_id']
+        else:
+            if frag_file is not None \
+               and os.path.basename(frag_file) != dim['file']:
+                raise DimensionsDBFragNameMismatch('Dimension exists in fragment file (%s) other than one requested (%s)' % (dim['file'], os.path.basename(frag_file)))
+            dim_id = dim['id']
+        dims.dim_id_cursor = dim_id
+
+        if return_dim_info:
+            return dims, dim_id, dims.get_current_dim()
+        return dims
+
+    def get_current_dim_id(self):
+        return self.dim_id_cursor
+
+    def get_current_dim(self):
+        return self.get_by_id(self.dim_id_cursor)
+
+    def add_dimension(self, cname, dim_idx=None, name=None, db_file=None,
+                      frag_file_prefix=None, descr=None, builders=None, dim_id=None,
+                      dry_run=False):
+        '''
+        Note: saves dimensions index immediately after adding. dry_run saves nothing
+        and is for testing only.
+        '''
+        if dim_idx is None:
+            dim_idx = deepy.dimensions.DimensionsIdx()
+        if name is None:
+            name = cname
+        if dim_idx.get_dim_by_name(name) is not None:
+            log.error("Duplicate dimension name")
+            raise ValueError('Duplicate dimension name')
+
+        if db_file is None:
+            db_file = self.db_file
+
+        for dims in self.dim_db.get('dimensions', {}).values():
+            if name in dims['name']:
+                raise ValueError('Dimension already exists on add: {}'.format(name))
+
+        if dim_id:
+            next_id = dim_id
+            dim_idx.add_dim_id(name, dim_id, db_file, dry_run=dry_run)
+        else:
+            next_id = dim_idx.get_next_dim_id(name=name, frag_file=db_file,
+                                              frag_file_prefix=frag_file_prefix,
+                                              dry_run=dry_run)
+
+        if db_file is None:
+            db_file = deepy.cfg.dimensions_dir + '/' + dim_idx.get_frag_file(next_id)
+            self.db_file = db_file
+            self.dim_db = self._get_empty_db()
+
+        self.dim_db['dimensions'][str(next_id)] = {'cname': cname,
+                                                   'name': [name],
+                                                   'max_id': 1, 'positions': {},
+                                                   'type': self.default_dim_type,
+                                                   'dim_id': next_id,
+                                                   'id': next_id}
+        if descr is not None:
+            self.dim_db['dimensions'][str(next_id)]['description'] = descr
+
+        # List of valid builders. If undefined, h5flow is assumed.
+        if builders is not None:
+            if not isinstance(builders, list):
+                errormsg = "Dimension builders should be a list of strings (e.g. ['h5flow'])"
+                log.error(errormsg)
+                raise ValueError(errormsg)
+            self.dim_db['dimensions'][str(next_id)]['builders'] = builders
+
+        dim_idx.update_by_dim(self.dim_db['dimensions'][str(next_id)], dry_run=dry_run)
+        if not dry_run:
+            self.save(db_file);
+        else:
+            self._parse_dim_db()
+        return self.dim_db['dimensions'][str(next_id)]
+
+    # Copy attributes from dim_in into currently active fragment. Assumes
+    # dim_id_cursor is set.
+    def copy_attributes(self, dim_in):
+        dim_out = self.get_by_id(self.dim_id_cursor)
+        if 'attributes' in dim_in:
+            dim_out['attributes'] = copy.deepcopy(dim_in['attributes'])
+        elif 'attributes' in dim_out:
+            # Clear if it doesn't exist in dim_in.
+            del dim_out['attributes']
+
+    # XXX Should not be using cname. The correct way to refer to dimensions
+    # within dimensions db is by id.
+    def add_position(self, dim_cname, pos):
+        global MAX_POS_ID
+
+        dim = self.get_by_name(dim_cname)
+        if dim is None:
+            log.error("Invalid dimension")
+            raise KeyError('Invalid dimension')
+        dim_id = self.dim_idx.get(dim_cname)
+        if not pos.has_key('cname'):
+            log.error("Missing name")
+            raise DimensionsDBFragMissingPositionName('Missing name')
+
+        pos.setdefault('name', pos['cname'])
+        for p in dim['positions'].values():
+            if p['name'] == pos['name']:
+                log.error("Duplicate position name")
+                raise DimensionsDBFragDuplicatePositionName(
+                                              'Duplicate position name')
+        if dim['max_id'] >= MAX_POS_ID:
+            raise ValueError('Max position ID reached')
+        dim['max_id'] += 1
+        next_id = dim['max_id']
+        pos.setdefault('tag', 'dim:%s:%s:%s.%d' % \
+                              (dim_cname, pos['cname'], dim_id, next_id))
+        dim['positions'][next_id] = pos
+        return dim['positions'][next_id]
+
+    # Same as add_position2(), but dim_id optional (dim_id_cursor must be set)
+    def add_position3(self, pos_name, dim_id=None, allow_dup_names=False,
+                      pos_info=None):
+        if dim_id == None:
+            dim_id = self.dim_id_cursor
+        return self.add_position2(dim_id, pos_name,
+                                  allow_dup_names=allow_dup_names,
+                                  pos_info=pos_info)
+
+    # Add skeleton position, and return it.
+    def add_position2(self, dim_id, pos_name, allow_dup_names=False,
+                      pos_info=None):
+        global MAX_POS_ID
+
+        if pos_info is None:
+            pos_info = {}
+
+        dim = self.get_by_id(dim_id)
+        if not allow_dup_names:
+            for p in dim['positions'].values():
+                if p['name'] == pos_name:
+                    log.error("duplicate-position-name %s %s" % (dim_id, pos_name))
+                    raise DimensionsDBFragDuplicatePositionName(
+                                                  'Duplicate position name')
+        pos = copy.deepcopy(pos_info)
+
+        pos['name'] = pos_name
+
+        next_id = pos_info.get('id')
+        if next_id:
+            next_id = str(next_id)
+            if next_id in dim['positions']:
+                raise DimensionsDBFragDuplicatePositionId('Duplicate position id')
+            if int(next_id) > MAX_POS_ID:
+                raise ValueError('Requested position ID exceeds max')
+            dim['max_id'] = max(dim['max_id'], int(next_id))
+        else:
+            if dim['max_id'] >= MAX_POS_ID:
+                raise ValueError('Max position ID reached')
+            dim['max_id'] += 1
+            next_id = str(dim['max_id'])
+
+
+        # Using name in tag rather than cname. Ids ensure tag uniqueness.
+        pos['cname'] = '%s.%s' % (pos_name, next_id)
+        pos['tag'] = 'dim:%s:%s:%s.%s' % (dim['cname'], pos_name, dim_id,
+                next_id)
+        pos['id'] = next_id
+
+        dim['positions'][next_id] = pos
+        return pos
+
+    def save(self, db_file=None, save_backup=False):
+        # Re-parse and what-not on save
+        self._parse_dim_db()
+
+        # Make sure every dimension includes its cname in its list of aliases
+        for dim_id, dim_info in self.dim_db['dimensions'].iteritems():
+            names = dim_info.get('name')
+            cname = dim_info.get('cname')
+            if names is None:
+                names = []
+                dim_info['name'] = names
+            if cname is not None and cname not in names:
+                names.append(cname)
+
+        if db_file is None:
+            db_file = self.db_file
+        log.info('saving-db-frag {}'.format(db_file))
+        assert db_file is not None
+
+        deepy.store.simple_save_json(self.dim_db, db_file)
+
+        if save_backup:
+            # Assumes .json.gz
+            tstamp = time.strftime("%Y-%m-%d", time.gmtime(time.time()))
+            bak_file = db_file[:-7] + tstamp + '.json.gz'
+            bak_file = deepy.cfg.cache_dir + '/archive/dimensions/' + os.path.basename(bak_file)
+
+            log.info('archiving-db-frag {}'.format(bak_file))
+            deepy.store.simple_save_json(self.dim_db, bak_file)
+
+        if self.pos_archive is not None:
+            log.info('saving-pos-archive {}'.format(self.pos_archive_file))
+            deepy.store.simple_save_json(self.pos_archive, self.pos_archive_file)
+
+
+def merge_dimensions(ui_small=False, verbose=False):
+
+    fragment_list = deepy.store.ls_glob_remote(deepy.cfg.dimensions_dir, '*.json.gz')
+
+    log.debug("processing-file-list %s" % fragment_list)
+
+    if fragment_list is None or len(fragment_list) == 0:
+        log.warn("could-not-load-any-fragments-aborting")
+        return
+
+    dimensions_db = {'_comment': 'Machine-generated file. Do not edit directly.'}
+    merged_dimensions = dimensions_db.setdefault('dimensions', {})
+
+    for frag_file in fragment_list:
+        if frag_file == deepy.cfg.dimensions_db_file or frag_file == deepy.cfg.dimensions_db_small_file:
+            log.debug("skipping-existing-dimensions-db")
+            continue
+
+        if frag_file in get_skipped_dimension_files():
+            log.debug("skipping-file %s" % (frag_file))
+            continue
+
+        try:
+            frag = deepy.store.simple_load_json(frag_file)
+        except Exception as e:
+            log.error("unable-to-load file={} error={}" % (frag_file, str(e)))
+            continue
+
+        if frag is None:
+            frag = {}
+
+        frag_dimensions = frag.setdefault('dimensions', {})
+        for dim_id, dim_data in frag_dimensions.items():
+
+            for pos_id, pos_data in dim_data['positions'].items():
+                if pos_data.get('disabled', False) == True:
+                    del dim_data['positions'][pos_id]
+                    continue
+
+                if 'attributes' not in pos_data:
+                    pos_data['attributes'] = {}
+
+                if 'computed' not in pos_data['attributes']:
+                    attributes_compute(pos_data)
+
+                add_dynamic_attributes(dim_id, pos_id, pos_data)
+
+                # Make smaller
+                if ui_small:
+                    keep_dims = ['router', 'interfaces', 'peer']
+                    keep_attrs = ['match', 'cname', 'description']
+
+                    for field in ['match', 'cname', 'description', 'tag', 'rank']:
+                        #For the datasources page we need these not to be pruned out
+                        if dim_data.get('cname', 'dont_match') in keep_dims and field in keep_attrs:
+                            pass
+                        else:
+                            pos_data.pop(field, None)
+
+                    for field in ['fps', 'flow_kbps']:
+                        try:
+                            del(pos_data['attributes']['computed']['router'][field])
+                        except:
+                            pass
+
+                for field in ['ips', 'ui_name', 'tags', 'type']:
+                    pos_data.pop(field, None)
+
+
+
+                pos_data.pop('dynamic', None)
+                pos_data.get('attributes', {}).pop('user', None)
+                pos_data.get('attributes', {}).pop('connector', None)
+                pos_data.get('geoip', {}).pop('maxmind_ids', None)
+
+            merged_dimensions[dim_id] = dim_data
+
+    if ui_small:
+        local_path = deepy.cfg.dimensions_db_small_file
+    else:
+        local_path = deepy.cfg.dimensions_db_file
+
+    deepy.store.simple_save_json(dimensions_db, local_path, verbose=verbose)
+
+    log.info("saving-merged-dimensions-db %s" % (local_path))
+
+
+# Derive "computed" effective attributes for a position
+def attributes_compute(position):
+    if 'attributes' not in position:
+        return
+
+    computed = copy.deepcopy(position['attributes'].get('connector', {}))
+    position['attributes']['computed'] = computed
+
+    if 'user' in position['attributes']:
+        for k, v in position['attributes']['user'].items():
+            if type(v) is dict and k in computed and type(computed[k]) is dict:
+                computed[k].update(v)
+            else:
+                computed[k] = v
+
+    # Special section to allow top-level position fields to be treated like
+    # attributes (eg router names).
+    pos_top_level = computed.get('pos_top_level', {})
+    for k, v in pos_top_level.items():
+        position[k] = v
+
+def attributes_clear(position, section, attribute, attr_type=None):
+    '''Clear attribute from specified section. Leave attr_type as None to clear
+    all.'''
+
+    if attr_type is None or attr_type == 'user':
+        try:
+            del position['attributes']['user'][section][attribute]
+        except KeyError:
+            pass
+    if attr_type is None or attr_type == 'connector':
+        try:
+            del position['attributes']['connector'][section][attribute]
+        except KeyError:
+            pass
+
+
+def add_dynamic_attributes(dim_id, pos_id, position):
+    # Origin ASN
+    if dim_id == "103":
+
+        try:
+            del(position['attributes']['computed']['extended_name'])
+        except:
+            pass
+
+        # pos_id used to be the default here
+        asn = position.get('asn', None)
+        if asn:
+            ext_name = '%s-%d' % (position['name'], asn)
+            position['attributes']['computed']['extended_name'] = ext_name
+
+    # Peer
+    if dim_id == "104":
+        try:
+            asns = position['match']['peer_as']
+        except KeyError:
+            return
+        ext_name = '%s-%s' % (position['name'], ','.join(str(x) for x in asns))
+        position['attributes']['computed']['extended_name'] = ext_name
+
+
+def build_dimension_idx(verbose=False):
+    # Map names / ids to list of files they appear in to error on dups
+    dim_names_to_files = {}
+    dim_ids_to_files = {}
+
+    fragment_list = deepy.store.ls_glob_remote(deepy.cfg.dimensions_dir, '*.json.gz')
+
+    if fragment_list is None:
+        log.warn("*** Aborting due to inability to retrieve fragment list  ***")
+        return
+
+    dimensions_idx = {
+        '_comment': 'Machine-generated file. Do not edit directly.',
+        'dimensions': {},
+        'next_id': 1
+    }
+    assert 'dimensions' in dimensions_idx
+    for frag_file in fragment_list:
+        if frag_file in [deepy.cfg.dimensions_db_file, deepy.cfg.dimensions_db_small_file]:
+            if verbose:
+                log.info("Skipping existing dimensions db " + frag_file)
+            continue
+
+        if frag_file in get_skipped_dimension_files():
+            log.debug("skipping-file %s" % (frag_file))
+            continue
+
+        try:
+            frag = deepy.store.simple_load_json(frag_file)
+        except Exception:
+            log.error("Unable to load %s; returning without saving" % frag_file)
+            return
+
+        if frag is None:
+            frag = {}
+
+        frag_dimensions = frag.setdefault('dimensions', {})
+        for dim_id, dim_data in frag_dimensions.items():
+            dim_id = int(dim_id)
+            dim_ids_to_files.setdefault(dim_id,[]).append(frag_file)
+            if dim_id >= dimensions_idx['next_id']:
+                dimensions_idx['next_id'] = int(dim_id) + 1
+            if type(dim_data['name']) != list:
+                dim_data['name'] = [dim_data['name']]
+            dim_data['cname'] = dim_data.get('cname', dim_data['name'][0])
+            for dim_name in dim_data['name']:
+                dim_names_to_files.setdefault(dim_name, []).append(frag_file)
+            desc = dim_data.get('description', '')
+            dimensions_idx['dimensions'][dim_id] = \
+                { 'id': dim_id, 'name': dim_data['name'],
+                  'file': os.path.basename(frag_file),
+                  'cname': dim_data['cname'], 'description': desc }
+            if dim_data.has_key('logo'):
+                dimensions_idx['dimensions'][dim_id]['logo'] = dim_data['logo']
+            if dim_data.has_key('locked'):
+                dimensions_idx['dimensions'][dim_id]['locked'] = dim_data['locked']
+            if dim_data.has_key('attributes'):
+                dimensions_idx['dimensions'][dim_id]['attributes'] = dim_data['attributes']
+
+    dup_found = False
+    for dim_id, filelist in dim_ids_to_files.items():
+        if len(filelist) > 1:
+            log.warn('Duplicate name %d in %s' % (dim_id, str(filelist)))
+            dup_found = True
+
+    for name, filelist in dim_names_to_files.items():
+        if len(filelist) > 1:
+            log.warn('Duplicate name %s in %s' % (name, str(filelist)))
+            dup_found = True
+
+    if dup_found:
+        log.warn("*** Aborting due to duplicates ***")
+        return
+
+    if verbose:
+        log.warn("Processing file list: %s" % fragment_list)
+
+    deepy.store.simple_save_json(dimensions_idx, deepy.cfg.dimensions_idx_file)
+
+
+class DimensionsIdx(object):
+    dim_idx = None
+    last_mtime = 0
+
+    def _lazy_load_idx(self, force=False):
+        #self.dim_idx = deepy.deepy_redis.cache_read_file(deepy.cfg.dimensions_idx_file, force=force)
+        mtime = os.stat(deepy.cfg.dimensions_idx_file).st_mtime
+        if self.dim_idx is None or self.last_mtime < mtime:
+            self.dim_idx = json.load(open(deepy.cfg.dimensions_idx_file))
+            self.last_mtime = mtime
+
+    def save_idx(self):
+        deepy.store.simple_save_json(self.dim_idx, deepy.cfg.dimensions_idx_file)
+        deepy.store.simple_save_json({'mtime': (time.time())}, deepy.cfg.config_last_update_file)
+        #Refresh the redis cache after modifying
+        #self._lazy_load_idx(force=True)
+
+    def is_local_remote(self, dim_id):
+        dim = self.dim_idx['dimensions'].get(dim_id)
+        if dim is None:
+            return False
+        lr = False
+        try:
+            if dim['attributes']['split'] == ['local', 'remote']:
+                lr = True
+        except KeyError:
+            pass
+        return lr
+
+    # Returns dict. Keys are ids; values are the list of names for ids.
+    def get_id_to_names(self):
+        self._lazy_load_idx()
+        dim_ids = {}
+        for dim_id, dim in self.dim_idx['dimensions'].iteritems():
+            names = dim.get('name')
+            if isinstance(names, basestring):
+                names = [names]
+            if self.is_local_remote(dim_id):
+                dim_ids[dim_id + '.local'] = [n + '.local' for n in names]
+                dim_ids[dim_id + '.remote'] = [n + '.remote' for n in names]
+            else:
+                dim_ids[dim_id] = names
+        return dim_ids
+
+    def get_names_to_id(self):
+        self._lazy_load_idx()
+        dim_names = {}
+        for dim_id, dim in self.dim_idx['dimensions'].iteritems():
+            dim_alias_names = dim.get('name')
+            if not isinstance(dim_alias_names, list):
+                dim_alias_names = [dim_alias_names]
+            for dim_name in dim_alias_names:
+                if self.is_local_remote(dim_id):
+                    dim_names[dim_name + '.local'] = dim_id + '.local'
+                    dim_names[dim_name + '.remote'] = dim_id + '.remote'
+                else:
+                    dim_names[dim_name] = dim_id
+        return dim_names
+
+    def add_dim_id(self, name, new_id, frag_file, dry_run=False):
+        if frag_file is None:
+            # XXX Implement frag_file==None like in get_next_dim_id() some time
+            raise NotImplementedError('Auto frag file name gen not implemented')
+        new_id = int(new_id)
+        self.dim_idx = \
+            deepy.deepy_redis.cache_read_file(deepy.cfg.dimensions_idx_file)
+
+        for dim_id, dim in self.dim_idx['dimensions'].iteritems():
+            if name in dim['name']:
+                raise ValueError('Duplicate dimension name')
+            if int(dim_id) == new_id:
+                raise ValueError('Duplicate dimension id')
+
+        self.dim_idx['next_id'] = max(self.dim_idx['next_id'], new_id + 1)
+        new_dim = {'name': name, 'id': new_id}
+        new_dim['file'] = os.path.basename(frag_file)
+        self.dim_idx['dimensions'][str(new_id)] = new_dim
+        if not dry_run:
+            self.save_idx()
+
+    # XXX Change this to use didr_system_local
+    def get_next_dim_id(self, name=None, frag_file=None, frag_file_prefix='dimension_', dry_run=False):
+        # Currently deals w/ concurrency by being short/fast and always loading
+        # from S3 when getting next ID.
+        #self.dim_idx = deepy.deepy_redis.cache_read_file(deepy.cfg.dimensions_idx_file)
+        self.dim_idx = deepy.store.simple_load_json(deepy.cfg.dimensions_idx_file)
+        for dim in self.dim_idx['dimensions'].values():
+            if name in dim['name']:
+                raise ValueError('Duplicate dimension name')
+
+        # Use FIRST_USER_DIM_ID for new dimension ids, because some things
+        # like localmap.py ignore dimension ids < 10000
+        new_id = self.dim_idx['next_id']
+        new_id = max(FIRST_USER_DIM_ID, new_id)
+
+        # keys are always strings
+        new_id_key = str(new_id)
+
+        if new_id == FIRST_USER_DIM_ID:
+            deepy.log.info("using-first-user-dim-id {}".format(new_id))
+
+        while new_id_key in self.dim_idx['dimensions']:
+            # this is exceptional
+            invalid_name = self.dim_idx['dimensions'][new_id_key].get('name', 'unknown')
+            deepy.log.warning("next-id-taken {} {}".format(new_id, invalid_name))
+            new_id += 1
+            new_id_key = str(new_id)
+
+        self.dim_idx['next_id'] = new_id + 1
+
+        new_dim = {'name': [], 'id': new_id}
+        if type(name) == list:
+            new_dim['name'] = name
+        elif type(name) is not None:
+            new_dim['name'].append(name)
+        if frag_file is None:
+            frag_file = frag_file_prefix + new_id_key + '.json.gz'
+        new_dim['file'] = os.path.basename(frag_file)
+        self.dim_idx['dimensions'][new_id_key] = new_dim
+        if not dry_run:
+            self.save_idx()
+
+        return new_id
+
+    def update_by_dim(self, dim_data, dry_run=False):
+        self._lazy_load_idx()
+
+        # Keep in sync w/ build_dimension_idx (or better yet, combine)
+        attr_list = ['id', 'name', 'cname', 'description', 'file', 'logo', 'locked']
+
+        dims = self.dim_idx['dimensions']
+        dim_id = str(dim_data['id'])
+        dims[dim_id] = dims.get(dim_id, {})
+        for attr in attr_list:
+            if dim_data.has_key(attr):
+                dims[dim_id][attr] = dim_data[attr]
+        if not dry_run:
+            self.save_idx()
+
+    def get_dim_by_name(self, name):
+        self._lazy_load_idx()
+
+        # Look up name in index file
+        for dim in self.dim_idx['dimensions'].values():
+            if name in dim['name']:
+                return dim
+        return None
+
+    def get_dim_by_id(self, dim_id):
+        self._lazy_load_idx()
+        try:
+            return self.dim_idx['dimensions'][str(dim_id)]
+        except KeyError:
+            return None
+
+    def get_frag_file(self, dim_id):
+        self._lazy_load_idx()
+        # Hard to imagine a caller *not* assuming it's passing a valid
+        # dim_id, so throwing KeyError on invalid is probably appropriate.
+        return self.dim_idx['dimensions'][str(dim_id)]['file']
+
+    def get_idx(self):
+        # Before calling this function, consider if augmenting the API
+        # would be more useful.
+        self._lazy_load_idx()
+        return self.dim_idx
+
+    def del_dim(self, dim_id):
+        self._lazy_load_idx()
+
+        del self.dim_idx['dimensions'][str(dim_id)]
+        self.save_idx()
+
+    def id_to_name(self, id_dim):
+        '''
+        Returns 89.remote -> path.remote
+        Returns timestamp -> timestamp
+        Returns input if it can't look up by id
+        '''
+        if id_dim == 'timestamp':
+            return 'timestamp'
+
+        suffix = None
+        m = re.search('\.(remote|local)$', id_dim)
+        bare_id_dim = id_dim
+        if m:
+            suffix = m.group(0)
+            bare_id_dim = id_dim.replace(suffix, '')
+        dimdb = self.get_dim_by_id(bare_id_dim)
+
+        if dimdb is None:
+            name = id_dim
+        else:
+            names = dimdb['name']
+            if type(names) == type([]):
+                name = names[0]
+            else:
+                name = names
+            if suffix:
+                name += suffix
+
+        return name
+
+    def name_to_id (self, dim_name):
+        '''
+        Returns path.remote -> 89.remote
+        Returns timestamp -> timestamp
+        Returns input if it can't look up by id
+        '''
+        if dim_name == 'timestamp':
+            return 'timestamp'
+
+        suffix = None
+        m = re.search('\.(remote|local)$', dim_name)
+        bare_name = dim_name
+        if m:
+            suffix = m.group(0)
+            bare_name = dim_name.replace(suffix, '')
+        dimdb = self.get_dim_by_name(bare_name)
+
+        if dimdb is None:
+            id = dim_name
+        else:
+            id = dimdb['id']
+            if suffix:
+                id = "%d%s" % (id, suffix)
+
+        return id
+    
+
+def load_dim_idx(fname, conn=None):
+    key = '%s.dim_idx' % (fname)
+    return load_dim_db_value(key, fname, data_type="idx", conn=conn)
+
+def load_pos_idx(fname, dim_id, conn=None):
+    key = '%s.%s.pos_idx' % (fname, dim_id)
+    return load_dim_db_value(key, fname, data_type="idx", conn=conn)
+
+def load_dimension(fname, dim_id, lite=False, conn=None):
+    if lite:
+        key = '%s.%s_lite' % (fname, str(dim_id))
+    else:
+        key = '%s.%s' % (fname, str(dim_id))
+    return load_dim_db_value(key, fname, data_type="dim", dim_id=dim_id, conn=conn)
+
+def load_position(fname, dim_id, pos_id, conn=None):
+    key = '%s.%s.%s' % (fname, str(dim_id), str(pos_id))
+    return load_dim_db_value(key, fname, data_type="pos", dim_id=dim_id, pos_id=pos_id, conn=conn)
+
+class RedisDown(Exception):
+    pass
+
+#Small optimization to avoid unnecessary loads for dim_idx
+dim_idx = None
+def get_dim_idx():
+    global dim_idx
+    if dim_idx is not None:
+        return dim_idx
+    else:
+        dim_idx = deepy.dimensions.DimensionsIdx()
+        return dim_idx
+
+#If the dimension is not in redis load the entire db and if it still doesn't exist return None
+#Unfortunatly we can't load from the fragments because these keys are file specific (i.e. dim_db_small)
+def load_dim_db_value(key, fname, data_type="dim", dim_id=None, pos_id=None, conn=None):
+    if conn is None:
+        conn = redis.Redis('localhost')
+    ret = deepy.deepy_redis.check_redis(key, conn)
+    if ret is False:
+        raise RedisDown()
+        return None
+    if ret is None:
+        #If that data isn't cached we don't want to continuously reload the cache if its a bogus data
+        #   value. This should be hit infrequently
+        if data_type == "dim":
+            #Cache dim_idx globally to optimize a little
+            idx = get_dim_idx()
+            dim = idx.get_dim_by_id(dim_id)
+            if not dim:
+                log.debug('%s-not-in-dim-idx-skipping' % (key))
+                return
+        elif data_type == "pos":
+            #If we query for a position and we get a cache miss check the pos_idx for that dimension to make sure this
+            # position actually exists
+            pos_idx = load_pos_idx(fname, dim_id)
+            if pos_id not in pos_idx.values():
+                log.debug("%s-not-in-%s-pos-idx-skipping" % (pos_id, dim_id))
+                return
+
+        #print key, fname, data_type, dim_id, pos_id
+        log.warn('%s-not-in-redis-reloading-dim-db' % ( key))
+<<<<<<< HEAD
+=======
+        DeepStats().event("platform.cache.dimensions_reload")
+>>>>>>> origin/master
+        cache_dimension_directory ()
+
+    ret = deepy.deepy_redis.check_redis(key, conn)
+    if ret:
+        ret = msgpack.unpackb(ret, use_list=True)
+        return ret
+    else:
+        return None
+
+
+def cache_dimension_directory ():
+
+    # I find this confusingly named - dimensions_idx_file makes more sense (craig)
+    key = '%s.dim_idx' % (deepy.cfg.dimensions_db_file)
+
+<<<<<<< HEAD
+    conn = redis.Redis('localhost')
+
+    # DimensionsIDx
+    # (I could not figure out how to inexpensively get dimensionIDX
+    # to generate this without parsing lots of unnecessary JSON -- Craig)
+    cache = {}
+    dim_db = json.load(open(deepy.cfg.dimensions_idx_file))
+    for id, vals in dim_db['dimensions'].iteritems():
+        if isinstance(vals['name'], list):
+            for name in vals['name']:
+                cache[name] = id
+        else:
+            cache[vals['name']] = id
+
+    data = msgpack.packb(cache)
+    deepy.deepy_redis.r_set(conn, key, data, timeout=deepy.deepy_redis.DIM_TIMEOUT)
+
+    # Cache each dimension
+    # Avoid going to S3 (rely on deployment_syc)
+    for filename in os.listdir(deepy.cfg.dimensions_dir):
+        if not filename.endswith(".json.gz"):
+            continue
+        if filename in ['dimensions_db.json.gz', 'dimensions_db_small.json.gz']:
+            continue
+
+        time_start = time.time()
+        path = deepy.cfg.dimensions_dir + "/" + filename
+    
+        md5 = hashlib.md5(open(path).read()).hexdigest()
+
+        key = "serve_dimensions_md5_%s" % filename
+
+        val = conn.get(key)
+        if val == md5:
+            log.debug("reload-dim-db-cached %s md5:%s" % (path, md5))
+            continue
+        
+        cache_dimensions_file (path)
+
+        # Save off MD5 
+        conn.setex(key, md5, deepy.deepy_redis.DIM_TIMEOUT)
+
+        log.debug("reload-dim-db %s (took %2.1f seconds)" % (filename, time.time() - time_start))
+
+    
+
+def cache_dimensions_file (fname):
+    conn = redis.Redis('localhost')
+
+=======
+    conn = redis.Redis('localhost')
+
+    # DimensionsIDx
+    # (I could not figure out how to inexpensively get dimensionIDX
+    # to generate this without parsing lots of unnecessary JSON -- Craig)
+    cache = {}
+    dim_db = json.load(open(deepy.cfg.dimensions_idx_file))
+    for id, vals in dim_db['dimensions'].iteritems():
+        if isinstance(vals['name'], list):
+            for name in vals['name']:
+                cache[name] = id
+        else:
+            cache[vals['name']] = id
+
+    data = msgpack.packb(cache)
+    deepy.deepy_redis.r_set(conn, key, data, timeout=deepy.deepy_redis.DIM_TIMEOUT)
+
+    # Cache each dimension
+    # Avoid going to S3 (rely on deployment_syc)
+    for filename in os.listdir(deepy.cfg.dimensions_dir):
+        if not filename.endswith(".json.gz"):
+            continue
+        if filename in ['dimensions_db.json.gz', 'dimensions_db_small.json.gz']:
+            continue
+
+        time_start = time.time()
+        path = deepy.cfg.dimensions_dir + "/" + filename
+    
+        md5 = hashlib.md5(open(path).read()).hexdigest()
+
+        key = "serve_dimensions_md5_%s" % filename
+
+        val = conn.get(key)
+        if val == md5:
+            log.debug("reload-dim-db-cached %s md5:%s" % (path, md5))
+            continue
+        
+        cache_dimensions_file (path)
+
+        # Save off MD5 
+        conn.setex(key, md5, deepy.deepy_redis.DIM_TIMEOUT)
+
+        log.debug("reload-dim-db %s (took %2.1f seconds)" % (filename, time.time() - time_start))
+
+    
+
+def cache_dimensions_file (fname):
+    conn = redis.Redis('localhost')
+
+>>>>>>> origin/master
+    dim_db = deepy.dimensions.DimensionsDB(fname, force_remote='local')
+
+    redis_pipeline = conn.pipeline(transaction=True)
+    
+    key = '%s.dim_idx' % (fname)
+    data = dim_db.dim_idx
+    data = msgpack.packb(data)
+    deepy.deepy_redis.r_set_pipeline (redis_pipeline, key, data, timeout=deepy.deepy_redis.DIM_TIMEOUT)
+
+    for dim_id, dim in dim_db.iteritems():
+        #Save the full dimension
+        key = '%s.%s' % (deepy.cfg.dimensions_db_file, dim_id)
+        data = dim_db[dim_id]
+        data = msgpack.packb(data)
+        deepy.deepy_redis.r_set_pipeline(redis_pipeline, key, data, timeout=deepy.deepy_redis.DIM_TIMEOUT)
+
+        #Save the dimension information without positions
+        key = '%s.%s_lite' % (deepy.cfg.dimensions_db_file, dim_id)
+        exclude_attr = ['positions']
+        data = copy.deepcopy(dim_db[dim_id])
+        for exclude in exclude_attr:
+            try:
+                data[exclude] = {}
+            except KeyError:
+                pass
+        data = msgpack.packb(data)
+        deepy.deepy_redis.r_set_pipeline(redis_pipeline, key, data, timeout=deepy.deepy_redis.DIM_TIMEOUT)
+
+        #Save the positions index for this dim
+        key = '%s.%s.pos_idx' % (deepy.cfg.dimensions_db_file, dim_id)
+        data = dim_db.pos_idx.get(dim_id, {})
+        data = msgpack.packb(data)
+        deepy.deepy_redis.r_set_pipeline(redis_pipeline, key, data, timeout=deepy.deepy_redis.DIM_TIMEOUT)
+        #Save the individual positions
+        for pos_id in dim_db[dim_id].get('positions', []):
+            key = '%s.%s.%s' % (fname, dim_id, pos_id)
+            data = dim_db[dim_id]['positions'][pos_id]
+
+            # Some pruning
+            for f in ["cname", "tag", "id", "match"]:
+                try:
+                    del(data[f])
+                except:
+                    pass
+
+            # More pruning
+            if 'attributes' in data:
+                for f in ['user', 'connecto']:
+                    try:
+                        del(data['attributes'][f])
+                    except:
+                        pass
+
+            data = msgpack.packb(data)
+            deepy.deepy_redis.r_set_pipeline(redis_pipeline, key, data, timeout=deepy.deepy_redis.DIM_TIMEOUT)
+
+
+    redis_pipeline.execute()
+    
+
+# XXX should be in submodule dimensions.vss or something
+def vss_verify(config, dim_name, check_fn):
+    '''
+    Call check_fn with each position in config and dimension.
+
+    check_fn:
+        dim_pos: the position from the dimension
+        config_pos: the position from the config list
+        return: True or False if positions do not match
+    '''
+    def make_item(x):
+        return str(x['id']), x
+    config_lookup = dict(make_item(x) for x in config)
+    vss_dim = DimensionsDBFrag.load_dimension(dim_name)
+
+    def check_item((pos_id, dim_pos)):
+        config_pos = config_lookup.get(str(pos_id))
+        return check_fn(dim_pos, config_pos)
+
+    dim_items = vss_dim.get_all_positions().items()
+    results = map(check_item, dim_items)
+
+    if not all(results):
+        deepy.log.error('Some positions do not match:')
+        for result, (pos_id, pos) in zip(results, dim_items):
+            if not result:
+                print pos_id
+                print "dimension position:", pos
+                print "config:", config_lookup[str(pos_id)]
+                print
+    else:
+        deepy.log.info('all ok')
+
+
+# Number to add to cdn position to get cl path position
+CDN_OFFSET = 500000
+def vss_cdn_id_to_path_id(cdn_pos_id):
+    'Function to convert cdn position id to vss path position id for'
+    return str(CDN_OFFSET + int(cdn_pos_id))
+
+def vss_cdn_to_path(cdn_pos_id, cdn_pos):
+    'Returns the new position id, name, and a comment'
+    cdn_name = cdn_pos.get('name', 'Unknown')
+
+    cache_pos_id = vss_cdn_id_to_path_id(cdn_pos_id)
+    cache_name = '{} (cache)'.format(cdn_name)
+    comment = '{} added to cdn pos id'.format(CDN_OFFSET)
+
+    return cache_pos_id, cache_name, comment
+

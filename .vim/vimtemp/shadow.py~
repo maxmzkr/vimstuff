@@ -1,0 +1,708 @@
+#!/usr/bin/env python
+
+
+import argparse
+import sys
+import getpass
+import boto
+import os
+import time
+import math
+import random
+import string
+import json
+
+import deepy.provision
+import deepy.cube
+import deepy.store
+import deepy.util
+import deepy.log
+import deepy.deploy
+import deepy.timerange
+
+from fabric.api import run, settings
+
+def expand(shadow_deployment_id, count, instance_type, dry_run, minion_ids=None, gb_size=deepy.provision.DEFAULT_VOLUME_SIZE_GB, **extra_args):
+    shadow_deployment = deepy.provision.get_deployment(shadow_deployment_id)
+    slice_json, master_id = get_slice_and_master_id(shadow_deployment)
+    # Create the minion
+    if not minion_ids and count > 1:
+        template = 'worker-{count}'
+        minion_ids = shadow_deployment._get_minion_names(template, count)
+        deepy.log.info("Using minion ids:")
+        deepy.log.info(minion_ids)
+    elif len(minion_ids) == 1 and count > 1:
+        template = minion_ids[0]
+        minion_ids = shadow_deployment._get_minion_names(template, count)
+        deepy.log.info("Using minion ids:")
+        deepy.log.info(minion_ids)
+    elif not minion_ids:
+        raise ValueError("Must specify minion id")
+
+    shadow_deployment.create_minion(minion_ids=minion_ids, instance_type=instance_type, count=count, gb_size=gb_size)
+
+    # Bring up high state on master
+    # Necessary to open up firewall
+    shadow_deployment.sudo('salt-call state.highstate')
+
+    # And initialize it
+    shadow_deployment.initialize_minion(minion_ids=minion_ids)
+
+    # Provision as worker
+    shadow_deployment.sudo('salt-call state.sls worker', minion_ids=minion_ids)
+
+    print "Done expanding"
+
+def update(shadow_deployment_id, branch, jobs, **extra_args):
+    shadow_deployment = deepy.provision.get_deployment(shadow_deployment_id)
+    slice_json, master_id = get_slice_and_master_id(shadow_deployment)
+    if branch:
+        set_branch(slice_json, branch)
+        shadow_deployment.save_slice_config(slice_json)
+
+    shadow_deployment.sudo('deployment_sync.py')
+    shadow_deployment.sudo('update_build.py')
+
+    if jobs:
+        shadow_deployment.sudo("sudo kill `ps aux | grep '/sbin/jobs_daemon' | grep -v grep | awk '{print $2}'`")
+        shadow_deployment.sudo('restart_daemons.py')
+
+    shadow_deployment.sudo('restart_ui.sh')
+
+def finish(shadow_deployment_id, **extra_args):
+    deepy.cfg.init(shadow_deployment_id)
+
+    shadow_deployment = deepy.provision.get_deployment(shadow_deployment_id)
+    slice_json, master_id = get_slice_and_master_id(shadow_deployment)
+    shadow_deployment.sudo('deployment_sync.py')
+    shadow_deployment.sudo('restart_daemons.py')
+    shadow_deployment.sudo('killall python || true')
+    shadow_deployment.sudo('killall snmpd  || true')
+    shadow_deployment.sudo('killall flowd  || true')
+    shadow_deployment.start()
+
+    deepy.dimensions.build_dimension_idx()
+
+
+def create(master_deployment_id, shadow_deployment_id, instance_type,
+           security_groups, dry_run, branch, placement=None, ami=None,
+           gb_size=deepy.provision.DEFAULT_VOLUME_SIZE_GB, subnet_id=None,
+           vpc_security_groups=None, **extra_args):
+    bucket_count = deepy.provision.get_bucket_count()
+    print
+    print "!!! Important: You must run the `finish` command after this succeeds to complete the shadow!"
+    print
+    print "--- Note: This implementation creates an s3 bucket for each shadow deployment."
+    print "--- There are currently {} used out of 100 possible buckets.".format(bucket_count)
+    print
+
+    # Abort if we're not running in a dev environment with PIPEDREAM_HOOD set
+    if deepy.cfg.hood_dir == '/':
+        print "Hood dir is '/', aborting"
+        sys.exit(1)
+
+    # Sanitize args
+    if not shadow_deployment_id:
+        ABORT_TEXT = 'Please name the shadow deployment using -N/--name'
+        user = getpass.getuser()
+        if not user:
+            print ABORT_TEXT
+            sys.exit(1)
+
+        shadow_deployment_id = '{user}-{master}-shadow'.format(user=user, master=master_deployment_id)
+
+        deployment_ok = raw_input("Is '{}' ok ([y]/n)? ".format(shadow_deployment_id))
+        if not len(deployment_ok):
+            deployment_ok = 'y'
+        if deployment_ok.lower() not in ['y', 'ye', 'yes']:
+            print ABORT_TEXT
+            sys.exit(1)
+
+    if instance_type not in deepy.provision.INSTANCE_TYPES:
+        print instance_type, "doesn't seem to be a valid EC2 instance type."
+        sys.exit(1)
+
+
+    # Fetch the master deployment
+    deepy.log.info("Fetching master deployment")
+    try:
+        master_deployment = deepy.provision.get_deployment(master_deployment_id)
+        master_slice_json = master_deployment.get_slice_config()
+        if not master_slice_json:
+            print "Can't find master deployment", master_deployment_id
+            sys.exit(1)
+    except ValueError as e:
+        print "Master deployment {} has not yet been migrated to new deployment.json-based configuration. Cannot shadow deployment until pdcloud.py migrate <deployment_id> has been run to perform the migration. Exiting."
+        sys.exit(1)
+
+    # Create the shadow deployment
+    shadow_deployment = deepy.provision.get_deployment(shadow_deployment_id, kind='shadow')
+
+    deepy.log.debug("Checking to see if master deployment is also a shadow")
+    master_master_id = master_slice_json.get('deployment_master', {}).get('deployment_id')
+    if master_master_id != None:
+        print "Warning,", master_deployment_id, "shadows", master_master_id
+
+
+    deepy.log.debug("Checking to see if shadow already exists")
+    shadow_slice_json = shadow_deployment.get_slice_config()
+    if shadow_slice_json:
+        print 'Deployment', shadow_deployment_id, 'exists, choose a different name.'
+        sys.exit(1)
+
+    # Perform bootstrapping procedure
+    if not dry_run:
+        failure = None
+        try:
+            deepy.log.info("Bootstrapping deployment")
+            shadow_deployment.bootstrap_deployment()
+        except Exception as e:
+            failure = e
+        if not shadow_deployment.is_bootstrapped() or failure:
+            msg = 'Shadow deployment failed to bootstrap '
+            if failure:
+                msg += unicode(failure)
+            deepy.log.error(msg)
+            deepy.log.error('Run pdcloud.py destroy {did} to clean it up'.format(did=shadow_deployment_id))
+            sys.exit(1)
+
+        # Set the master that is being shadowed
+        deepy.provision.update_json(shadow_deployment.deployment_id,
+            'config/slice.json',
+            {
+                'deployment_master': {
+                    'deployment_id': master_deployment_id,
+                }
+            }
+        )
+
+        # Force slice reload because deployment_pull uses deepy.cfg
+        shadow_deployment.get_slice_config()
+        deepy.cfg.init(shadow_deployment.deployment_id, force_init=True)
+
+        # Do a deployment pull for the shadow to update local cache
+        deepy.log.info("Running deployment pull. This may take a while")
+        res = deepy.store.deployment_pull(shadow_deployment_id)
+        if not res:
+            print 'deployment_pull failed'
+            sys.exit(1)
+
+        deepy.provision.update_json(shadow_deployment.deployment_id,
+            'config/deployment.json',
+            {'kind': 'shadow', 'placement': placement}
+        )
+    else:
+        print 'Dry Run: Bootstrapping {}'.format(shadow_deployment.deployment_id)
+
+    # Create master instance
+    if not dry_run:
+        failure = None
+        try:
+            deepy.log.info("Creating master")
+            shadow_deployment.create_master(instance_type=instance_type,
+                                            ami=ami, gb_size=gb_size,
+                                            subnet_id=subnet_id,
+                                            vpc_security_groups=vpc_security_groups)
+        except Exception as e:
+            failure = e
+
+        master_instance = shadow_deployment.get_master_instance()
+
+        if not master_instance or failure:
+            msg = 'Failed to create master instance'
+            if failure:
+                msg += unicode(failure)
+            deepy.log.error(msg)
+            deepy.log.error('Run pdcloud.py destroy {did} to clean it up'.format(did=shadow_deployment_id))
+            sys.exit(1)
+
+        if branch is not '':
+            deepy.provision.update_json(shadow_deployment.deployment_id,
+                'config/slice.json',
+                {
+                    'build_updates': {
+                        'revision': branch
+                    }
+                }
+            )
+
+        # Finalize master configuration
+        shadow_deployment.finalize_master_creation()
+
+    else:
+        print "Dry run: Creating master instance for {}".format(shadow_deployment.deployment_id)
+
+    # Initialize master
+    if not dry_run:
+        failure = None
+        try:
+            shadow_deployment.initialize_master()
+
+            # Bring up pipedream state
+            shadow_deployment.sudo("salt-call state.sls pipedream")
+
+        except Exception as e:
+            failure = e
+
+        if failure:
+            msg = 'Failed to create master instance'
+            msg += unicode(failure)
+            print msg
+            sys.exit(1)
+    else:
+        print "Dry run: Initializing master for {}".format(shadow_deployment.deployment_id)
+
+
+    if not dry_run:
+
+        # Tweak slice and update
+        tweak_new_deployment_slice(shadow_deployment)
+
+        if master_instance:
+            print 'launched shadow master with instance id {}'.format(master_instance.id)
+            print
+            print "master vms:"
+            print json.dumps(master_slice_json['vms'], sort_keys=True, indent=4, separators=(',', ': '))
+            print
+            print "!!! Manually merge VM configuration now, and then finish the shadow"
+            print "!!! with the `shadow.py finish {}` command.".format(shadow_deployment_id)
+            print "Add this code to the master vm configuration:"
+            print '"job_queue_config": {'
+            print '    "queues": {'
+            print '        "slow": {'
+            print '            "max": 1,'
+            print '            "queue_retention": 86400,'
+            print '            "patterns": ['
+            print '                "bundle2.py"'
+            print '            ]'
+            print '        }'
+            print '    }'
+            print '},'
+            print
+
+    # Sync shadow deployment locally
+    deepy.cfg.init(shadow_deployment.deployment_id)
+    deepy.store.deployment_sync(only_config=True, force_flag=True, verbose_flag=True, dry_run=dry_run)
+
+
+def set_branch(slice_json, desired_branch):
+    prev_branch = deepy.util.get_current_branch(slice_json)
+
+    if desired_branch:
+        if not slice_json.get('build_updates'):
+            slice_json['build_updates'] = {}
+
+        slice_json['build_updates']['revision'] = desired_branch
+
+    return prev_branch
+
+def tweak_new_deployment_slice(deployment):
+    slice_json = deployment.get_slice_config()
+    leader_vm = get_leader_vm(slice_json)
+
+    print 'Removing flowd from daemons'
+    if 'flowd' in leader_vm['daemons']:
+        leader_vm['daemons'].remove('flowd')
+
+    additional = ['mine', 'mine_forward', 'build_h5bgp', 'upload_localbgp', 'routemap', 'build_supply_chain', 'snmp']
+    existing = leader_vm.get('disabled_cron_jobs', [])
+    if not existing: # could be None
+        existing = []
+
+    print 'Disabling', ' '.join(additional)
+    leader_vm['disabled_cron_jobs'] = list(set(additional + existing))
+
+    print 'Removing proxy configuration'
+    if 'proxy' in slice_json:
+        del slice_json['proxy']
+
+    deployment.save_slice_config(slice_json)
+    return slice_json
+
+def update_shadow_instance():
+    run('deployment_sync.py')
+    run('update_build.py')
+
+def get_leader_vm(slice_json):
+    if len(slice_json['vms']) == 1:
+        return slice_json['vms'][0]
+
+    for vm in slice_json['vms']:
+        if 'home.py' in (vm.get('daemons') or []):
+            return vm
+
+    print 'Could not determine leader (multiple VMs exists & no one running home.py)'
+    sys.exit(1)
+
+def get_leader_instance(deployment):
+    return deployment.get_master_instance()
+
+def list_(**extra_args):
+    ec2 = boto.connect_ec2()
+    reservations = ec2.get_all_instances()
+
+    idict = dict((inst.id, inst) for r in reservations for inst in r.instances)
+
+    s3 = boto.connect_s3()
+    for d in deepy.deploy.get_deployment_names(slice_filter=lambda x: 'deployment_master' in x):
+        print '{}:'.format(d)
+        slice_json = deepy.aws.read_slice_json(d, s3)
+        if 'vms' in slice_json:
+            instances = [(vm['uuid'], idict.get(vm['uuid'], None)) for vm in slice_json['vms']]
+            for uuid, inst in instances:
+                print '\t{}'.format(uuid),
+                if inst:
+                    print '{} {} {}'.format(inst.instance_type, inst.state, inst.public_dns_name)
+                else:
+                    print 'unknown'
+        else:
+            print '\tNo vms in slice.'
+        print
+
+def fake(shadow_deployment_id, flow, dnsflow, s3, dnsflow_s3, start=None, end=None, hostname=None, port=None, username=None, skip_copy=False, dry_run=False, **extra_args):
+    shadow_deployment = deepy.provision.get_deployment(shadow_deployment_id)
+    slice_json, master_id = get_slice_and_master_id(shadow_deployment)
+    master_deployment = deepy.provision.get_deployment(master_id)
+
+    leader_vm = get_leader_vm(slice_json)
+    if not start:
+        now = time.time()
+        now = math.floor(now/300)*300
+        now -= 300 * 6
+        start = time.strftime("%Y-%m-%d-%H-%M", time.gmtime(now))
+    timestamps = get_timestamps(start, end, 300)
+
+    if not dry_run:
+        shadow_deployment.sudo('mkdir -p /pipedream/fake_flows')
+        shadow_deployment.sudo('chmod 777 /pipedream/fake_flows')
+
+    if flow:
+        if not skip_copy:
+            flow_source = "/pipedream/cache/flows/flow.%Y-%m-%d-%H-%M.pcap.gz"
+            flowt_source = "/pipedream/cache/templates/flow_template.%Y-%m-%d-%H-%M.h5.pcap.gz"
+            copy_flow(master_deployment, shadow_deployment, timestamps, flow_source, dry_run)
+            copy_flow(master_deployment, shadow_deployment, timestamps, flowt_source, dry_run)
+
+        if 'extra_cron_jobs' not in leader_vm:
+            leader_vm['extra_cron_jobs'] = []
+        if 'fake_flowd' not in leader_vm['extra_cron_jobs']:
+            print 'Adding fake_flowd to extra_cron_jobs'
+            leader_vm['extra_cron_jobs'].append('fake_flowd')
+
+    if dnsflow:
+        if not skip_copy:
+            dnsflow_source = "/pipedream/cache/dnsflows/dns.%Y-%m-%d-%H-%M.pcap.gz"
+            copy_flow(master_deployment, shadow_deployment, timestamps, dnsflow_source, dry_run)
+
+        if 'extra_cron_jobs' not in leader_vm:
+            leader_vm['extra_cron_jobs'] = []
+        if 'fake_flowd_dns' not in leader_vm['extra_cron_jobs']:
+            print 'Adding fake_flowd_dns to extra_cron_jobs'
+            leader_vm['extra_cron_jobs'].append('fake_flowd_dns')
+
+    if s3:
+        if 'extra_cron_jobs' not in leader_vm:
+            leader_vm['extra_cron_jobs'] = []
+        if 'fake_flowd' not in leader_vm['extra_cron_jobs']:
+            print 'Adding fake_flowd_s3 to extra_cron_jobs'
+            leader_vm['extra_cron_jobs'].append('fake_flowd_s3')
+
+    if dnsflow_s3:
+        if 'extra_cron_jobs' not in leader_vm:
+            leader_vm['extra_cron_jobs'] = []
+        if 'fake_flowd_dns' not in leader_vm['extra_cron_jobs']:
+            print 'Adding fake_flowd_dns_s3 to extra_cron_jobs'
+            leader_vm['extra_cron_jobs'].append('fake_flowd_dns_s3')
+
+    if not dry_run:
+        if flow or dnsflow or s3:
+            shadow_deployment.save_slice_config(slice_json)
+            shadow_deployment.sudo('restart_ui.sh')
+
+def get_timestamps(start, end=None, step=300):
+    start_ts = deepy.timerange.get_timestamp(start)
+    end_ts = start_ts + step
+    if end:
+        end_ts = deepy.util.get_timestamp(end)
+        if end_ts - start_ts <= 0:
+            print 'Invalid range:', start, end
+            sys.exit(1)
+    return range(start_ts, end_ts, step)
+
+def copy_flow(source_deployment, dest_deployment, timestamps, source, dry_run=False):
+    dest_master_instance = dest_deployment.get_master_instance()
+
+    shadow_fake_flows_dir = 'support@{}:/pipedream/fake_flows/'.format(dest_master_instance.public_dns_name)
+
+    flows = [time.strftime(source, time.gmtime(t)) for t in timestamps]
+
+    print 'Copying', len(flows), 'from', os.path.dirname(source), 'to', shadow_fake_flows_dir
+    if not dry_run:
+        scp(source_deployment, flows, shadow_fake_flows_dir)
+
+def scp(deployment, sources, dest):
+    with settings(warn_only=True):
+        deployment.run('scp -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {} {} '.format(' '.join(sources), dest))
+
+def get_slice_and_master_id(deployment):
+    slice_json = deployment.get_slice_config()
+    if not slice_json:
+        print 'deployment', deployment.deployment_id, 'not found'
+        sys.exit(1)
+
+    master_id = slice_json.get('deployment_master', {}).get('deployment_id')
+    if not master_id:
+        print "{deployment} is not a shadow deployment".format(deployment=deployment)
+        sys.exit(1)
+
+    print "{deployment} shadows {master_id}".format(deployment=deployment.deployment_id, master_id=master_id)
+    return slice_json, master_id
+
+def setup_temp_dir(deployment, tmp_copy_dir):
+    deployment.run('mkdir -p {}'.format(tmp_copy_dir))
+
+def remove_temp_dir(deployment, tmp_copy_dir):
+    deployment.run('rm -rf {}'.format(tmp_copy_dir))
+
+def fill(shadow_deployment_id, cube, step, source_start, source_end, fill_start, fill_end, hostname=None, port=None, username=None, dry_run=False,
+         tmp_copy_dir=None, **extra_args):
+    shadow_deployment = deepy.provision.get_deployment(shadow_deployment_id)
+    slice_json, master_id = get_slice_and_master_id(shadow_deployment)
+    master_deployment = deepy.provision.get_deployment(master_id)
+
+    rule = deepy.cube.get_rule(cube, step)
+
+    timestamps = get_timestamps(source_start, source_end, rule.time_step)
+
+    paths = []
+    for timestamp in timesteps:
+        expanded_targets = rule.expand(
+            {
+                "start_time": timestamp,
+                "end_time": timestamp
+            }
+        )
+        for expanded_target in expanded_targets:
+            paths.append(expanded_target.unique_id)
+
+    if not tmp_copy_dir:
+        chars = ''.join(random.choice(string.ascii_lowercase + string.digits) for x in range(8))
+        tmp_copy_dir = '/pipedream/tmp/copy_cubes/{}'.format(chars)
+
+    if not dry_run:
+        setup_temp_dir(shadow_deployment, tmp_copy_dir)
+
+    # transform the target to its deployment path (rooted in /pipedream)
+    def _get_target_path(path):
+        return '/pipedream/cache/cubes' + path[len(deepy.cfg.cubes_dir):]
+    sources = map(_get_target_path, paths)
+
+    li = get_leader_instance(shadow_deployment)
+    dest = 'support@{}:{}'.format(li.public_dns_name, tmp_copy_dir)
+
+    print 'Copying', len(sources), 'cubes to', dest
+    if not dry_run:
+        scp(master_deployment, sources, dest)
+        shadow_deployment.run('copy_cubes.py {} {} {} {} {} -s'.format(cube, step, tmp_copy_dir, fill_start, fill_end))
+        remove_temp_dir(shadow_deployment)
+
+def get_deployment_instances(shadow_deployment_id):
+    def filter_instances(inst):
+        return inst.state != 'terminated' and inst.tags.get('deployment') == shadow_deployment_id
+    return list(deepy.ec2.get_all_instances(filter_instances))
+
+def suspend(shadow_deployment_id, dry_run, **extra_args):
+    shadow_deployment = deepy.provision.get_deployment(shadow_deployment_id)
+    slice_json, master_id = get_slice_and_master_id(shadow_deployment)
+    shadow_deployment.suspend()
+
+def resume(shadow_deployment_id, dry_run, **extra_args):
+    shadow_deployment = deepy.provision.get_deployment(shadow_deployment_id)
+    slice_json, master_id = get_slice_and_master_id(shadow_deployment)
+    shadow_deployment.resume()
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='''manage shadow deployments.
+
+see help with create args
+    shadow.py create -h
+
+create an m1.xlarge shadowing fastly named $user-fastly-shadow
+    shadow.py create fastly
+    # check slice, then
+    shadow.py finish voigtjr-fastly-shadow
+
+create as above with two m1.small instances, shadow deployment name voigt-fastly
+    shadow.py create fastly -i m1.small -c 2 -N voigt-fastly
+    # check slice, then
+    shadow.py finish voigt-fastly
+
+stop all instances in deployment
+    suspend my-deployment-name
+
+start all instances in deployment, update r53
+    resume my-deployment-name
+
+start fake_flowd looping over data from a half-hour ago
+    fake my-deployment-name -f
+
+copy one day of drill1 hourly from merit to shadow, cycling through it to fill a day
+    fill my-deployment-name drill1 -s 3600 --source-start 2013-11-01-00 --source-end 2013-11-01-01 --fill-start 2013-11-14-00 --fill-end 2013-11-15-00
+
+copy one drill1 hourly from comcast to shadow, not changing its date
+    fill my-deployment-name drill1 --source-start 2013-11-26-23 --source-end 2013-11-27-00 --fill-start 2013-11-26-23 --fill-end 2013-11-27-00 -s 3600 -H reverse-comcast.deepfield.net -p 2201
+
+list all shadow instances by looking for deployment masters
+    list
+
+add an m1.xlarge instance to a shadow deployment
+    expand my-deployment-name 1
+
+add three m1.small instances to a shadow deployment
+    expand my-deployment-name 3 -i m1.small
+    ''', formatter_class=argparse.RawTextHelpFormatter)
+
+    parser.add_argument('-l', '--log-level', action='store', choices=deepy.log.LEVELS,
+            help='Set log level')
+
+    subparsers = parser.add_subparsers(dest='command')
+
+    create = subparsers.add_parser('create')
+    create.add_argument('master_deployment_id',
+        help='deployment to shadow')
+    create.add_argument('-N', '--name', dest='shadow_deployment_id', action='store', default=None,
+        help='name of shadow deployment')
+    create.add_argument('-g', '--security-groups', nargs='+', default=['data'])
+    create.add_argument('-i', '--instance-type', action='store', default='m1.xlarge', type=str,
+        help='instance type, default m1.xlarge')
+    create.add_argument('-n', '--dry-run', action='store_true', default=False,
+        help='dry run')
+    create.add_argument('-b', '--branch', action='store', default='',
+        help='spin up shadow from a specific branch')
+    create.add_argument('--gb_size', action='store', default=deepy.provision.DEFAULT_VOLUME_SIZE_GB, type=int,
+        help='Specify /pipedream size')
+    create.add_argument('-p', '--placement', action='store', default='',
+        help='use the specified availability zone')
+    create.add_argument('--ami', action='store', default='',
+        help='use the specified ami')
+    create.add_argument('--subnet-id',
+        help="Specify the subnet ID to use. Required to launch into a VPC.")
+    create.add_argument('--vpc-security-groups', nargs='+',
+        help="Specify VPC security group ID's to use. Required to launch into a VPC.")
+
+    finish = subparsers.add_parser('finish')
+    finish.add_argument('shadow_deployment_id',
+        help='shadow deployment id')
+
+    update = subparsers.add_parser('update')
+    update.add_argument('shadow_deployment_id',
+        help='shadow deployment id')
+    update.add_argument('-b', '--branch', action='store', default=None,
+        help='specify branch')
+    update.add_argument('-j', '--jobs', action='store_true', default=False,
+        help='restart jobs daemon')
+
+    expand = subparsers.add_parser('expand')
+    expand.add_argument('shadow_deployment_id',
+        help='shadow deployment id')
+    expand.add_argument('count',
+        type=int,
+        help='expanded instance count')
+    expand.add_argument('-i', '--instance-type', action='store', default='m1.xlarge', type=str,
+        help='instance type, default m1.xlarge')
+    expand.add_argument('-n', '--dry-run', action='store_true', default=False,
+        help='dry run')
+    expand.add_argument('--minion-id', dest='minion_ids', action='append', default=[], help="Minion ids to create. If you pass the --count arg, this should be a pattern such as worker-{count}")
+    expand.add_argument('--gb_size', action='store', default=deepy.provision.DEFAULT_VOLUME_SIZE_GB, type=int,
+        help='Specify /pipedream size')
+
+    subparsers.add_parser('list')
+
+    fake = subparsers.add_parser('fake')
+    fake.add_argument('shadow_deployment_id',
+        help='shadow deployment id')
+    fake.add_argument('-f', '--flow', action='store_true', default=False,
+        help='copy flow from master, start fake_flowd')
+    fake.add_argument('-d', '--dnsflow', action='store_true', default=False,
+        help='copy dnsflow from master, start fake_flowd_dns')
+    fake.add_argument('-3', '--s3', action='store_true', default=False,
+        help='Copy flow from master s3 flows dir')
+    fake.add_argument('-D', '--dnsflow-s3', action='store_true', default=False,
+        help='Copy dnsflow from master s3 dnsflows dir')
+    fake.add_argument('--start', action='store', default=None, type=str,
+        help='source flow start time, default to a half-hour before now')
+    fake.add_argument('--end', action='store', default=None, type=str,
+        help='end time of source range (exclusive)')
+    fake.add_argument('-H', '--hostname', action='store', default=None,
+        help='override master deployment hostname (deployment.deepfield.net)')
+    fake.add_argument('-p', '--port', action='store', default=None, type=int,
+        help='override master deployment ssh port (22)')
+    fake.add_argument('-u', '--username', action='store', default=None,
+        help='override master deployment username (support)')
+    fake.add_argument('-s', '--skip-copy', action='store_true', default=False,
+        help='don\'t actually copy flow')
+    fake.add_argument('-n', '--dry-run', action='store_true', default=False,
+        help='dry run')
+
+    fill = subparsers.add_parser('fill')
+    fill.add_argument('shadow_deployment_id',
+        help='shadow deployment id')
+    fill.add_argument('cube',
+        help='cube target, rule name')
+    fill.add_argument('-s', '--step', action='store', default=None, type=int,
+        help='time step, if rule name is ambiguous')
+    fill.add_argument('--source-start', action='store', required=True, type=str,
+        help='start time of source range')
+    fill.add_argument('--source-end', action='store', default=None, required=False, type=str,
+        help='end time of source range, exclusive, defaults to start + step')
+    fill.add_argument('--fill-start', action='store', default=None, required=True, type=str,
+        help='start time of fill (destination) range')
+    fill.add_argument('--fill-end', action='store', default=None, required=True, type=str,
+        help='end time of fill (destination) range, exclusive')
+    fill.add_argument('-H', '--hostname', action='store', default=None,
+        help='override master deployment hostname (deployment.deepfield.net)')
+    fill.add_argument('-p', '--port', action='store', default=None, type=int,
+        help='override master deployment ssh port (22)')
+    fill.add_argument('-u', '--username', action='store', default=None,
+        help='override master deployment username (support)')
+    fill.add_argument('-n', '--dry-run', action='store_true', default=False,
+        help='dry run')
+
+    suspend = subparsers.add_parser('suspend')
+    suspend.add_argument('shadow_deployment_id',
+        help='shadow deployment id')
+    suspend.add_argument('-n', '--dry-run', action='store_true', default=False,
+        help='dry run')
+
+    resume = subparsers.add_parser('resume')
+    resume.add_argument('shadow_deployment_id',
+        help='shadow deployment id')
+    resume.add_argument('-n', '--dry-run', action='store_true', default=False,
+        help='dry run')
+
+    args = parser.parse_args()
+    return args
+
+def main():
+    args = parse_args()
+
+    if args.log_level:
+        deepy.log.init(level=args.log_level)
+
+    dispatch = {
+        'create': create,
+        'finish': finish,
+        'expand': expand,
+        'update': update,
+        'list': list_,
+        'fake': fake,
+        'fill': fill,
+        'suspend': suspend,
+        'resume': resume,
+    }
+
+    dispatch[args.command](**args.__dict__)
+
+if __name__ == '__main__':
+    main()
+

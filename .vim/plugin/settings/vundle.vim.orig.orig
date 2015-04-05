@@ -46,7 +46,7 @@ Plugin 'scrooloose/syntastic.git'
 Plugin 'kien/ctrlp.vim'
 
 " All the go lang stuff you could need
-Plugin 'fatih/vim-go'
+Plugin 'jnwhiteh/vim-golang'
 
 " sass stuff
 Plugin 'cakebaker/scss-syntax.vim'
@@ -57,15 +57,14 @@ Plugin 'kchmck/vim-coffee-script'
 " latex
 Plugin 'LaTeX-Box-Team/LaTeX-Box'
 
+<<<<<<< HEAD
 " python
-
+Plugin 'tell-k/vim-autopep8'
+=======
 " C++
 Plugin 'vim-scripts/google.vim'
 Plugin 'rhysd/vim-clang-format'
-Plugin 'octol/vim-cpp-enhanced-highlight'
-
-" Open gl
-Plugin 'tikhomirov/vim-glsl'
+>>>>>>> 0b3f5543e4a84a529573a70697b72ade3debcda8
 
 call vundle#end()
 filetype plugin indent on     " required

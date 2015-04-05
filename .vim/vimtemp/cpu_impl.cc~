@@ -1,0 +1,169 @@
+#include <cassert>
+#include <iostream>
+#include <queue>
+#include <cassert>
+#include "./thread.h"
+#include "./thread_impl.h"
+#include "./cpu.h"
+#include "./cpu_impl.h"
+
+void ipi_interrupt() {
+  cpu::interrupt_disable();
+  cpu::impl::get_guard();
+
+  // all we are doing here is making it so that it is safe to rerun the code in
+  // the while true loop in cpu::init
+}
+
+void cpu_interrupt() {
+  cpu::interrupt_disable();
+  cpu::impl::get_guard();
+
+  // The cpu should run the next thread on the queue if there is one
+  thread::impl::yield();
+
+  cpu::impl::release_guard();
+  cpu::interrupt_enable();
+}
+
+//////////////////////////////////////////////////////////
+// The rest of the code is for memeber functions of cpu //
+//////////////////////////////////////////////////////////
+
+cpu::impl::impl(thread::impl* first_thread) {
+  // keep id's for debugging reasons
+  id_ = id_count_;
+  id_count_ = id_count_ + 1;
+
+  // All cpu's start with nothing as their current_thread_ because they haven't
+  // taken on anything yet
+  current_thread_ = nullptr;
+
+  first_thread_ = first_thread;
+}
+
+cpu::impl::~impl() {
+  // We don't allocate any memory in the constructor so we don't need to destroy
+  // anything.
+}
+
+/////////////
+// Getters //
+/////////////
+
+thread::impl* cpu::impl::current_thread() { return current_thread_; }
+
+thread::impl* cpu::impl::first_thread() { return first_thread_; }
+
+bool cpu::impl::suspended() { return suspended_; }
+
+/////////////
+// Setters //
+/////////////
+
+void cpu::impl::set_current_thread(thread::impl* run_thread,
+                                   bool suspended_thread) {
+  // If the cpu was suspended previously, then we need to save the previous
+  // thread
+  // in the first_thread context.
+  // If the cpu was not suspened the we need to save it in the previous thread
+  if (suspended()) {
+    current_thread_ = run_thread;
+
+    // We need to tell the cpu if we are switching to a suspended thread
+    set_suspended(suspended_thread);
+    if (current_thread()->init_thread()) {
+      assert(suspended_thread);
+    }
+
+    swapcontext(first_thread()->thread_context(),
+                current_thread()->thread_context());
+    thread::impl::clear_finished_queue();
+  } else {
+    // replace the old thread
+    thread::impl* replace_thread = current_thread();
+    current_thread_ = run_thread;
+
+    // We need to tell teh cpu if we are switching to a suspended thread
+    set_suspended(suspended_thread);
+    if (current_thread()->init_thread()) {
+      assert(suspended_thread);
+    }
+
+    swapcontext(replace_thread->thread_context(), run_thread->thread_context());
+    thread::impl::clear_finished_queue();
+  }
+}
+
+void cpu::impl::set_suspended(bool suspended) { suspended_ = suspended; }
+
+///////////////////////////////
+// General purpose functions //
+///////////////////////////////
+
+void cpu::impl::run_next_thread() {
+  assert_interrupts_disabled();
+
+  // If there is something on the ready queue, run it
+  // otherwise run the first thread
+  if (!thread::impl::ready_queue_empty()) {
+    thread::impl* ready_thread = thread::impl::get_ready_thread();
+    set_current_thread(ready_thread, false);
+  } else {
+    set_current_thread(first_thread(), true);
+  }
+}
+
+//////////////////////
+// Static functions //
+//////////////////////
+
+void cpu::impl::signal_cpu() {
+  // Signal a suspended cpu if there is one
+  if (!cpu::impl::suspended_queue_empty()) {
+    cpu* suspended_cpu = cpu::impl::get_cpu_from_suspended_queue();
+    suspended_cpu->interrupt_send();
+  }
+}
+
+void cpu::impl::add_cpu_to_suspended_queue(cpu* suspended_cpu) {
+  suspended_queue_.push(suspended_cpu);
+}
+
+bool cpu::impl::suspended_queue_empty() { return suspended_queue_.empty(); }
+
+cpu* cpu::impl::get_cpu_from_suspended_queue() {
+  cpu* suspended_cpu = suspended_queue_.front();
+  suspended_queue_.pop();
+  return suspended_cpu;
+}
+
+bool cpu::impl::test_set() {
+  bool start = guard.exchange(true);
+  return start;
+}
+
+int cpu::impl::id() { return id_; }
+
+void cpu::impl::get_guard() {
+  // check guard
+  while (cpu::impl::test_set()) {
+    // busy wait if unavailable
+  }
+
+  assert(guard);
+
+  guard_count_++;
+  if (guard_count_ != 1) {
+    assert(false);
+  }
+}
+
+void cpu::impl::release_guard() {
+  guard_count_--;
+  guard = false;
+}
+
+std::queue<cpu*> cpu::impl::suspended_queue_ = std::queue<cpu*>();
+int cpu::impl::id_count_ = 0;
+int cpu::impl::guard_count_ = 0;

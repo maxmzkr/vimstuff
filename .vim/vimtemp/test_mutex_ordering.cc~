@@ -1,0 +1,44 @@
+#include <cstdlib>
+#include <iostream>
+#include "./thread.h"
+
+mutex mutex1;
+
+void child(void *a) {
+  intptr_t * (ba = reinterpret_cast<intptr_t*>(a);
+  std::cout << "spawn order " << *ba << std::endl;
+  thread::yield();
+  std::cout << "yield order " << *ba << std::endl;
+  mutex1.lock();
+  std::cout << "locked order " << *ba << std::endl;
+  mutex1.unlock();
+}
+
+void parent(void *a) {
+  mutex1.lock();
+  thread* t1 = new thread((thread_startfunc_t)child, new intptr_t(1));
+  thread* t2 = new thread((thread_startfunc_t)child, new intptr_t(2));
+  thread* t3 = new thread((thread_startfunc_t)child, new intptr_t(3));
+  thread* t4 = new thread((thread_startfunc_t)child, new intptr_t(4));
+  thread* t5 = new thread((thread_startfunc_t)child, new intptr_t(5));
+  thread* t6 = new thread((thread_startfunc_t)child, new intptr_t(6));
+  thread* t7 = new thread((thread_startfunc_t)child, new intptr_t(7));
+  thread* t8 = new thread((thread_startfunc_t)child, new intptr_t(8));
+  delete t1;
+  delete t2;
+  delete t3;
+  delete t4;
+  delete t5;
+  delete t6;
+  delete t7;
+  delete t8;
+
+  for (int i = 0; i < 16; i++) {
+    thread::yield();
+  }
+  mutex1.unlock();
+}
+
+int main() {
+  cpu::boot(1, (thread_startfunc_t)parent, (void *)100, false, false, 0);
+}

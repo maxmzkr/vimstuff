@@ -1,0 +1,170 @@
+#!/usr/bin/env python
+# PYTHON_ARGCOMPLETE_OK
+
+import os
+import time
+import argparse
+import subprocess
+
+import deepy.build.deepy_util
+import deepy.cfg
+import deepy.cube
+import deepy.util
+import deepy.store
+import deepy.dimensions
+import deepy.log as log
+import deepy.scheduler
+import deepy.event as event
+
+FILE_EXT=".h5"
+FILE_EXT_GET_FIELDS=".json.gz"
+
+def run_queries(queries, dimensions_db, output_dir):
+    query_cubes = deepy.cube.cube_map_queries(queries, dimensions_db=dimensions_db)
+
+    for (query, cube) in query_cubes:
+
+        file_ext = FILE_EXT
+        get_fields = None
+        if hasattr(cube, 'query') and cube.query.get('get_fields'):
+            get_fields = cube.query['get_fields']
+            file_ext = FILE_EXT_GET_FIELDS
+
+        if query.target:
+            output_file = query.target
+        else:
+            output_file = os.path.join(output_dir, query.name + file_ext)
+
+        if get_fields:
+            if len(cube) == 0:
+                out = []
+            else:
+                out = cube.get_fields(get_fields)
+                deepy.store.simple_save_json(out, output_file)
+        else:
+            cube.write_to_store(output_file)
+
+def get_timestamp(timestamp, tsday, tsmonth):
+    if timestamp:
+        ts = timestamp
+    elif tsday:
+        ts = time.strftime('%Y-%m-%d', time.gmtime())
+    elif tsmonth:
+        ts = time.strftime('%Y-%m', time.gmtime())
+    return ts
+
+def get_queries(make_rule, include_queries, exclude_queries, ts, dimensions_db):
+    queries = deepy.cube.get_rule_queries(make_rule, ts, dimensions_db)
+    if include_queries:
+        queries = [q for q in queries if deepy.cube.use_query(include_queries, q.name)]
+    elif exclude_queries:
+        queries = [q for q in queries if q.name not in exclude_queries]
+    return queries
+
+def BundleCompleter(prefix, **kwargs):
+    rules = deepy.build.deepy_util.construct_rules()
+    return (name for name, value in rules.items()
+        if value.get('type', '') == 'bundle' and name.startswith(prefix))
+
+def QueryCompleter(prefix, parsed_args, **kwargs):
+    rules = deepy.build.deepy_util.construct_rules()
+    return (q for q in rules.get(parsed_args.make_rule, {}).get('queries', {}).keys()
+        if q.startswith(prefix))
+
+def parse_args():
+    p = argparse.ArgumentParser(description=
+        '''
+        Examples:
+
+            Standard CDN rule --
+            bundle2.py -M drill_day_cdn -t 2014-02-27
+
+            Standard CDN rule excluding summary.cdn.service query rule --
+            bundle2.py -M drill_day_cdn -t 2014-02-27 -Q summary.cdn.service
+
+            Standard CDN rule using only summary.cdn.service query rule --
+            bundle2.py -M drill_day_cdn -t 2014-02-27 -q summary.cdn.service
+
+            Standard CDN rule output to /tmp --
+            bundle2.py -M drill_day_cdn -t 2014-02-27 -o /tmp
+        ''', formatter_class=argparse.RawTextHelpFormatter)
+
+    p.add_argument('-d', dest='deployment_id', default=None)
+    p.add_argument('-M', dest='make_rule', required=True).completer = BundleCompleter
+    p.add_argument('-m', dest='marker_file')
+    p.add_argument('-o', dest='output_location', default=None)
+    p.add_argument('-L', dest='force_local', action='store_true')
+    p.add_argument('-v', dest='verbose', action='store_true')
+    p.add_argument('-f', dest='force', default=False, action='store_true',
+        help='reload redis cache')
+
+    g1 = p.add_mutually_exclusive_group(required=True)
+    g1.add_argument('-t', dest='timestamp', help='used for make_rule file glob')
+    g1.add_argument('--ts-day', dest='tsday', action='store_true',
+        help='generate day timestamp from now')
+    g1.add_argument('--ts-month', dest='tsmonth', action='store_true',
+        help='generate month timestamp from now')
+
+    g2 = p.add_mutually_exclusive_group()
+    g2.add_argument('-q', dest='use_queries', action='store', default=[], nargs='+',
+        help='use only these queries (supports regex)').completer = QueryCompleter
+    g2.add_argument('-Q', dest='exclude_queries', action='store', default=[], nargs='+',
+        help='exclude these queries').completer = QueryCompleter
+
+    try:
+        import argcomplete
+        argcomplete.autocomplete(p)
+    except ImportError:
+        pass
+
+    args = p.parse_args()
+    return args
+
+def main():
+    args = parse_args()
+    time_start = time.time()
+
+    if args.deployment_id:
+        deepy.cfg.init(args.deployment_id)
+    if args.force_local:
+        deepy.cfg.force_remote = 'local'
+    if args.verbose:
+        log.init(level='DEBUG')
+
+    output_location = args.output_location
+    dimensions_db = deepy.dimensions.DimensionsDB(redis_backed=True)
+
+    deepy.util.touch_marker_file(args.marker_file)
+
+    ts = get_timestamp(args.timestamp, args.tsday, args.tsmonth)
+    assert ts
+
+    queries = get_queries(args.make_rule, args.use_queries,
+        args.exclude_queries, ts, dimensions_db)
+    assert queries
+
+    run_queries(queries, dimensions_db, output_location)
+
+    time_end = time.time()
+    ru = deepy.util.getrusage()
+    log.info('bundle-done real_secs=%.1f cpu_secs=%.1f rss_mb=%d maxrss_mb=%d' %
+        (time_end - time_start, ru['total_time'], ru['rss_mb'], ru['maxrss_mb']))
+    event.send_event(
+        'event/deployment/data/bundle-done',
+        time_end - time_start,
+        tags=['heartbeat', 'ui', 'bundle2.py', 'persist'],
+        meta={
+            'output_location': output_location,
+            'rss_mb': ru['rss_mb'],
+            'maxrss_mb': ru['maxrss_mb'],
+            'total_time': ru['total_time'],
+            'marker_file': args.marker_file,
+            'make_rule': args.make_rule
+        }
+    )
+
+    if args.force:
+        subprocess.call(['reload_cache.py --bundles'], shell=True)
+
+if __name__ == '__main__':
+    main()

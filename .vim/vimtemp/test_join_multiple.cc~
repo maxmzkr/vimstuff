@@ -1,0 +1,66 @@
+#include <cstdlib>
+#include <iostream>
+#include "./thread.h"
+
+mutex coutmutex;
+
+struct Args {
+  thread* join_thread;
+  int id;
+};
+
+// 2
+void join(void *a) {
+  Args *args = reinterpret_cast<Args *>(a);
+  coutmutex.lock();
+  std::cout << "join is joining " << args->id << std::endl;
+  coutmutex.unlock();
+  args->join_thread->join();
+  coutmutex.lock();
+  std::cout << "join has joined " << args->id << std::endl;
+  coutmutex.unlock();
+}
+
+// 1
+void child(void *a) {
+  coutmutex.lock();
+  std::cout << "child func is yeilding" << std::endl;
+  coutmutex.unlock();
+  thread::yield();
+  coutmutex.lock();
+  std::cout << "child func is done yeilding" << std::endl;
+  coutmutex.unlock();
+}
+
+// 0
+void parent(void *a) {
+  coutmutex.lock();
+  std::cout << "parent func" << std::endl;
+  coutmutex.unlock();
+  thread *t1 = new thread((thread_startfunc_t)child, nullptr);
+  thread t2((thread_startfunc_t)join, reinterpret_cast<void*>(new Args{t1, 1}));
+  thread t3((thread_startfunc_t)join, reinterpret_cast<void*>(new Args{t1, 2}));
+  thread t4((thread_startfunc_t)join, reinterpret_cast<void*>(new Args{t1, 3}));
+  thread t5((thread_startfunc_t)join, reinterpret_cast<void*>(new Args{t1, 4}));
+  thread t6((thread_startfunc_t)join, reinterpret_cast<void*>(new Args{t1, 5}));
+  thread t7((thread_startfunc_t)join, reinterpret_cast<void*>(new Args{t1, 6}));
+  thread t8((thread_startfunc_t)join, reinterpret_cast<void*>(new Args{t1, 7}));
+  thread t9((thread_startfunc_t)join, reinterpret_cast<void*>(new Args{t1, 8}));
+
+  coutmutex.lock();
+  std::cout << "parent is yielding" << std::endl;
+  coutmutex.unlock();
+  thread::yield();
+  coutmutex.lock();
+  std::cout << "parent is joining" << std::endl;
+  coutmutex.unlock();
+  t1->join();
+
+  coutmutex.lock();
+  std::cout << "joined done thread" << std::endl;
+  coutmutex.unlock();
+}
+
+int main() {
+  cpu::boot(1, (thread_startfunc_t)parent, (void *)100, false, false, 0);
+}

@@ -1,0 +1,665 @@
+<div id="network_container"></div>
+
+<script type="text/javascript">
+$tile.config = {% raw tile_config_args_json %};
+
+$tile.build_page = function(results) {
+    /* First two args are dim_db and backbone bundle. Then variables number of
+     * bundles for boxes. */
+    var args = _.toArray(results);
+    var dim_db = results[0];
+    var bb_bundle = results[1][0];
+    var loc_bundle = results[2][0];
+    var box_bundles = _.map(args.slice(3), function(arg) {return arg[0]});
+    var cube_opts = {
+        'dimension_db': dim_db
+    };
+
+    $tile.drill_bundle_query = Deepcube.getBundleQueries(bb_bundle);
+    $tile.cube_opts = cube_opts;
+
+    var time_drill = true;
+    if (!$tile.drill_bundle_query)
+        time_drill = false;
+
+    var month_cube = new DeepcubeObj(bb_bundle.data['month.backbone'], cube_opts);
+    var ts_cube = new DeepcubeObj(bb_bundle.data['timeseries.backbone'], cube_opts);
+    var month_sub_count_cube = new DeepcubeObj(bb_bundle.data['month.sub_count.backbone'], cube_opts);
+    var ts_sub_count_cube = new DeepcubeObj(bb_bundle.data['timeseries.sub_count.backbone'], cube_opts);
+
+    var list_path = loc_bundle.data ? loc_bundle.data['list'] : undefined;
+    var loc_cube = list_path ? new DeepcubeObj(list_path, cube_opts) : undefined;
+
+    var have_sub_counts = true;
+    if (month_sub_count_cube.isEmpty() || ts_sub_count_cube.isEmpty())
+        have_sub_counts = false;
+
+    $tile.ts_cube = ts_cube;
+    $tile.ts_sub_count_cube = ts_sub_count_cube;
+
+    var month_sub_count = {};
+    month_sub_count.max_count_pretty = dfn.numFmtPrefix(0);
+    month_sub_count.avg_count_pretty = dfn.numFmtPrefix(0);
+    month_sub_count.pctl_count_pretty = dfn.numFmtPrefix(0);
+    if (have_sub_counts) {
+        month_sub_count = month_sub_count_cube.getObjs()[0];
+        month_sub_count.max_count_pretty = dfn.numFmtPrefix(month_sub_count['max.local_host_count'], 0);
+        month_sub_count.max_count_pretty.prefix = Deepviz.prefixNames[month_sub_count.max_count_pretty.prefix];
+        month_sub_count.avg_count_pretty = dfn.numFmtPrefix(month_sub_count['avg.local_host_count'], 0);
+        month_sub_count.avg_count_pretty.prefix = Deepviz.prefixNames[month_sub_count.avg_count_pretty.prefix];
+        month_sub_count.pctl_count_pretty = dfn.numFmtPrefix(month_sub_count['pctl.local_host_count.95'], 0);
+        month_sub_count.pctl_count_pretty.prefix = Deepviz.prefixNames[month_sub_count.pctl_count_pretty.prefix];
+    }
+
+    var box_cubes = [];
+    _.each(box_bundles, function(bundle, bundle_i) {
+        /* config and bundles are in the same order. */
+        var config = $tile.box_bundles_config[bundle_i];
+        if (_.isEmpty(bundle)) {
+            /* bundle api returns empty dict if the bundle isn't found. */
+            console.log('bundle-missing', config);
+            return;
+        }
+        _.each(bundle.data, function(cube, cube_name) {
+            if (cube_name.slice(0,4) == 'list') {
+                var cubeInfo = {};
+                cubeInfo.cube = new DeepcubeObj(cube, cube_opts);
+                cubeInfo.cube.hackStartOfMonth();
+                cubeInfo.objs = cubeInfo.cube.getObjs();
+                cubeInfo.config = config;
+                /* Should wrap this in lib. */
+                _.each(cubeInfo.objs, function(item) {
+                    item.max_bps_pretty = dfn.numFmtPrefix(item['max.total.bps']);
+                    item.avg_bps_pretty = dfn.numFmtPrefix(item['avg.total.bps']);
+                    item.pctl_bps_pretty = dfn.numFmtPrefix(item['pctl.total.bps.95']);
+                });
+
+                box_cubes.push(cubeInfo);
+            }
+        });
+    });
+
+    /* The month_cube has a single position - the month summary. */
+    var month = month_cube.getObjs()[0]
+
+    month.max_bps_pretty = dfn.numFmtPrefix(month['max.total.bps']);
+
+    month.max_sent_bps_pretty = dfn.numFmtPrefix(month['max.sent.bps']);
+    month.max_sent_bps_pct = month['max.sent.bps'] / month['max.total.bps'] * 100;
+    month.pctl_sent_bps_pretty = dfn.numFmtPrefix(month['pctl.sent.bps.95']);
+    month.pctl_sent_bps_pct = month['pctl.sent.bps.95'] / month["pctl.total.bps.95"] * 100;
+
+    month.max_recv_bps_pretty = dfn.numFmtPrefix(month['max.recv.bps']);
+    month.max_recv_bps_pct = month['max.recv.bps'] / month['max.total.bps'] * 100;
+    month.pctl_recv_bps_pretty = dfn.numFmtPrefix(month['pctl.recv.bps.95']);
+    month.pctl_recv_bps_pct = month['pctl.recv.bps.95'] / month["pctl.total.bps.95"] * 100;
+
+    // Not the most elegant way to do this
+    // Building stats objects for the template
+    var monthStats = [
+        {
+            type: "large",
+            title: "Peak",
+            mainVal: month.max_bps_pretty.val,
+            mainPrefix: month.max_bps_pretty.prefix,
+            mainUnits: Deepcube.measures.getUnits("max.total.bps")
+        },
+        {
+            type: "small",
+            title: "95<sup>th</sup> Pctl. Recv",
+            mainVal: month.pctl_recv_bps_pretty.val,
+            mainPrefix: month.pctl_recv_bps_pretty.prefix,
+            mainUnits: Deepcube.measures.getUnits("pctl.recv.bps.95"),
+            pctColor: Deepviz.colors[6],
+            pctVal: month.pctl_recv_bps_pct.toFixed(0),
+            detailVal: month.pctl_recv_bps_pct.toFixed(0),
+            detailPrefix: "%",
+            detailUnits: " of Month total"
+        },
+        {
+            type: "small",
+            classes: "right",
+            title: "Peak Recv",
+            mainVal: month.max_recv_bps_pretty.val,
+            mainPrefix: month.max_recv_bps_pretty.prefix,
+            mainUnits: Deepcube.measures.getUnits("max.recv.bps"),
+            pctColor: Deepviz.colors[1],
+            pctVal: month.max_recv_bps_pct.toFixed(0),
+            detailVal: month.max_recv_bps_pct.toFixed(0),
+            detailPrefix: "%",
+            detailUnits: " @ Peak Recv"
+        },
+        {
+            type: "small",
+            title: "95<sup>th</sup> Pctl. Sent",
+            mainVal: month.pctl_sent_bps_pretty.val,
+            mainPrefix: month.pctl_sent_bps_pretty.prefix,
+            mainUnits: Deepcube.measures.getUnits("pctl.sent.bps.95"),
+            pctColor: Deepviz.colors[9],
+            pctVal: month.pctl_sent_bps_pct.toFixed(0),
+            detailVal: month.pctl_sent_bps_pct.toFixed(0),
+            detailPrefix: "%",
+            detailUnits: " of Month total"
+        },
+        {
+            type: "small",
+            classes: "right",
+            title: "Peak Sent",
+            mainVal: month.max_sent_bps_pretty.val,
+            mainPrefix: month.max_sent_bps_pretty.prefix,
+            mainUnits: Deepcube.measures.getUnits("max.sent.bps"),
+            pctColor: Deepviz.colors[0],
+            pctVal: month.max_sent_bps_pct.toFixed(0),
+            detailVal: month.max_sent_bps_pct.toFixed(0),
+            detailPrefix: "%",
+            detailUnits: " @ Peak Sent"
+        }
+    ];
+    var time_chart_height = '295px';
+
+
+    var page_data = {};
+    page_data.month = month;
+    page_data.box_cubes = box_cubes;
+    page_data.month_sub_count = month_sub_count;
+
+    var stats = _(monthStats).reduce(function(html, statObj) {
+        return html += Deepui.template("default-stat", statObj);
+    }, "");
+
+    var rendered = DeepUI.template('network_template', {stats: stats});
+    $($tile.tileSelector).find('#network_container').html(rendered);
+
+
+    // definition for columns used in datatable
+    var columns = [
+        {
+            title: "Name",
+            data: "name"
+        },
+        {
+            title: "Peak",
+            type: "numeric",
+            data: null,
+            orderSequence: ['desc', 'asc'],
+            render: {
+                display: "maxDisplay",
+                _: "maxSort"
+            }
+        },
+        {
+            title: "Average",
+            type: "numeric",
+            data: null,
+            orderSequence: ['desc', 'asc'],
+            render: {
+                display: "avgDisplay",
+                _: "avgSort"
+            }
+        },
+        {
+            title: "95<sup>th</sup> Percentile",
+            type: "numeric",
+            width: "100px",
+            data: null,
+            orderSequence: ['desc', 'asc'],
+            render: {
+                display: "p95Display",
+                _: "p95Sort"
+            }
+        }
+    ];
+
+    _(page_data.box_cubes).each(function(cubeInfo, idx) {
+        var barchartInit;
+        var topic = $tile.href + '.datatable.' + cubeInfo.config.name + '.draw';
+        var panes = [{
+            name: cubeInfo.config.name,
+            paneType: 'datatable-network',
+            classes: 'data-table compact',
+            glyph: '5',
+            active: true,
+            draw: function() {
+                var $pane = $(this);
+
+                var data = _(cubeInfo.objs).map(function(d) {
+                    return {
+                        name: d[cubeInfo.config.dimension + '.name'],
+                        href: cubeInfo.config.href + "/" + d[cubeInfo.config.dimension + '.id'],
+
+                        posId: d[cubeInfo.config.dimension + ".id"],
+
+                        maxDisplay: d.max_bps_pretty.val + "<span class='label'>" + d.max_bps_pretty.prefix + Deepcube.measures.getUnits("max.total.bps") + "</span>",
+                        maxSort: d['max.total.bps'],
+
+                        avgDisplay: d.avg_bps_pretty.val + "<span class='label'>" + d.avg_bps_pretty.prefix + Deepcube.measures.getUnits("avg.total.bps") + "</span>",
+                        avgSort: d['avg.total.bps'],
+
+                        p95Display: d.pctl_bps_pretty.val + "<span class='label'>" + d.pctl_bps_pretty.prefix + Deepcube.measures.getUnits("pctl.total.bps.95") + "</span>",
+                        p95Sort: d['pctl.total.bps.95']
+                    };
+                });
+
+                $pane.append('<table></table>');
+                DeepUI.datatable({
+                    target: 'table',
+                    context: $pane
+                }, {
+                    columns: columns,
+                    data: data,
+                    pageLength: 5,
+                    dom: 't<"dt-footer"ip>',
+                    order: [1, 'desc'],
+                    columnDefs: [
+                        {orderSequence: ['desc', 'asc'], targets: [1, 2]},
+                        {width: '60px', targets: [1, 2]}
+                    ],
+                    rowCallback: function(row, data) {
+                        var $row = $(row).attr('data-href', data.href);
+                        $row.addClass('clickable');
+                        var $cell = $row.children("td:first-child");
+                        if ($cell.width() > 270 || $cell.height() > 24) {
+                            var t = $cell.text();
+                            $cell.text(_.truncate(t, 38));
+                            $cell.attr('title', t);
+                        }
+
+                    },
+                    drawCallback: function(settings) {
+                        var items = this.api().rows({page:'current'}).data();
+                        barchartInit = _(items).pluck('posId');
+                        $.pub(topic, barchartInit);
+                    }
+                });
+            }
+        }, {
+            name: cubeInfo.config.name,
+            paneType: 'barchart-network',
+            glyph: 'Z',
+            draw: function() {
+                var $pane = $(this);
+
+                var barChart = new DeepUI.Barchart({
+                    target: $pane,
+                    trimXaxisLabels: true,
+                    controls: false,
+                    enableLegend: false,
+                    onClick: function(event) {
+                        event.preventDefault();
+                        var href = sprintf('%s/%s', cubeInfo.config.href, event.point.cubeItem[cubeInfo.config.dimension + '.id']);
+                        Deepui.openTile(null, href, 'Drill', null, {
+                            name: 'timeState',
+                            state: {
+                                index: $tile.index,
+                                range: $tile.timeControl.opts.range,
+                                time: {
+                                    start: $tile.timeControl.start.moment.clone(),
+                                    end: $tile.timeControl.end.moment.clone()
+                                }
+                            }
+                        });
+                    }
+                });
+
+                // initial draw subscribes to future published changes in the datatable
+                var dSub = $.sub(topic, function(data) {
+                    var cube = cubeInfo.cube.clone();
+                    var dimId = Deepcube.getDimId(cubeInfo.config.dimension);
+                    cube = cube.slice(dimId, data);
+
+                    barChart.clear(true, true);
+                    barChart.addChart(cube, {
+                        compound: true,
+                        numPositions: 5,
+<<<<<<< HEAD
+                        width: 530,
+                        height: 260,
+=======
+                        width: 510,
+                        height: 250,
+>>>>>>> origin/master
+                        dimensions: dimId,
+                        measures: ['max.total.bps', 'pctl.total.bps.95'],
+                        marks: ['avg.total.bps']
+                    });
+                });
+                $tile._subscriptions.push({topic: topic, reference: dSub});
+
+                // publish event is called to synchronize barchart with current data in datatable
+                $.pub(topic, barchartInit);
+            }
+        }];
+
+        // Render the bones of the template
+        var classes = idx % 2 === 1 ? 'right last' : null;
+
+        var rendered = DeepUI.template('network_panes', { name: cubeInfo.config.name, href: cubeInfo.config.href, dimension: cubeInfo.config.name, classes: classes });
+        $('#network_container', $tile.tileSelector).append(rendered);
+
+
+        // Build the pane controls
+        var newPaneControl = new DeepUI.PaneControl({
+            context: $tile.tileSelector,
+            target: '#'.concat(cubeInfo.config.name) + ' #paneControl',
+            paneContainer: '#'.concat(cubeInfo.config.name) + ' #paneContainer',
+            paneTitle: '#'.concat(cubeInfo.config.name) + ' h2 .title',
+            panes: panes
+        });
+
+        var $button = $('<button class="dash-view-list right spacer">View All</button>').appendTo($tile.tileSelector + ' .box#' + cubeInfo.config.name  + ' .button-toolbar');
+        $button.data('href', cubeInfo.config.href);
+    });
+
+    /* Make table rows clickable. */
+    $('.dataTable tbody', $tile.tileSelector).on('click.item-drill', 'tr', function(event) {
+        var href = $(this).data('href');
+        Deepui.openTile(null, href, 'Drill', null, {
+            name: 'timeState',
+            state: {
+                index: $tile.index,
+                range: $tile.timeControl.opts.range,
+                time: {
+                    start: $tile.timeControl.start.moment.clone(),
+                    end: $tile.timeControl.end.moment.clone()
+                }
+            }
+        });
+    });
+
+    time_chart_height = sprintf("min-height:%s;", time_chart_height);
+    var time_graph = new DeepUI.Timegraph({
+        target: "#timechart",
+        context: $tile.tileSelector,
+        chartStyle: time_chart_height,
+        controls: false
+    })
+    $tile.time_graph = time_graph;
+
+    if (time_drill)
+        time_graph.enableSeriesDrill({
+            bundle_elm: 'timeseries.backbone',
+            series: {
+                areaspline: [
+                    {
+                        measure: 'avg.recv.bps',
+                        label: 'Recv (avg)',
+                        color: Deepviz.colors[0]
+                    },
+                    {
+                        measure: 'avg.sent.bps',
+                        label: 'Sent (avg)',
+                        color: Deepviz.colors[1]
+                    }
+                ]
+            }
+        },
+        {
+            plotOptions: {
+                areaspline: {
+                    stacking: 'normal'
+                }
+            }
+        });
+
+    time_graph.addColumn(ts_cube, { field: 'max.sent.bps', formattedName: 'Sent (peak)', linkedTo: 'peak', color: Deepviz.colors[0] });
+    time_graph.addColumn(ts_cube, { field: 'max.recv.bps', name: 'Peak Sent/Recv', formattedName: "Recv (peak)", id: 'peak', color: Deepviz.colors[1] });
+
+    time_graph.addSpline(ts_cube, { field: 'pctl.sent.bps.95', formattedName: 'Sent (p95)', linkedTo: 'p95', color: Deepviz.colors[9]});
+    time_graph.addSpline(ts_cube, { field: 'pctl.recv.bps.95', name: 'P95 Sent/Recv', formattedName: 'Recv (p95)', id: 'p95', color: Deepviz.colors[6]});
+
+    time_graph.addSpline(ts_cube, { field: 'avg.total.bps', name: 'Total (avg)', visible: false});
+
+
+    time_graph.draw();
+
+    if (have_sub_counts) {
+        var subscribersPanes = [
+            {
+                active: true,
+                paneType: 'subcounts',
+                glyph: 'g',
+                name: 'Subscriber Counts',
+                draw: function() {
+                    var pane = this;
+                    var d = $.Deferred();
+
+                    var stats = [
+                        {
+                            title: "Peak",
+                            type: "large",
+                            mainVal: month_sub_count.max_count_pretty.val,
+                            mainPrefix: month_sub_count.max_count_pretty.prefix
+                        },
+                        {
+                            title: "95<sup>th</sup> Percentile",
+                            type: "small",
+                            mainVal: month_sub_count.pctl_count_pretty.val,
+                            mainPrefix: month_sub_count.pctl_count_pretty.prefix
+                        },
+                        {
+                            title: "Average",
+                            type: "small",
+                            classes: "right",
+                            mainVal: month_sub_count.avg_count_pretty.val,
+                            mainPrefix: month_sub_count.avg_count_pretty.prefix
+                        }
+                    ];
+                    stats = _(stats).reduce(function(html, statObj) {
+                        return html += Deepui.template("default-stat", statObj);
+                    }, "");
+
+                    var rendered = DeepUI.template('network_subscribers_timegraph_template', {stats: stats});
+                    $(pane).html(rendered);
+
+                    var count_graph = new DeepUI.Timegraph({
+                        target: "#sub_count_timechart",
+                        context: pane,
+                        controls: false,
+                        chartStyle: "min-height:228px;"
+                    });
+
+                    count_graph.addColumn(ts_sub_count_cube, { field: 'max.local_host_count', name: 'Peak', color: Deepviz.colors[2] });
+                    count_graph.addSpline(ts_sub_count_cube, { field: 'pctl.local_host_count.95', name: '95<sup>th</sup> Percentile', units: "hosts", color: Deepviz.colors[1] });
+                    count_graph.addSpline(ts_sub_count_cube, { field: 'avg.local_host_count', name: 'Average', color: Deepviz.colors[7], visible: false });
+                    var drill_cfg = {
+                        bundle_elm: 'timeseries.sub_count.backbone',
+                        series: {
+                            areaspline: [{measure: 'local_host_count', label: 'Total', color: Deepviz.colors[2]}],
+                        },
+                        extra_query_string: '&apply=measure_fixup!()&measures=local_host_count'
+                    };
+                    count_graph.enableSeriesDrill(drill_cfg);
+                    count_graph.yAsixInfoGenerator = Deepviz.chart.get_yaxis_units_counts;
+
+                    $.when(
+                        count_graph.draw()
+                    )
+                    .done(function() {
+                        d.resolve();
+                    });
+
+                    return d.promise();
+                }
+            },
+            {
+                paneType: 'subbandwidth',
+                glyph: 'f',
+                name: 'Bandwidth per Subscriber',
+                draw: function() {
+                    var $pane = this;
+                    var d = $.Deferred();
+
+                    var subBandwidth = DeepCube.normalizeAndZipCubeObjsByTimestamp(ts_cube, ts_sub_count_cube, true);
+
+                    _.each(subBandwidth, function(d, i) {
+                        subBandwidth[i] = {
+                            'timestamp': d[0]['timestamp'],
+                            'avg.local_host_count': d[1]['avg.local_host_count'],
+                            'avg.local_host_count': d[0]['avg.total.bps'],
+                            // Fix the host count to average for now
+                            'avg.total.bandwidth_per_host': d[0]['avg.total.bps'] / d[1]['avg.local_host_count'],
+                            'avg.sent.bandwidth_per_host': d[0]['avg.sent.bps'] / d[1]['avg.local_host_count'],
+                            'avg.recv.bandwidth_per_host': d[0]['avg.recv.bps'] / d[1]['avg.local_host_count'],
+                            'max.total.bandwidth_per_host': d[0]['max.total.bps'] / d[1]['avg.local_host_count'],
+                            'max.sent.bandwidth_per_host': d[0]['max.sent.bps'] / d[1]['avg.local_host_count'],
+                            'max.recv.bandwidth_per_host': d[0]['max.recv.bps'] / d[1]['avg.local_host_count'],
+                        };
+                    });
+
+                    var bw_graph = new DeepUI.Timegraph({
+                        target: $pane,
+                        context: $tile.tileSelector,
+                        controls: false,
+                        chartStyle: "min-height:228px;"
+                    });
+
+                    bw_graph.addCubeSeries(subBandwidth, { type: 'column', units: "bps", field: 'max.total.bandwidth_per_host', name: 'Total bps/host (peak)', color: Deepviz.colors[2] });
+                    bw_graph.addCubeSeries(subBandwidth, { type: 'spline', units: "bps", field: 'avg.recv.bandwidth_per_host', name: 'Recv bps/host (avg)' });
+                    bw_graph.addCubeSeries(subBandwidth, { type: 'spline', units: "bps", field: 'avg.sent.bandwidth_per_host', name: 'Sent bps/host (avg)' });
+
+                    // TODO
+                    //var drill_cfg = {
+                    //    bundle_elm: 'timeseries.sub_count.backbone',
+                    //    series: {
+                    //        areaspline: [{measure: 'local_host_count', label: 'Total', color: Deepviz.colors[2]}],
+                    //    },
+                    //    extra_query_string: '&apply=measure_fixup!()&measures=local_host_count'
+                    //};
+                    //bw_graph.enable_series_drill(drill_cfg);
+                    //bw_graph.yaxis_info_generator = Deepviz.chart.get_yaxis_units_counts
+
+                    $.when(
+                        bw_graph.draw()
+                    )
+                    .done(function() {
+                        d.resolve();
+                    });
+
+                    d.resolve();
+
+                    return d.promise();
+                }
+            }
+        ];
+
+        $tile.subscribersPaneControl = new Deepui.PaneControl({
+            context: $tile.tileSelector,
+            target: '#subscribers-paneControl',
+            paneContainer: '#subscribers-paneContainer',
+            paneTitle: '#subscribers .pane-title',
+            panes: subscribersPanes
+        });
+    } else {
+        $($tile.tileSelector + ' #subscribers').remove();
+    }
+
+    /* View All buttons */
+    $($tile.tileSelector + ' .dash-view-list').button().click(function(event) {
+        event.preventDefault();
+        var href = $(this).data('href');
+        Deepui.openTile(null, href, null, null, {
+            name: 'timeState',
+            state: {
+                index: $tile.index,
+                range: $tile.timeControl.opts.range,
+                time: {
+                    start: $tile.timeControl.start.moment.clone(),
+                    end: $tile.timeControl.end.moment.clone()
+        }}});
+    });
+
+}
+
+$tile.run_query = function(date_str) {
+    $($tile.tileSelector).find('#network_container div.box').css('opacity', 0.5)
+    $($tile.tileSelector).find('#network_container').activity();
+
+    var bundle_gets = [];
+    var dim_ids = [];
+    _.each($tile.box_bundles_config, function(bundle_info) {
+        // ie 'drill_service1' -> service
+        var drill_name = bundle_info.bundle.replace('drill_', '').replace('1', '');
+
+        var url = sprintf('/bundle/drill/summary/%s.json?slice=timestamp(%s)&a=timestep(month)', drill_name, date_str);
+        //var url = sprintf('/api/bundle/%s/months/%s/summary.json.gz', bundle_info.bundle, date_str);
+        bundle_gets.push($.getJSON(url));
+        dim_ids.push(Deepcube.getDimId(bundle_info.dimension));
+    });
+
+    var bb_url = sprintf('/bundle/bundle2_backbone1_summary.json?s=timestamp(%s)', date_str);
+    var loc_url = sprintf('/bundle/drill/summary/path.json?slice=timestamp(%s)&a=timestep(month)', date_str);
+    var gets = [
+        DeepAPI.cube.getDimensionDBs({ dimensions: dim_ids }),
+        $.getJSON(bb_url),
+        $.getJSON(loc_url)
+    ];
+    gets = gets.concat(bundle_gets);
+
+    $.when.all(gets)
+    .done(function() {
+        if (_.isEmpty(arguments[1][0])) {
+            Deepui.errorcontrol({
+                context: $tile.tileSelector,
+                target: '#network_container',
+                style: "position:absolute;top:185px;left:50%;margin-left:-200px;padding:10px;background:rgba(255, 255, 255, 0.8);width:400px;border:2px solid darkgrey;border-radius:6px;",
+                redText: 'No data for the given timerange found.',
+                message: 'Please try a different timerange.',
+                noContact: true
+            });
+        }
+        else {
+            $($tile.tileSelector).find('#network_container div.box').css('opacity', 1);
+            $tile.build_page(arguments);
+        }
+
+        $($tile.tileSelector).find('#network_container').activity(false);
+        $tile.timeControl.stopWaiting();
+
+        Deepui.activateTile();
+    });
+}
+
+$(document).ready(function() {
+    $tile.href = {% raw href %};
+
+    // Build Header
+    $tile.tileHeader = new Deepui.TileHeader({
+        title: "Network"
+    });
+
+    /* Configurable list */
+    var default_box_bundles_config = [
+        {
+            'name': 'Category',
+            'bundle': 'drill_category',
+            'href': '/drill/category',
+            'dimension': 'category'
+        },
+        {
+            'name': 'Sites',
+            'bundle': 'drill_sites',
+            'href': '/drill/sites',
+            'dimension': 'sites'
+        }
+    ];
+    if ('box_bundles' in $tile.config)
+        $tile.box_bundles_config = $tile.config.box_bundles;
+    else
+        $tile.box_bundles_config = default_box_bundles_config;
+
+    $tile.timeControl = new Deepui.TimeControl({
+        target: $tile.tileHeader.opts.headerSelector,
+        context: $tile.tileSelector,
+        range: "month",
+        flexible: false,
+        onSelect: function(timeObj, dateStr, range) {
+            $tile.run_query(dateStr);
+        }
+    });
+
+    var initDateString = DeepUI.time.getQueryFormattedTimestamp(null, "month");
+    $tile.run_query(initDateString);
+});
+
+//@ sourceURL=network.html
+</script>

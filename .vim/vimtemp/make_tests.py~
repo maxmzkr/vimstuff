@@ -1,0 +1,19 @@
+
+from testing import unit, integration, mock_infrastructure
+import deepy.build.build
+from deepy.timerange import arrow_factory
+import os
+import sys
+import time
+import unittest
+
+class MakeRulesTest(unittest.TestCase):
+
+    @mock_infrastructure('comcast2')
+    @integration
+    def test_that_all_rules_compile(self):
+        # Given
+        deepy.build.build.DeepyBuild()
+
+        # Then
+        # Nothing, if it compiled, success

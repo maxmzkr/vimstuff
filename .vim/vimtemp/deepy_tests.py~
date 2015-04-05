@@ -1,0 +1,843 @@
+"""Used to test the jobs that are in jobs"""
+
+import unittest
+import collections
+import mock
+import os.path
+
+import testing
+import builder.build
+import builder.jobs
+import deepy.build.deepy_jobs
+import deepy.build.deepy_build
+import deepy.build.deepy_util
+import deepy.build.deepy_jobs as deepy_jobs
+import deepy.build.deepy_targets as deepy_targets
+import deepy.query_rules
+import deepy.cfg
+import deepy.timerange
+import deepy.build.deepy_metas
+arrow = deepy.timerange.arrow_factory
+
+from testing import mock_infrastructure
+
+class DeepyTest(unittest.TestCase):
+    """Used to test the general graph construction of the deepy jobs"""
+
+    @testing.unit
+    def test_cube_sub_count_ip_version_5min(self):
+        # Given
+        rules_db = deepy.build.deepy_util.construct_rules()
+
+        # When
+        job = deepy.build.deepy_jobs.DeepyDictJob('cube_sub_count_ip_version_5min', rules_db)
+
+        # Then
+        self.assertEquals(job.get_type(), 'target')
+
+    @testing.unit
+    def test_drill1_hour_has_dimensions(self):
+        # Given
+        rules_db = deepy.build.deepy_util.construct_rules()
+
+        # When
+        job = deepy.build.deepy_jobs.DeepyDictJob('cube_drill1_hour', rules_db)
+
+        # Then
+        self.assertTrue(len(job.get_dimensions())>0)
+
+    @testing.unit
+    @mock_infrastructure('comcast2', config_only=True, exclude_dimensions=True)
+    def test_get_command_with_format_args(self):
+        # Given
+        rules_db = deepy.build.deepy_util.construct_rules()
+        t = arrow.get()
+        build_context = {
+            'start_time':t,
+            'end_time': t,
+        }
+        build_manager = deepy.build.deepy_build.DeepyBuildManager()
+        build_graph = build_manager.make_build()
+
+        # When
+        job = deepy.build.deepy_jobs.DeepyDictJob('cube_aspaths_remote3_hour', rules_db)
+        build_context['start_job'] = job.unexpanded_id
+        build_graph.add_job(job.unexpanded_id, build_context, depth=1)
+        states = job.expand(build_context)
+
+
+        # Then
+        self.assertTrue(len(states) == 1)
+        command = states[0].get_command(build_graph)
+
+    @testing.unit
+    def test_basic_substitution(self):
+        # Given
+        command = ('cube_op.py $A -o '
+                   '/Users/matt/env/deepfield-deploy/pipedream/cache/cubes/drill_small/minutes/cube.2014-01-27-08-55.h5 '
+                   '-t 300  -A group_other(origin_asn.local,null,<c.top_origins>)  '
+                   '-A group_other(aspaths.local,null,<c.top_aspaths>) -A group_other(origin_asn.remote,null,<c.top_origins>) '
+                   '--arg_join c.top_origins=\'$(cubes_dir)/origin_asn.remote2/months/top_list.2014-01.json.gz\' '
+                   '-A group_other(aspaths.remote,null,<c.top_aspaths>) --arg_join '
+                   'c.top_aspaths=\'$(cubes_dir)/aspaths.remote2/months/top_list.2014-01.json.gz\' '
+                   '-A group_other(sites,null,<c.top_sites>) -A group_other(company,null,<c.top_companies>) '
+                   '--arg_join c.top_companies=\'$(cubes_dir)/company2/months/top_list.2014-01.json.gz\' '
+                   '--arg_join c.top_sites=\'$(cubes_dir)/sites2/months/top_list.2014-01.json.gz\' {cube_drill1_5min}')
+        ts = arrow.get("2014-01-01")
+        # When
+        substituted = deepy.build.deepy_util.basic_substitution(command, ts)
+
+        # Then
+        self.assertEquals(substituted, """cube_op.py $A -o /Users/matt/env/deepfield-deploy/pipedream/cache/cubes/drill_small/minutes/cube.2014-01-27-08-55.h5 -t 300  -A group_other(origin_asn.local,null,<c.top_origins>)  -A group_other(aspaths.local,null,<c.top_aspaths>) -A group_other(origin_asn.remote,null,<c.top_origins>) --arg_join c.top_origins='$(cubes_dir)/origin_asn.remote2/months/top_list.2014-01.json.gz' -A group_other(aspaths.remote,null,<c.top_aspaths>) --arg_join c.top_aspaths='$(cubes_dir)/aspaths.remote2/months/top_list.2014-01.json.gz' -A group_other(sites,null,<c.top_sites>) -A group_other(company,null,<c.top_companies>) --arg_join c.top_companies='$(cubes_dir)/company2/months/top_list.2014-01.json.gz' --arg_join c.top_sites='$(cubes_dir)/sites2/months/top_list.2014-01.json.gz' {cube_drill1_5min}""")
+
+    @testing.unit
+    def test_substitution(self):
+        # Given
+        fmt_str = '$(heartbeat_dir)/$(vm_uuid)/vm/vm.2014-01-06-17-25.json.gz'
+        config = mock.Mock()
+        config.heartbeat_dir = '/foo'
+        config.vm_uuid = 'bar'
+
+        # When
+        substituted = deepy.build.deepy_util.deepy_substitution(fmt_str, config=config)
+
+        # Then
+        self.assertEquals("/foo/bar/vm/vm.2014-01-06-17-25.json.gz", substituted)
+
+    @testing.unit
+    def test_substitution_with_null(self):
+        # Given
+        fmt_str = '$(heartbeat_dir)/$(vm_uuid)/vm/vm.2014-01-06-17-25.json.gz'
+        config = mock.Mock()
+        config.heartbeat_dir = '/foo'
+        config.vm_uuid = None
+
+        # When
+        substituted = deepy.build.deepy_util.deepy_substitution(fmt_str, config=config)
+
+        # Then
+        self.assertEquals("/foo/None/vm/vm.2014-01-06-17-25.json.gz", substituted)
+
+    @testing.unit
+    @mock_infrastructure('mediacom', config_only=True, exclude_dimensions=True)
+    def test_drill_summary_commands(self):
+        #  Given
+        job_id = 'drill_cdn_summary'
+        rules_db = deepy.build.deepy_util.construct_rules()
+        build_manager = deepy.build.deepy_build.DeepyBuildManager()
+        build_graph = build_manager.make_build()
+        t = arrow.get('2014-01-01')
+        build_context = {
+            'start_time':t,
+            'end_time': t,
+        }
+
+        # When
+        job = deepy.build.deepy_jobs.DeepyDictJob(job_id, rules_db)
+        build_graph.add_meta(job.unexpanded_id, build_context, depth=1)
+        commands = []
+        for node_id, node in build_graph.node.iteritems():
+            obj = node['object']
+            if isinstance(obj, builder.jobs.JobState):
+                commands.append(obj.get_command(build_graph))
+
+
+        # Then
+        correct = ('bundle2.py -M drill_day_cdn_summary -m ' +
+                   deepy.cfg.cubes_dir + '/drill/cdn/days/markers/summary.2014-01-01.marker '
+                   '-t 2014-01-01')
+        self.assertEquals(commands[0], correct)
+        self.assertEquals(1, len(commands))
+
+    @testing.unit
+    @mock_infrastructure('aliant', config_only=True, exclude_dimensions=True)
+    def test_drill_commands(self):
+        #  Given
+        job_id = 'drill_cdn'
+        rules_db = deepy.build.deepy_util.construct_rules()
+        build_manager = deepy.build.deepy_build.DeepyBuildManager()
+        build_graph = build_manager.make_build()
+        t = arrow.get('2014-01-01')
+        build_context = {
+            'start_time':t,
+            'end_time': t,
+        }
+
+        # When
+        job = deepy.build.deepy_jobs.DeepyDictJob(job_id, rules_db)
+        build_graph.add_meta(job.unexpanded_id, build_context, depth=1)
+        commands = []
+        for node_id, node in build_graph.node.iteritems():
+            obj = node['object']
+            if isinstance(obj, builder.jobs.JobState):
+                commands.append(obj.get_command(build_graph))
+
+
+        # Then
+
+        correct = ('bundle2.py -M drill_day_cdn -m ' +
+                   deepy.cfg.cubes_dir + '/drill/cdn/days/markers/drill.2014-01-01.marker '
+                   '-t 2014-01-01')
+        self.assertEquals(commands[0], correct)
+        self.assertEquals(1, len(commands))
+
+    @testing.unit
+    def test_cache_time_added(self):
+        # Given
+        job_id = "cube_drill1_day"
+        rules_db = deepy.build.deepy_util.construct_rules()
+
+        # When
+        job = deepy.build.deepy_jobs.DeepyDictJob(job_id, rules_db)
+
+        # Then
+        self.assertEqual(job.cache_time, "2h")
+
+    @testing.unit
+    def test_glob_target(self):
+        # Given
+        job_id = "bgpdumps"
+        rules_db = deepy.build.deepy_util.construct_rules()
+        job = deepy.build.deepy_jobs.DeepyDictJob(job_id, rules_db)
+
+        # When
+        targets = job.get_targets()
+        target = targets["produces"][0]
+
+        target_type = target.base_class
+
+
+        # Then
+        self.assertEqual(target_type, deepy.build.deepy_targets.DeepyS3BackedGlobLocalFileSystemTarget)
+
+    @testing.unit
+    def test_h5flow_marker(self):
+        # Given
+        build_manager = deepy.build.deepy_build.DeepyBuildManager()
+        build1 = build_manager.make_build()
+        build2 = build_manager.make_build()
+
+        build_context1 = {
+            "start_time": arrow.get("2015-03-12-01-05"),
+            "end_time": arrow.get("2015-03-12-01-05"),
+        }
+
+        build_context2 = {
+            "start_time": arrow.get("2015-03-12-01-05"),
+            "end_time": arrow.get("2015-03-12-01-05"),
+        }
+
+        build1.add_job("cubes_from_h5flow_5min", build_context1, depth=1)
+        build2.add_job("cubes_from_h5flow_5min", build_context2, depth=1)
+
+        for _, target in build1.node.iteritems():
+            target = target["object"]
+            if isinstance(target, builder.targets.Target):
+                if "marker" in target.unique_id:
+                    target.mtime = arrow.get("2015-03-12-01-06").float_timestamp
+                    target.exists = True
+                else:
+                    target.mtime = None
+                    target.exists = False
+
+        for _, target in build2.node.iteritems():
+            target = target["object"]
+            if isinstance(target, builder.targets.Target):
+                if "marker" in target.unique_id:
+                    target.mtime = arrow.get("2015-03-12-01-10").float_timestamp
+                    target.exists = True
+                else:
+                    if build2.predecessors(target.unique_id):
+                        target.mtime = arrow.get("2015-03-12-01-09").float_timestamp
+                        target.exists = True
+                    else:
+                        target.mtime = arrow.get("2015-03-12-01-08").float_timestamp
+                        target.exists = True
+
+        expected_stale1 = False
+        expected_stale2 = False
+
+        # When
+        should_run1 = build1.node["cubes_from_h5flow_5min_2015-03-12-01-05-00"]["object"].get_stale(build1)
+        should_run2 = build2.node["cubes_from_h5flow_5min_2015-03-12-01-05-00"]["object"].get_stale(build2)
+
+        # Then
+        self.assertEqual(should_run1, expected_stale1)
+        self.assertEqual(should_run2, expected_stale2)
+
+
+class DeepyDictJobTest(unittest.TestCase):
+
+    def _simple_job(self):
+        rules_db = deepy.build.deepy_util.construct_rules()
+        return deepy_jobs.DeepyDictJob(
+            'cube_drill_small_5min', rules_db
+        )
+
+    def _multitarget_job(self):
+        rules_db = deepy.build.deepy_util.construct_rules()
+        return deepy_jobs.DeepyDictJob(
+            'cubes_from_h5flow_5min', rules_db
+        )
+
+
+    def test_multitarget_job_get_targets(self):
+
+        # Given
+        job = self._multitarget_job()
+
+        # When
+        targets = job.get_targets({})
+
+        # Then
+        produced_expanders = targets['produces'] + targets['untracked']
+        self.assertTrue(len(produced_expanders) > 1)
+        unexpanded_ids = map(lambda x: x.unexpanded_id, produced_expanders)
+        for produced in produced_expanders:
+            self.assertTrue(produced.unexpanded_id in unexpanded_ids)
+            self.assertTrue(produced.unexpanded_id is not None)
+
+    def test_simple_job_get_target(self):
+         # Given
+        job = self._simple_job()
+
+        # When
+        targets = job.get_targets({})
+
+        # Then
+        produced_expanders = targets['produces']
+        self.assertEquals(len(produced_expanders), 1)
+        self.assertEquals(produced_expanders[0].unexpanded_id, '$(cubes_dir)/drill_small/minutes/cube.%Y-%m-%d-%H-%M.h5')
+
+
+    def test_simple_job_get_dependencies(self):
+         # Given
+        job = self._simple_job()
+
+        # When
+        dependencies = job.get_dependencies({})
+        depends = dependencies.get('depends')
+
+        # Then
+        self.assertTrue(len(dependencies) > 0)
+        self.assertEquals(len(depends), 1)
+        self.assertEquals(depends[0].unexpanded_id, '$(cubes_dir)/drill1/minutes/cube.%Y-%m-%d-%H-%M.h5')
+
+    def test_multitarget_job_get_dependencies(self):
+        # Given
+        job = self._multitarget_job()
+
+        # When
+        dependencies = job.get_dependencies({})
+        depends = dependencies.get('depends')
+
+        # Then
+        self.assertTrue(len(dependencies) > 0)
+        self.assertEquals(len(depends), 1)
+        self.assertEquals(depends[0].unexpanded_id, '$(h5flow_dir)/flow.%Y-%m-%d-%H-%M.h5')
+
+    def test_impala_compaction_job(self):
+        # Given
+        job = deepy.build.deepy_jobs.DeepyImpalaCompactionJob(
+                "dataset_name", "5min")
+
+        # When
+        targets = job.get_targets()
+        dependencies = job.get_dependencies()
+        depends_one_or_more_expander = dependencies["depends_one_or_more"][0]
+        produces_expander = targets["produces"][0]
+
+        build_context = {
+            "start_time": arrow.get("2015-02-01T05:10"),
+            "end_time": arrow.get("2015-02-02T06:15"),
+        }
+        expected_command = ("compact_cubes.py -i dataset_name -s "
+                            "2015-02-01-05-10 -e 2015-02-01-05-10 "
+                            "--step 300")
+        actual_command = job.get_command("unique_id", build_context, None)
+
+        # Then
+        self.assertEqual(job.unexpanded_id,
+                "deepfield_dataset_name_step5min_compaction")
+        self.assertEqual(job.get_expandable_id(),
+                "deepfield_dataset_name_step5min_compaction_%Y-%m-%d-%H-%M-%S")
+        self.assertEqual(job.file_step, "1d")
+        self.assertEqual(actual_command, expected_command)
+        self.assertEqual(depends_one_or_more_expander.file_step, "5min")
+        self.assertEqual(depends_one_or_more_expander.time_step, "5min")
+        self.assertEqual(depends_one_or_more_expander.unexpanded_id,
+                "deepfield_dataset_name_step5min_%Y-%m-%d-%H-%M")
+        self.assertEqual(depends_one_or_more_expander.dataset_name, "dataset_name")
+        self.assertEqual(depends_one_or_more_expander.compacted, False)
+        self.assertEqual(produces_expander.file_step, "1d")
+        self.assertEqual(produces_expander.time_step, "5min")
+        self.assertEqual(produces_expander.unexpanded_id,
+                "deepfield_dataset_name_step5min_compacted_%Y-%m-%d-%H-%M")
+        self.assertEqual(produces_expander.dataset_name, "dataset_name")
+        self.assertEqual(produces_expander.compacted, True)
+
+    def test_impala_expander(self):
+        # Given
+        expander_min = deepy.build.deepy_expanders.DeepyImpalaExpander(
+                "expanded_id_%Y-%m-%d-%H-%M", "5min", "5min", "dataset_name",
+                compacted=False)
+        expander_day = deepy.build.deepy_expanders.DeepyImpalaExpander(
+                "expanded_id_%Y-%m-%d-%H-%M", "5min", "1d", "dataset_name",
+                compacted=True)
+
+        # When
+        expanded_min = expander_min.expand({
+                "start_time": arrow.get("2015-02-05T00:00"),
+                "end_time": arrow.get("2015-02-06T00:00")
+        })
+        expanded_day = expander_day.expand({
+                "start_time": arrow.get("2015-02-05T00:00"),
+                "end_time": arrow.get("2015-02-06T00:00")
+        })
+
+        # Then
+        self.assertEqual(len(expanded_min), 288)
+        self.assertEqual(len(expanded_day), 1)
+
+        for min_target in expanded_min:
+            if (min_target.unexpanded_id == "expanded_id_%Y-%m-%d-%H-%M" and
+                    min_target.unique_id == "expanded_id_2015-02-05-01-25" and
+                    min_target.build_context == {
+                            "start_time": arrow.get("2015-02-05T01:25"),
+                            "end_time": arrow.get("2015-02-05T01:30"),
+                    } and
+                    min_target.dataset_name == "dataset_name" and
+                    min_target.time_step == "5min" and
+                    min_target.compacted == False):
+                break
+        else:
+            self.assertTrue(False)
+
+        self.assertEqual(expanded_day[0].unexpanded_id,
+                "expanded_id_%Y-%m-%d-%H-%M")
+        self.assertEqual(expanded_day[0].unique_id,
+                "expanded_id_2015-02-05-00-00")
+        self.assertEqual(expanded_day[0].build_context, {
+                "start_time": arrow.get("2015-02-05T00:00"),
+                "end_time": arrow.get("2015-02-06T00:00")
+        })
+        self.assertEqual(expanded_day[0].dataset_name, "dataset_name")
+        self.assertEqual(expanded_day[0].time_step, "5min")
+        self.assertEqual(expanded_day[0].compacted, True)
+
+    def test_load_impala_jobs(self):
+        # Given
+        impala_config = {
+            "impala": {
+                "load": {
+                    "stream_bps": {
+                        "step": "minutes",
+                        "pattern": "bps/minutes",
+                    },
+                    "interface_hour": {
+                        "step": "hours",
+                        "cube": "interface",
+                    },
+                    "interface_day": {
+                        "step": "days",
+                        "cube": "interface",
+                    },
+                }
+            }
+        }
+
+        # When
+        original_rules = deepy.build.deepy_util.construct_rules()
+        with mock.patch("deepy.build.deepy_util.construct_rules") as dict:
+            dict.return_value = {
+                "cube_stream_bps_5min": {
+                    "meta": {
+                        "cube_id": "stream_bps",
+                    },
+                    "target": "stream_bps_5min_target",
+                    "file_step": "5min",
+                },
+                "cube_interface_hour": {
+                    "meta": {
+                        "cube_id": "interface",
+                    },
+                    "target": "interface_hour_target",
+                    "file_step": "1h",
+                },
+                "cube_interface_day": {
+                    "meta": {
+                        "cube_id": "interface",
+                    },
+                    "target": "interface_day_target",
+                    "file_step": "1d",
+                },
+            }
+            build_manager = deepy.build.deepy_build.DeepyBuildManager(
+                    config=impala_config)
+            deepy_build = build_manager.make_build()
+
+        dependency_jobs = deepy_build.rule_dependency_graph.predecessors("impala_compaction")
+        dependency_views = deepy_build.rule_dependency_graph.predecessors(
+                "impala_view_update")
+        dependency_inserts = deepy_build.rule_dependency_graph.predecessors(
+                "impala_inserts")
+
+        # Then
+        self.assertIn("deepfield_stream_bps_step5min_compaction",
+                      deepy_build.rule_dependency_graph.node)
+        job1 = deepy_build.rule_dependency_graph.node[
+                "deepfield_stream_bps_step5min_compaction"]["object"]
+        self.assertEqual(job1.dataset_name, "stream_bps")
+        self.assertEqual(job1.time_step, "5min")
+        self.assertEqual(job1.file_step, "1d")
+        self.assertEqual(job1.curfew, "6h")
+
+        self.assertIn("deepfield_interface_step1h_compaction",
+                      deepy_build.rule_dependency_graph.node)
+        job1 = deepy_build.rule_dependency_graph.node[
+                "deepfield_interface_step1h_compaction"]["object"]
+        self.assertEqual(job1.dataset_name, "interface")
+        self.assertEqual(job1.time_step, "1h")
+        self.assertEqual(job1.file_step, "1d")
+        self.assertEqual(job1.curfew, "6h")
+
+        self.assertNotIn("deepfield_interface_step1d_compaction",
+                          deepy_build.rule_dependency_graph.node)
+
+        self.assertEqual(len(dependency_jobs), 2)
+        self.assertIn("deepfield_interface_step1h_compaction", dependency_jobs)
+        self.assertIn("deepfield_stream_bps_step5min_compaction", dependency_jobs)
+
+        view1 = deepy_build.rule_dependency_graph.node[
+                "deepfield_stream_bps_step5min_view"]["object"]
+        self.assertEqual(view1.dataset_name, "stream_bps")
+        self.assertEqual(view1.time_step, "5min")
+
+        self.assertEqual(len(dependency_views), 2)
+        self.assertIn("deepfield_stream_bps_step5min_view", dependency_views)
+
+        insert = deepy_build.rule_dependency_graph.node[
+                "deepfield_interface_step1d_insert"]["object"]
+        self.assertEqual(insert.dataset_name, "interface")
+        self.assertEqual(insert.time_step, "1d")
+
+        self.assertEqual(len(dependency_inserts), 3)
+        self.assertIn("deepfield_interface_step1d_insert", dependency_inserts)
+
+        insert_bps = deepy_build.rule_dependency_graph.node[
+                "deepfield_stream_bps_step5min_insert"]["object"]
+        self.assertEqual(insert_bps.get_dependencies()["depends"][0].unexpanded_id,
+                         os.path.join("$(cache_dir)", "bps/minutes",
+                                      "cube.%Y-%m-%d-%H-%M.h5"))
+
+
+    def test_impala_view_update(self):
+        # Given
+        impala_job = deepy.build.deepy_jobs.ImpalaViewUpdate("dataset_name",
+                                                             "5min")
+        build_manager = builder.build.BuildManager([impala_job], [])
+        build = build_manager.make_build()
+
+        build.add_job("deepfield_dataset_name_step5min_view", {})
+
+        # When
+        job_state = build.node["deepfield_dataset_name_step5min_view"]["object"]
+        should_run = job_state.get_should_run(build)
+        expected_command = "update_view.py -i dataset_name --step 300"
+        actual_command = impala_job.get_command(job_state.unique_id, {}, build)
+
+
+        # Then
+        self.assertTrue(should_run)
+        self.assertEqual(actual_command, expected_command)
+
+    def test_insert_cube(self):
+        rules_db = {
+            "cube_big_cube_5min": {
+                "meta": {
+                    "cube_id": "big_cube",
+                },
+                "depends": {
+                    "cubes_from_h5flow_5min": "5min"
+                },
+                "time_step": "5min",
+                "file_step": "5min",
+                "target": "$(cubes_dir)/big_cube/minutes/cube.%Y-%m-%d-%H-%M.h5",
+                "prune_ratio": 150.0
+            },
+        }
+        job = deepy.build.deepy_jobs.InsertCube("big_cube", "5min", rules_db,
+                                                None)
+        job2 = deepy.build.deepy_jobs.InsertCube("stream_bps", "5min", rules_db,
+                                                 "bps/minutes")
+
+
+        # When
+        targets = job.get_targets()
+        dependencies = job.get_dependencies()
+        depends_expander = dependencies["depends"][0]
+        produces_expander = targets["produces"][0]
+
+        build_context = {
+            "start_time": arrow.get("2015-02-01T05:10"),
+            "end_time": arrow.get("2015-02-02T06:15"),
+        }
+
+        build_context2 = {
+            "start_time": arrow.get("2015-02-01T05:10"),
+            "end_time": arrow.get("2015-02-02T06:15"),
+        }
+
+        build_manager = builder.build.BuildManager([job, job2], [])
+        build = build_manager.make_build()
+
+        build.add_job("deepfield_big_cube_step5min_insert", build_context)
+        build.add_job("deepfield_stream_bps_step5min_insert", build_context2)
+
+        build.write_dot("graph.dot")
+
+        expected_command = ("insertcube.py -i {}/big_cube/minutes/"
+                            "cube.2015-02-01-05-10.h5".format(
+                                    deepy.cfg.cubes_dir))
+        expected_command2 = ("insertcube.py -i {}/bps/minutes/"
+                             "cube.2015-02-01-05-10.h5".format(
+                                    deepy.cfg.cache_dir))
+        actual_command = job.get_command(
+                "deepfield_big_cube_step5min_insert_2015-02-01-05-10-00",
+                build_context, build)
+        actual_command2 = job.get_command(
+                "deepfield_stream_bps_step5min_insert_2015-02-01-05-10-00",
+                build_context, build)
+
+        # Then
+        self.assertEqual(job.unexpanded_id,
+                "deepfield_big_cube_step5min_insert")
+        self.assertEqual(job.get_expandable_id(),
+                "deepfield_big_cube_step5min_insert_%Y-%m-%d-%H-%M-%S")
+        self.assertEqual(job.file_step, "5min")
+        self.assertEqual(actual_command, expected_command)
+        self.assertEqual(actual_command2, expected_command2)
+        self.assertEqual(depends_expander.file_step, "5min")
+        self.assertEqual(depends_expander.unexpanded_id,
+                "$(cubes_dir)/big_cube/minutes/cube.%Y-%m-%d-%H-%M.h5")
+        self.assertEqual(produces_expander.file_step, "5min")
+        self.assertEqual(produces_expander.time_step, "5min")
+        self.assertEqual(produces_expander.unexpanded_id,
+                "deepfield_big_cube_step5min_%Y-%m-%d-%H-%M")
+        self.assertEqual(produces_expander.dataset_name, "big_cube")
+        self.assertEqual(produces_expander.compacted, False)
+
+class SpecificJobsTest(unittest.TestCase):
+
+    def _make_deepy_build(self, start_job):
+        build_manager = deepy.build.deepy_build.DeepyBuildManager()
+        build = build_manager.make_build()
+        build_context = {'start_time': arrow.get('2015-01-01')}
+        if build.rule_dependency_graph.is_meta(start_job):
+            build.add_meta(start_job, build_context)
+        else:
+            build.add_job(start_job, build_context)
+        return build, build_context
+
+    @testing.unit
+    @mock_infrastructure('comcast2', config_only=True, exclude_dimensions=True)
+    def test_backbone_5min(self):
+
+        # Given
+        build, build_context = self._make_deepy_build("cubes_5min")
+        job = build.rule_dependency_graph.node['cube_backbone_small_5min']['object']
+
+
+        # When
+        job_states = job.expand(build_context)
+        commands = map(lambda x: x.get_command(build), job_states)
+
+        # Then
+        self.assertEquals(1, len(commands))
+        command = commands[0]
+        cachedir = deepy.cfg.cache_dir
+
+        self.assertEquals("cube_op.py  -o {cachedir}/cubes/backbone_small/minutes/cube.2015-01-01-00-00.h5 -t 300 -A group_other(origin_asn.remote,null,<c.top_origins>) --arg_join c.top_origins='{cachedir}/cubes/bgp_origin_asn.local/months/top_list.2015-01.json.gz' -A group_other(origin_asn.local,null,<c.top_origins>)   -A group_other(aspaths.remote,null,<c.top_aspaths>) --arg_join c.top_aspaths='{cachedir}/cubes/aspaths.remote2/months/top_list.2015-01.json.gz' -A group_other(aspaths.local,null,<c.top_aspaths>) -A group_other(sites,null,<c.top_sites>) -A group_other(company,null,<c.top_companies>) --arg_join c.top_companies='{cachedir}/cubes/company2/months/top_list.2015-01.json.gz' --arg_join c.top_sites='{cachedir}/cubes/sites2/months/top_list.2015-01.json.gz' -O timestamp,path,origin_asn.local,origin_asn.remote,pops.local,pops.remote,peer.local,peer.remote,aspaths.local,aspaths.remote,market.local,market.remote,router.local,router.remote,interfaces.local,interfaces.remote,class.local,class.remote,category,cdn,sites,protocol,ip_version,service,dscp,application_port {cachedir}/cubes/backbone/minutes/cube.2015-01-01-00-00.h5".format(cachedir=cachedir), command)
+
+
+    @testing.unit
+    @mock_infrastructure('comcast2', config_only=True, exclude_dimensions=True)
+    def test_drill_small_5min(self):
+
+        # Given
+        build, build_context = self._make_deepy_build('cube_drill_small_5min')
+        job = build.rule_dependency_graph.node['cube_drill_small_5min']['object']
+
+        # When
+        job_states = job.expand(build_context)
+        commands = map(lambda x: x.get_command(build), job_states)
+
+        # Then
+        self.assertEquals(1, len(commands))
+
+
+    @testing.unit
+    @mock_infrastructure('comcast2', config_only=True, exclude_dimensions=True)
+    def test_meta(self):
+
+        # Given
+        build, build_context = self._make_deepy_build('cubes_hour')
+
+        # When
+        job_states = []
+        for node_id, node in build.node.iteritems():
+            node_data = node['object']
+            if isinstance(node_data, builder.jobs.JobState):
+                job_states.append(node_data)
+        commands = map(lambda x: x.get_command(build), job_states)
+
+        # Then
+        self.assertGreater(len(commands), 1)
+
+    @testing.unit
+    @mock_infrastructure('comcast2', config_only=True, exclude_dimensions=True)
+    def test_flow(self):
+        # Given
+        build_manager = deepy.build.deepy_build.DeepyBuildManager()
+        build = build_manager.make_build()
+        job = build.rule_dependency_graph.get_job('h5flow')
+        build_context = {'start_time': arrow.get('2015-01-01')}
+        build.add_meta("cubes_5min", build_context)
+
+        # Create dependencies
+        for dep in build.rule_dependency_graph.get_dependy_ids('h5flow'):
+            substituted_path = deepy.build.deepy_util.deepy_substitution(dep, deepy.cfg)
+            substituted_path = build_context['start_time'].strftime(substituted_path)
+            deepy.util.ensure_directory(os.path.dirname(substituted_path))
+            with open(substituted_path, 'w') as f:
+                f.write("foo")
+
+        # Create target
+        with open(build_context['start_time'].strftime(deepy.build.deepy_util.deepy_substitution('$(h5flow_dir)/flow.%Y-%m-%d-%H-%M.h5', deepy.cfg)), 'w') as f:
+            f.write('foo')
+
+        # When
+        job_states = job.expand(build_context)
+        job_state = job_states[0]
+
+        # Then
+        build.write_dot("graph.dot")
+        self.assertFalse(job_state.get_should_run_immediate(build))
+
+
+    @testing.unit
+    @mock_infrastructure('comcast2', config_only=True, exclude_dimensions=True)
+    def test_cubes_from_h5flow_marker(self):
+        # Given
+        build_manager = deepy.build.deepy_build.DeepyBuildManager()
+        build = build_manager.make_build()
+        job = build.rule_dependency_graph.get_job('cubes_from_h5flow_5min')
+        build_context = {'start_time': arrow.get('2015-01-01')}
+        build.add_meta("cubes_5min", build_context)
+
+        # When
+        job_states = job.expand(build_context)
+        commands = map(lambda x: x.get_command(build), job_states)
+
+        # Then
+        self.assertEquals(commands[0], 'cubes_from_h5flow.py  -B -t 2015-01-01-00-00 -m {cubedir}/cubes_from_h5flow_markers/cubes_from_h5flow_5min/2015-01-01-00-00.marker'.format(cubedir=deepy.cfg.cubes_dir))
+
+    @testing.unit
+    def test_past_dns_flow(self):
+        # Given
+        build_manager = deepy.build.deepy_build.DeepyBuildManager()
+        build = build_manager.make_build()
+        jobs = build.rule_dependency_graph.get_job("classify_h5flow")
+        build_context = {"start_time": arrow.get("2015-01-01"),
+                         "end_time": arrow.get("2015-01-01")}
+
+        # When
+        build.add_job("classify_h5flow", build_context)
+        jobs_states = jobs.expand(build_context)
+        predecessors = build.predecessors(jobs_states[0].unique_id)
+        ancestors = []
+        for predecessor in predecessors:
+            ancestors = ancestors + build.predecessors(predecessor)
+
+        # Then
+        self.assertEqual(len(ancestors), 5)
+
+class ImpalaTimePartitionedTargetTest(unittest.TestCase):
+
+    def _get_test_targets(self):
+        targets = [
+            deepy.build.deepy_targets.ImpalaTimePartitionedTarget('foo', 'foo-12-25-20', {'start_time': arrow.get('2014-01-01'), 'end_time': arrow.get('2014-01-02')}, 'foo', '1d')
+        ]
+        snakebite_client = mock.Mock()
+        snakebite_client.ls = mock.Mock(return_value=[{
+            'modification_time': 15000,
+            'length': 50
+        }])
+
+        mock_table = mock.Mock()
+        mock_table.location = "location"
+        def mod_target(target):
+            target._get_snakebite_client = mock.Mock(return_value=snakebite_client)
+            target.get_table = mock.Mock(return_value=mock_table)
+        map(mod_target, targets)
+        return targets
+
+    def test_get_bulk_exists_mtime(self):
+        # Given
+        targets = self._get_test_targets()
+
+        # When
+        results = deepy.build.deepy_targets.ImpalaTimePartitionedTarget.get_bulk_exists_mtime(targets)
+
+        # Then
+        self.assertEquals( results, {
+            'foo-12-25-20': {
+                'exists': True,
+                'mtime': 15000
+            }
+        })
+
+    def test_get_mtime(self):
+        # Given
+        target = self._get_test_targets()[0]
+
+        # When
+        mtime = target.get_mtime()
+
+        # Then
+        self.assertEquals(15000, mtime)
+
+    def test_get_exists(self):
+        # Given
+        target = self._get_test_targets()[0]
+
+        # When
+        exists = target.get_exists()
+
+        # Then
+        self.assertEquals(True, exists)
+
+
+class DeepyBuildManagerTest(unittest.TestCase):
+
+    def test_construction(self):
+        # Given
+        build_manager = deepy.build.deepy_build.DeepyBuildManager()
+
+        # Then
+        build_manager.rule_dependency_graph.node["cube_drill_small_5min"]
+
+    def test_add_job(self):
+        # Given
+        build_manager = deepy.build.deepy_build.DeepyBuildManager()
+        build_context = {
+            'start_time': arrow.get('2015-01-01-00-00'),
+            'end_time': arrow.get('2015-01-01-00-10')
+        }
+        build = build_manager.make_build()
+
+        # When
+        build.add_job('cube_drill_small_5min', build_context)
+
+        # Then
+        self.assertIn('cube_drill_small_5min_2015-01-01-00-00-00', build.node)

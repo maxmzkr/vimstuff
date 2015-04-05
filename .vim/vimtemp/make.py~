@@ -1,89 +1,296 @@
-"""Runs the commands for this package"""
+#!/usr/bin/env python
+# PYTHON_ARGCOMPLETE_OK
 
-import argparse
-import os
 import sys
+import os
+import time
+import json
+import re
+import argparse
+import copy
+import difflib
+import arrow
 
-from first_start.program_list import ProgramList
+import deepy.util
+import deepy.dimensions
+import deepy.cfg
+import deepy.log as log
 
-def from_folder(args):
-    """Takes in the args passed and installs the folders"""
-    current_directory = os.getcwd()
-    folders = args.folder
+import deepy.standard_drill_rules
+import deepy.make_functions
+import deepy.query_rules
+import deepy.bundle_rules
 
-    file_list = []
+from deepy.build.deepy_util import construct_rules
 
-    for folder in folders:
-        folder_path = os.path.join(current_directory, folder)
-        for file_path in os.listdir(folder_path):
-            file_path = os.path.join(current_directory, file_path)
-            file_list.append(file_path)
+def substitute_target(target, timestamp):
+    substituted = _basic_subst(target, timestamp)
+    return substituted
 
-    program_list = ProgramList.from_file_list(file_list)
-    program_list.install()
+def substitute_job(job, timestamp):
+    substituted = _basic_subst(job, timestamp)
+    return substituted
 
-def from_file(args):
-    """Takes in the args passed and install the files"""
-    current_directory = os.getcwd()
-    files = args.file
+def construct_backbone_dependent_rules(rules):
+    deepy.util.update_recursive(rules, deepy.query_rules.rules["extra_rules"])
+    rules["cubes_hour"]["depends"]["cube_backbone_hour"] = "1h"
+    rules["cubes_hour"]["depends"]["cube_backbone_small_hour"] = "1h"
+    rules["cubes_hour"]["depends"]["cube_backbone_small_bgp_hour"] = "1h"
+    rules["cubes_5min"]["depends"]["cube_backbone_small_5min"] = "5min"
+    rules["cubes_5min"]["depends"]["cube_backbone_small_bgp_5min"] = "5min"
+    rules["drill_rules"] = rules.get("drill_rules", {})
+    rules["drill_rules"]["depends"] = rules["drill_rules"].get("depends", {})
+    rules["drill_rules"]["depends"]["bundle2_h5backbone_summary"] = "month"
+    rules["drill_rules_month"] = rules.get("drill_rules_month", {})
+    rules["drill_rules_month"]["depends"] = rules["drill_rules_month"].get("depends", {})
+    rules["drill_rules_month"]["depends"]["bundle2_h5backbone_summary"] = "month"
+    rules["drill_rules_month_summary"] = rules.get("drill_rules_month_summary", {})
+    rules["drill_rules_month_summary"]["depends"] = rules["drill_rules_month_summary"].get("depends", {})
+    rules["drill_rules_month_summary"]["depends"]["bundle2_h5backbone_summary"] = "month"
+    rules["cubes_month"]["depends"]["cube_bgp_origin_asn_local_month_top_list"] = "month"
 
-    file_list = []
+def construct_per_deploy_rules(rules):
+    if deepy.cfg.has_backbone:
+        construct_backbone_dependent_rules(rules)
+    else:
+        delete_list = [
+           "bundle2_h5backbone_summary",
+           "drill_day_asn_eval",
+           "drill_day_asn_eval_summary",
+           "drill_month_asn_eval",
+           "drill_month_asn_eval_summary",
+           "drill_month_asn_eval_cost",
+           "drill_month_asn_eval_summary_cost"
+        ]
+        for delete_item in delete_list:
+            rules.pop(delete_item, None)
 
-    for program_file in files:
-        file_path = os.path.join(current_directory, program_file)
-        file_list.append(file_path)
+    if not deepy.cfg.slice_config.get("enable_bgp_drills"):
+        cubes_month = rules['cubes_month']
+        for delete_item in ['cube_bgp_origin_asn_local_month', 'cube_bgp_origin_asn_local_month_top_list']:
+            del cubes_month['depends'][delete_item]
 
-    program_list = ProgramList.from_file_list(file_list)
-
-    program_list.install()
-
-def folder_parse_args(subparsers):
-    """Parses the arguments passed to the folder command"""
-    folder_parser = subparsers.add_parser("folder")
-    folder_parser.add_argument(
-            "folder",
-            metavar="F",
-            type=str,
-            nargs="+",
-            help="A folder full of .program files to install")
-    folder_parser.set_defaults(func=from_folder)
-
-def file_parse_args(subparsers):
-    """Parses the arguments passed to the folder command"""
-    file_parser = subparsers.add_parser("file")
-    file_parser.add_argument(
-            "file",
-            metavar="f",
-            type=str,
-            nargs="+",
-            help="A .program file that should be installed")
-    file_parser.set_defaults(func=from_file)
-
-def parse_args():
-    """Parses all the args"""
-    parser = argparse.ArgumentParser(
-            description="Install things easily")
-
-    subparsers = parser.add_subparsers(
-            title="commands",
-            description="valid commands",
-            help="additional help")
-
-    folder_parse_args(subparsers)
-    file_parse_args(subparsers)
-
-    sys_args = sys.argv[1:]
-
-    args = parser.parse_args(sys_args)
-
-    return args
+    archive_h5dns = deepy.util.vm_or_slice_config_get("archive_h5dns")
+    archive_h5flow = deepy.util.vm_or_slice_config_get("archive_h5flow")
+    archive_flow = deepy.util.vm_or_slice_config_get("archive_flow")
+    archive_dnsflow = deepy.util.vm_or_slice_config_get("archive_dnsflow")
+    flowd_options = deepy.util.vm_or_slice_config_get("flowd_options")
 
 
-def main():
-    """Simply runs the program"""
-    args = parse_args()
+    if flowd_options:
+        num_flowd = flowd_options.get("num", 1)
+        if num_flowd > 1:
+            template = rules["flow"]
+            dnsflow_template = rules["dnsflow"]
+            del rules["h5flow"]["depends"]["flow"]
+            del rules["h5dns"]["depends"]["dnsflow"]
+            for i in range(num_flowd):
+                name = "flow%i" % (i)
+                rules[name] = template.copy()
+                rules[name]["target"] = "%s.%i" % (template["target"], i)
+                rules["h5flow"]["depends"][name] = "5min"
 
-    args.func(args)
+                name = "dnsflow%i" % (i)
+                rules[name] = dnsflow_template.copy()
+                rules[name]["target"] = "%s.%i" % (dnsflow_template["target"], i)
+                rules["h5dns"]["depends"][name] = "5min"
 
-if __name__ == "__main__":
-    main()
+    if archive_flow:
+        rules["h5flow"]["local_only"] = False
+    if archive_h5flow:
+        rules["cubes_from_h5flow_5min"]["local_only"] = False
+        rules["cubes_from_h5flow_ipcount_hour"]["local_only"] = False
+        rules["cubes_stream_bps_5min"]["local_only"] = False
+        rules["searchips"]["local_only"] = False
+    if archive_h5dns and archive_h5flow:
+        rules["classify_h5flow"]["local_only"] = False
+    if archive_dnsflow:
+        rules["h5dns"]["local_only"] = False
+
+    if not deepy.util.vm_or_slice_config_get("dnsflow_enabled"):
+        rules["h5dns"]["depends"] = {}
+
+    dname = os.path.dirname(deepy.cfg.deployment_makefile)
+    if not os.path.exists(deepy.cfg.deployment_makefile):
+        return
+
+    sys.path.insert(0, dname)
+
+    try:
+        import deployment_makefile as dm
+        reload(dm)
+    except ImportError as e:
+        log.warning('construct_per_deploy_rules-import-error: %s', str(e))
+        dm = None
+
+    if dm and hasattr(dm, 'modify_rules'):
+        try:
+            dm.modify_rules(rules)
+        except Exception as e:
+            log.warning('construct_per_deploy_rules-exception: %s', str(e))
+
+def load_query_rules():
+    reload(deepy.query_rules)
+    make_config = copy.deepcopy(deepy.query_rules.rules)
+    return make_config
+
+def load_make_rules():
+    rules = {}
+    make_rules = load_query_rules()['make_rules']
+    deepy.util.update_recursive(rules, make_rules)
+
+    # load slice as well
+    slice_rules = deepy.cfg.slice_config.get('make_rules')
+    if slice_rules:
+        slice_rules = copy.deepcopy(slice_rules)
+        deepy.util.update_recursive(rules, slice_rules)
+
+    return rules
+
+def make_drill_rules(rules):
+    def sep(pred):
+        summ = []
+        drill = []
+        summ_part = []
+        drill_part = []
+        for x, rdef in rules.iteritems():
+            if rdef.get('auto_add_to_build_rules', True):
+                if x.startswith(pred):
+                    if x.endswith('_summary'):
+                        if '_part_' in x:
+                            summ_part.append(x)
+                        else:
+                            summ.append(x)
+                    else:
+                        if '_part' in x:
+                            drill_part.append(x)
+                        else:
+                            drill.append(x)
+
+        return summ, drill, summ_part, drill_part
+
+    day_summary, day_drill, day_summ_part, day_drill_part = sep('drill_day')
+    month_summary, month_drill, month_summ_part, month_drill_part = sep('drill_month')
+
+    day = day_summary + day_drill
+    day.sort()
+
+    month = month_summary + month_drill
+    month.sort()
+
+    depends_day = {d:'1d' for d in day}
+    depends_month = {m:'month' for m in month}
+    depends_all = {}
+    depends_all.update(depends_day)
+    depends_all.update(depends_month)
+    rules["drill_rules"] = rules.get("drill_rules", {})
+    rules["drill_rules"]["depends"] = rules["drill_rules"].get("depends", {})
+    rules["drill_rules"]["depends"].update(depends_all)
+    rules["drill_rules_day"] = rules.get("drill_rules_day", {})
+    rules["drill_rules_day"]["depends"] = rules["drill_rules_day"].get("depends", {})
+    rules["drill_rules_day"]["depends"].update(depends_day)
+    rules["drill_rules_month"] = rules.get("drill_rules_month", {})
+    rules["drill_rules_month"]["depends"] = rules["drill_rules_month"].get("depends", {})
+    rules["drill_rules_month"]["depends"].update(depends_month)
+
+    depends_day_summary = {d: '1d' for d in day_summary}
+    depends_day_drill = {d: '1d' for d in day_drill}
+    rules["drill_rules_day_summary"] = rules.get("drill_rules_day_summary", {})
+    rules["drill_rules_day_summary"]["depends"] = rules["drill_rules_day_summary"].get("depends", {})
+    rules["drill_rules_day_summary"]["depends"].update(depends_day_summary)
+    rules["drill_rules_day_drill"] = rules.get("drill_rules_day_drill", {})
+    rules["drill_rules_day_drill"]["depends"] = rules["drill_rules_day_drill"].get("depends", {})
+    rules["drill_rules_day_drill"]["depends"].update(depends_day_drill)
+
+    depends_month_summary = {m: "month" for m in month_summary}
+    depends_month_drill = {m: "month" for m in month_drill}
+    rules["drill_rules_month_summary"] = rules.get("drill_rules_month_summary", {})
+    rules["drill_rules_month_summary"]["depends"] = rules["drill_rules_month_summary"].get("depends", {})
+    rules["drill_rules_month_summary"]["depends"].update(depends_month_summary)
+    rules["drill_rules_month_drill"] = rules.get("drill_rules_month_drill", {})
+    rules["drill_rules_month_drill"]["depends"] = rules["drill_rules_month_drill"].get("depends", {})
+    rules["drill_rules_month_drill"]["depends"].update(depends_month_drill)
+
+    if day_summ_part:
+        depends_day_summ_part = {d: '1d' for d in day_summ_part}
+        depends_day_drill_part = {d: '1d' for d in day_drill_part}
+        rules["drill_rules_day_part_summary"] = rules.get("drill_rules_day_part_summary", {})
+        rules["drill_rules_day_part_summary"]["depends"] = rules["drill_rules_day_part_summary"].get("depends", {})
+        rules["drill_rules_day_part_summary"]["depends"].update(depends_day_summ_part)
+        rules["drill_rules_day_part_drill"] = rules.get("drill_rules_day_part_drill", {})
+        rules["drill_rules_day_part_drill"]["depends"] = rules["drill_rules_day_part_drill"].get("depends", {})
+        rules["drill_rules_day_part_drill"]["depends"].update(depends_day_drill_part)
+
+        depends_month_summ_part = {m: "month" for m in month_summ_part}
+        depends_month_drill_part = {m: "month" for m in month_drill_part}
+        rules["drill_rules_month_part_summary"] = rules.get("drill_rules_month_part_summary", {})
+        rules["drill_rules_month_part_summary"]["depends"] = rules["drill_rules_month_part_summary"].get("depends", {})
+        rules["drill_rules_month_part_summary"]["depends"].update(depends_month_summ_part)
+        rules["drill_rules_month_part_drill"] = rules.get("drill_rules_month_part_drill", {})
+        rules["drill_rules_month_part_drill"]["depends"] = rules["drill_rules_month_part_drill"].get("depends", {})
+        rules["drill_rules_month_part_drill"]["depends"].update(depends_month_drill_part)
+
+def make_aggregate_dimension_rules(rules):
+    slice_config = deepy.cfg.slice_config
+
+    aggregate_dimensions = slice_config.get('aggregate_dimensions', [])
+    aggregate_dimension_rules = []
+    for aggregate_dimension in aggregate_dimensions:
+        input_dimension_names = aggregate_dimension.get('input_dimension_names')
+        if input_dimension_names is None:
+            log.error("Aggregate dimension is missing list of input dimensions; skipping.")
+            continue
+
+        aggregator = aggregate_dimension.get('aggregator')
+        if not aggregator:
+            log.error("Aggregate dimension is missing aggregator; skipping.")
+            continue
+
+        output_dimension_name = aggregate_dimension.get('output_dimension_name')
+        if not output_dimension_name:
+            log.error("Aggregate dimension is missing output dimension name; skipping.")
+            continue
+
+        rule_id = "aggregate_dimension_{}".format(output_dimension_name)
+
+        command = ["aggregation_connector.py", "--aggregator", aggregator]
+        for input_dimension_name in input_dimension_names:
+            command += ["-D", input_dimension_name]
+
+        rules[rule_id] = {
+            "recipe": [" ".join(command)],
+            "target": os.path.join(deepy.cfg.dimensions_dir, "{}.json.gz".format(output_dimension_name)),
+            "file_step": None,
+            "time_step": 300
+        }
+        aggregate_dimension_rules.append(rule_id)
+
+    rules["aggregate_dimensions"] = {'prerequisites_recurse': aggregate_dimension_rules}
+
+def construct_rules():
+    rules = {}
+    template = MakeruleTemplateStandardDrill()
+
+    # get bundle rules
+    template_rules = template.get_rules()
+    rules.update(copy.deepcopy(template_rules))
+
+    # query_rules make_rules
+    rules.update(load_make_rules())
+
+    deepy.bundle_rules.modify_bundles(rules)
+    deepy.bundle_rules.make_bundles(rules)
+
+    construct_per_deploy_rules(rules)
+
+    # make a target to be called from cron
+    make_drill_rules(rules)
+
+    make_aggregate_dimension_rules(rules)
+
+    retval = {}
+    for rule_id, rule in rules.iteritems():
+        if 'prerequisites' in rule:
+            log.warn("Excluding rule with id {} because it uses old style of declaring dependencies".format(rule_id))
+        retval[rule_id] = rule
+    return retval

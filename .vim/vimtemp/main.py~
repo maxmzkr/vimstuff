@@ -1,0 +1,68 @@
+import argcomplete
+import argparse
+
+import deepy.build.deepy_build
+
+from deepy.build.deepy_util import construct_rules
+import deepy.log
+import deepy.cfg
+
+def get_parser():
+    p = argparse.ArgumentParser()
+    p.add_argument(dest='rule_name', nargs='*') # do not add rule completer before deepy.cfg.init
+    p.add_argument('--all_rules', action='store_true')
+    p.add_argument('-d', dest='deployment_id')
+    p.add_argument('-l', dest='log_cfg')
+    p.add_argument('-L', dest='force_local', action='store_true')
+    p.add_argument('-v', dest='verbose', action='store_true')
+    return p
+
+def parse_args():
+    parser = get_parser()
+
+    argcomplete.autocomplete(parser)
+
+    return parser.parse_args()
+
+def main():
+    args = parse_args()
+    if args.deployment_id:
+        deepy.cfg.init(args.deployment_id)
+    if args.log_cfg:
+        deepy.log.init(level=args.log_cfg)
+    if args.force_local:
+        deepy.cfg.force_remote = 'local'
+
+    rules_db = construct_rules()
+    build_manager = deepy.build.deepy_build.DeepyBuildManager()
+    rule_dependency_graph = build_manager.rule_dependency_graph
+
+    if args.all_rules:
+        args.rule_name = [x.unexpanded_id for x in rule_dependency_graph.jobs + rule_dependency_graph.metas]
+        for rule_id in rules_db:
+            if rule_id not in rule_dependency_graph:
+                args.rule_name.append(rule_id)
+
+    if args.rule_name:
+        for rule_name in args.rule_name:
+            print rule_name
+            if rule_name in rule_dependency_graph:
+                job = rule_dependency_graph.node[rule_name]
+            else:
+                job = deepy.build.deepy_jobs.DeepyDictJob(
+                    rule_name, rules_db, config=rule_dependency_graph.config)
+            print job
+            print ""
+    else:
+        rules = rule_dependency_graph.jobs + rule_dependency_graph.metas
+        for rule_id in rules_db:
+            if rule_id not in rule_dependency_graph:
+                rules.append(deepy.build.deepy_jobs.DeepyDictJob(
+                                 rule_id, rules_db, config=rule_dependency_graph.config))
+
+        rules = sorted(rules, key=lambda x: x.unexpanded_id)
+        for job in rules:
+            print '  %s' % (job.unexpanded_id)
+            if args.verbose:
+                print job
+                print

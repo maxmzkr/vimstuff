@@ -1,0 +1,42 @@
+#ifndef OS_PAGE_TABLE_H_
+#define OS_PAGE_TABLE_H_
+
+#include <vector>
+#include "./page_information_entry.h"
+#include "./vm_pager.h"
+
+class OSPageTable {
+ public:
+  explicit OSPageTable(page_table_t* page_table_base_register, pid_t pid);
+  // Deletes the page table
+  // removes the pid from the pie.
+  // If no more pid's are using the pie, then the pie is deleted from the system
+  ~OSPageTable();
+
+  // Getters
+  page_table_t* page_table_base_register();
+
+  // Returns the pie associated with the virtual page address
+  // Often used for page fault
+  Pie* get_pie(void* addr);
+
+  // Adds the pie to the table. Becomes the last element in the page table. If
+  // the pie is shared then it set's the read and write bits and the physical
+  // page based on the values that the other shares have.
+  void add_pie(Pie* pie, bool shared);
+
+  // Takes up the next virtual address.
+  // Gets a new pie based on share id and add's it to the table
+  // If the pie is being shared then an already existing pie is found in the
+  // share table.
+  // If there is no space on disk then a nullptr is returned.
+  void* extend(unsigned int share_id);
+
+ private:
+  page_table_t* page_table_base_register_;
+  std::vector<Pie*> pie_list_;
+  const void* current_virtual_address_ = VM_ARENA_BASEADDR;
+  pid_t pid_;
+};
+
+#endif  // OS_PAGE_TABLE_H_

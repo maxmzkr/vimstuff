@@ -1,0 +1,106 @@
+"""Used to wrap normal expanders with deepy specific functionality
+
+most likely use of all of them is to remove all the $(deepy_var)'s to
+what they are supposed to be
+"""
+
+import arrow
+
+import deepy.impala.tables as impala_tables
+import deepy.build.deepy_util
+
+import builder.expanders
+
+def deepy_convert_class(expanded_targets):
+    """Removes the $(deepy_var)'s from all of the target's ids"""
+    for expanded_target in expanded_targets:
+        expanded_target.unique_id = deepy.build.deepy_util.deepy_substitution(
+                expanded_target.unique_id)
+
+    return expanded_targets
+
+class DeepyExpander(builder.expanders.Expander):
+    """Wraps the expander and converts all of the ids of the
+    expanded targets and converts the $(deepy_var)'s
+    """
+    def expand(self, build_context):
+        expanded_targets = super(DeepyExpander, self).expand(build_context)
+        return deepy_convert_class(expanded_targets)
+
+class DeepyTimestampExpander(builder.expanders.TimestampExpander):
+    """Wraps the timestamp expander and converts all of the ids of the
+    expanded targets and converts the $(deepy_var)'s
+    """
+<<<<<<< HEAD
+    def __init__(self, base_class, unexpanded_id, file_step, time_step, past=0,
+                 edge_data=None, node_data=None, ignore_mtime=False,
+                 ignore_produce=False, config=None, meta=None):
+        super(DeepyTimestampExpander, self).__init__(
+                base_class, unexpanded_id, file_step, past=past,
+                edge_data=edge_data, node_data=node_data,
+                ignore_mtime=ignore_mtime, ignore_produce=ignore_produce,
+                config=config, meta=meta)
+        self.time_step = time_step
+
+    @staticmethod
+    def expand_build_context(build_context, unexpanded_id, file_step, past=0):
+        if build_context.get("range_num") is not None:
+            range_num = build_context.get("range_num")
+            range_num = int(range_num)
+            timedelta = deepy.timerange.convert_to_timedelta(file_step)
+            group_timedelta = timedelta * (range_num)
+            end_time = build_context.get("end_time", arrow.get())
+            end_datetime = end_time.datetime + timedelta
+            start_datetime = end_datetime - group_timedelta
+            start_time = arrow.get(start_datetime)
+            end_time = arrow.get(end_datetime)
+            del build_context["range_num"]
+
+            build_context["start_time"] = start_time
+            build_context["end_time"] = end_time
+
+        return builder.expanders.TimestampExpander.expand_build_context(
+                build_context, unexpanded_id, file_step, past=past)
+
+=======
+>>>>>>> origin/master
+    def expand(self, build_context):
+        expanded_targets = super(
+                DeepyTimestampExpander, self).expand(build_context)
+        return deepy_convert_class(expanded_targets)
+
+class DeepyImpalaExpander(DeepyTimestampExpander):
+    """Wraps the timestamp expander and converts everything to a impala target
+    which is not supproted by the timestamp expander
+    """
+    def __init__(self, unexpanded_id, time_step, file_step, dataset_name,
+            compacted=False, base_class=None, past=0, edge_data=None,
+            node_data=None, ignore_mtime=False, ignore_produce=False,
+            config=None):
+        if base_class is None:
+            base_class = deepy.build.deepy_targets.ImpalaTimePartitionedTarget
+
+        self.compacted = compacted
+        self.dataset_name = dataset_name
+        self.time_step = time_step
+        self.file_step = file_step
+
+        super(DeepyImpalaExpander, self).__init__(
+                base_class, unexpanded_id, file_step, time_step, past=past,
+                edge_data=edge_data, node_data=node_data,
+                ignore_mtime=ignore_mtime, ignore_produce=ignore_produce,
+                config=config)
+
+    def expand(self, build_context):
+        expanded_dict = self.expand_build_context(build_context,
+                self.unexpanded_id, self.file_step, past=self.past)
+        expanded_nodes = []
+        for expanded_id, new_build_context in expanded_dict.iteritems():
+            expanded_node = self.base_class(
+                    self.unexpanded_id, expanded_id, new_build_context,
+                    self.dataset_name, self.time_step, config=self.config,
+                    compacted=self.compacted)
+
+            expanded_nodes.append(expanded_node)
+
+        return expanded_nodes

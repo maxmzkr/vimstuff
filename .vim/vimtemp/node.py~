@@ -1,0 +1,133 @@
+"""Simply holds the data for a node"""
+
+import copy
+
+import deepy.cfg
+import deepy.timerange
+
+class Node(object):
+    """A node is something that will appear on the rule dependency graph
+
+    it can be expanded (create instances) which will appear on the build graph
+
+    A node class is simply a place holder for static data for a node, whether
+    it be a target or a job
+
+    A node instance holds more important data, for targets it's mtime and
+    existances, for jobs it's staleness etc """
+    unexpanded_id = "node"
+    required_context = ["blank"]
+
+    def __init__(self, unique_id, build_context, config=None):
+        if config is None:
+            config = {}
+        self.unique_id = unique_id
+        self.config = config
+        self.build_context = copy.copy(build_context)
+        self.expanded_directions = {"up": False, "down": False}
+
+    @classmethod
+    def expand(cls, build_context, config=None, unexpanded_id=None):
+        """Used to expand the node using a build context returns a list of
+        nodes
+
+        a typical expansion is a timestamp expansion where build
+        context would use start time and end time and the node
+        would expand from there
+        """
+        if unexpanded_id is None:
+            unexpanded_id = cls.unexpanded_id
+
+        expander = deepy.build.expanders.Expander(
+                cls, unexpanded_id, config=config)
+        expanded_nodes = expander.expand(build_context)
+        return expanded_nodes
+
+    @staticmethod
+    def get_enable(config=None):
+        """Used to determine if the node should end up in the build graph
+        or not. For example, when the deployment doesn't have backbone
+        no backbone node should be in the graph
+        """
+        if config is None:
+            config = {}
+        return True
+
+class TimestampExpandedNode(Node):
+    """Used to abstract out the work that is required to expand a node based
+    off of timestamps
+    """
+    unexpanded_id = "timestamp_expanded_node-%Y-%m-%d-%H-%M"
+    file_step = "5min"
+    required_context = ["start_time", "end_time"]
+
+    @classmethod
+    def expand(cls, build_context, config=None, unexpanded_id=None):
+        """Expands the node based off of the file step and the start and
+        end times
+        """
+        if unexpanded_id is None:
+            unexpanded_id = cls.unexpanded_id
+        copy_build_context = copy.copy(build_context)
+        expander = deepy.build.expanders.TimestampExpander(
+                cls, unexpanded_id, cls.file_step, config=config)
+        expanded_nodes = expander.expand(copy_build_context)
+        return expanded_nodes
+
+
+class TimestampExpandedNodeTester01(TimestampExpandedNode):
+    """used to test that the unexpanded_id is expanded correctly"""
+    unexpanded_id = "timestamp_expanded_node_01-%Y-%m-%d-%H-%M"
+    file_step = "7min"
+
+    @staticmethod
+    def get_enable(config=None):
+        if config is None:
+            config = {}
+        return False
+
+class TimestampExpandedNodeTester02(TimestampExpandedNode):
+    """used to test that the unexpanded_id is expanded correctly"""
+    unexpanded_id = "timestamp_expanded_node_02-%Y-%m-%d-%H-%M"
+    file_step = "3hour"
+
+    @staticmethod
+    def get_enable(config=None):
+        if config is None:
+            config = {}
+        return True
+
+class BackboneNode(Node):
+    """Used to be able to inherit the rule that enables backbone"""
+    unexpanded_id = "backbone_node"
+
+    @staticmethod
+    def get_enable(config=None):
+        if config is None:
+            config = {}
+        return config.get("has_backbone", False)
+
+class BackboneNodeTester01(BackboneNode):
+    """Used to test that the enable is correct for the backbone node"""
+    unexpanded_id = "backbone_node_01"
+
+    @classmethod
+    def expand(cls, build_context, config=None, unexpanded_id=None):
+        if unexpanded_id is None:
+            unexpanded_id = cls.unexpanded_id
+        if config is None:
+            config = {}
+        return [cls(unexpanded_id + "resolved", build_context)]
+
+class BackboneNodeTester02(BackboneNode):
+    """Used to test that the enable is correct for the backbone node"""
+    unexpanded_id = "backbone_node_02"
+
+    @classmethod
+    def expand(cls, build_context, config=None, unexpanded_id=None):
+        if unexpanded_id is None:
+            unexpanded_id = cls.unexpanded_id
+        if config is None:
+            config = {}
+        return [cls(unexpanded_id + str(cls.get_enable(config=config)),
+                    build_context)]

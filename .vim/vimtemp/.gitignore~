@@ -1,2 +1,8 @@
-MineFile
-test
+*.swp
+*.swo
+*.o
+*.out
+*.orig
+.tags
+.__afs*
+test_dinker*

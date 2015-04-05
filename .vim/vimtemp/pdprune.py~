@@ -1,0 +1,290 @@
+#!/usr/bin/env python
+
+import argparse
+import sys
+
+import deepy.prune
+import deepy.log as log
+import deepy.util
+import deepy.build.deepy_util
+
+def parse_args():
+    p = argparse.ArgumentParser(description='Manage Deepfield file-systems and data deletion.')
+    p.add_argument('-H', '--hdfs', help="Prune HDFS instead of /pipedream")
+    p.add_argument('-v', '--verbose', action='store_true')
+
+    p.add_argument('-r', '--report', action='store_true', help="Collect information about file system")
+    p.add_argument('-w', '--walk', action='store_true', help="Walk dirs instead of using du")
+
+    imperatives = p.add_mutually_exclusive_group()
+    imperatives.add_argument('-n', '--dry-run', action="store_true", help="Never prune")
+    imperatives.add_argument('-f', '--force', action="store_true", help="When in doubt, prune anyway")
+
+    p.add_argument('-d', '--deployment-id', help="Deployment ID override")
+
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    if args.verbose:
+        log.init(level="DEBUG")
+
+    slice_overrides = {}
+    if deepy.cfg.deployment_id:
+        slice_pdprune = deepy.cfg.slice_config.get('pdprune') or {}
+        slice_overrides = slice_pdprune.get('overrides') or {}
+    rules_dict = deepy.build.deepy_util.construct_rules()
+
+    deepy.util.lock("pdprune.lock")
+    try:
+        log.debug("including {} slice overrides".format(len(slice_overrides)))
+        rules = deepy.prune.rules.PruneRulesBuilder.default(rules_dict, slice_overrides)
+
+        dry_run = args.dry_run or args.report
+        context = deepy.prune.context.PruneContext(args.hdfs, dry_run=dry_run, force=args.force)
+
+        if args.report:
+            data = {
+                'free': context.free_bytes,
+                'total': context.total_bytes,
+                'used': context.total_bytes - context.free_bytes,
+                'managed': 0,
+            }
+
+            if len(rules) == 0:
+                print "No rules found."
+            else:
+                rule_manager = deepy.prune.PruneRulesManager(context, rules)
+                log.info('Collecting stats on all rules.')
+                for rule in rule_manager.all_rules:
+                    count, size = rule_manager.cache_rule_stats()
+                    log.debug('{}: {}/{}'.format(rule, count, size))
+
+                data['managed'] = rule_manager.managed_bytes
+
+            data['used_pct'] = float(data['used']) / data['total']
+            data['unmanaged_pct'] = float(data['used'] - data['managed']) / data['total']
+
+            m = ("Free:\t\t{free:.2e}\n"
+                 "Managed:\t{managed:.2e}\n"
+                 "Total:\t\t{total:.2e}\n"
+                 "UsedPct:\t{used_pct:.2%}\n"
+                 "UnmanPct:\t{unmanaged_pct:.2%}\n")
+            print m.format(**data)
+
+            df = context.unclaimed_report(args.walk)
+            print df
+
+        else:
+            rule_manager = deepy.prune.rules.PruneRulesManager(context, rules)
+            pf = deepy.prune.PruneFiles(context, rule_manager)
+            pf.prune()
+    except deepy.prune.errors.PruneError, e:
+        log.critical(e)
+        sys.exit(e.code)
+    except:
+        log.exception('unexpected pruning error')
+        sys.exit(deepy.prune.errors.DEFAULT_CODE)
+
+
+if __name__ == '__main__':
+    main()
+
+#def get_partial_mapping():
+#    """
+#    Return a mapping of rule name to partial rule names of that respective
+#    rule if any exist.
+#    """
+#    partial_map = {
+#        "flow": {
+#            "slice_key": "flowd_options",
+#            "rulename_template": "flow{}"
+#        },
+#        "dnsflow": {
+#            "slice_key": "flowd_options",
+#            "rulename_template": "dnsflow{}"
+#        }
+#    }
+#
+#    result = {}
+#    for k, v in partial_map.items():
+#        partial_count = deepy.util.vm_or_slice_config_get(v["slice_key"],
+#            default={}).get("num")
+#        if partial_count is not None:
+#            result[k] = [v["rulename_template"].format(i) for i in
+#                xrange(partial_count)]
+#    return result
+#
+#def get_static_rules():
+#    """
+#    Static rule definitions. I.e. rules that aren't defined within the make
+#    system.
+#    """
+#    static_rules = {
+#        "heartbeat": {
+#            "file_step": "5min",
+#            "directory": "$(heartbeat_dir)/$(vm_uuid)/vm",
+#            "templates": ["vm.%Y-%m-%d-%H-%M.json.gz"],
+#            "prune_ratio": 600.0
+#        },
+#        "flow_templates_old": {
+#            "file_step": "5min",
+#            "directory": "$(templates_dir)",
+#            "templates": ["flow_template.%Y-%m-%d-%H-%M.pcap.gz"],
+#            "prune_ratio": 200.0
+#        },
+#        "flow_templates": {
+#            "file_step": "5min",
+#            "directory": "$(templates_dir)",
+#            "templates": ["flow_template.%Y-%m-%d-%H-%M.h5.pcap.gz"],
+#            "prune_ratio": 200.0
+#        },
+#        "mine_hour": {
+#            "file_step": "1h",
+#            "directory": "$(mine_dir)/processed",
+#            "templates": ["processed.%Y-%m-%d-%H.json.gz"],
+#            "prune_ratio": 120.0
+#        },
+#        "backbone_stub_5min": {
+#            "file_step": "5min",
+#            "directory": "$(cubes_dir)/backbone/minutes",
+#            "templates": [".cube.%Y-%m-%d-%H-%M.h5"],
+#            "prune_ratio": 300.0
+#        },
+#        "backbone_stub_1h": {
+#            "file_step": "1h",
+#            "directory": "$(cubes_dir)/backbone/hours",
+#            "templates": [".cube.%Y-%m-%d-%H.h5"],
+#            "prune_ratio": 300.0
+#        },
+#
+#        # XXX: Not created any more, we'll leave the prune rule here for
+#        # lingering files though. Let's use a low prune ratio so lingering
+#        # files get pruned soon.
+#        "mine_day": {
+#            "file_step": "1d",
+#            "directory": "$(mine_dir)/processed",
+#            "templates": ["processed.%Y-%m-%d.json.gz"],
+#            "prune_ratio": 1.0
+#        },
+#        "top_ips_summary_5min": {
+#            "file_step": "5min",
+#            "directory": "$(cache_dir)/summaries",
+#            "templates": ["top_ips_summary.%Y-%m-%d-%H-%M.json.gz"],
+#            "prune_ratio": 1.0
+#        },
+#        "top_ips_summary_small_5min": {
+#            "file_step": "5min",
+#            "directory": "$(cache_dir)/summaries",
+#            "templates": ["top_ips_summary_small.%Y-%m-%d-%H-%M.json.gz"],
+#            "prune_ratio": 1.0
+#        },
+#        "top_ips_summary": {
+#            "file_step": "1h",
+#            "directory": "$(cache_dir)/summaries",
+#            "templates": ["top_ips_summary.%Y-%m-%d-%H.json.gz"],
+#            "prune_ratio": 1.0
+#        },
+#        "top_ips_summary_small": {
+#            "file_step": "1h",
+#            "directory": "$(cache_dir)/summaries",
+#            "templates": ["top_ips_summary_small.%Y-%m-%d-%H.json.gz"],
+#            "prune_ratio": 1.0
+#        },
+#        "top_ips_top_ips": {
+#            "file_step": "1h",
+#            "directory": "$(cache_dir)/summaries/top_ips",
+#            "templates": ["top_ips.%Y-%m-%d-%H.json.gz"],
+#            "prune_ratio": 1.0
+#        },
+#        "top_ips_summary_top_ips": {
+#            "file_step": "1h",
+#            "directory": "$(cache_dir)/summaries/top_ips",
+#            "templates": ["top_ips_summary.%Y-%m-%d-%H.json.gz"],
+#            "prune_ratio": 1.0
+#        },
+#        "top_ips_summary_small_top_ips": {
+#            "file_step": "1h",
+#            "directory": "$(cache_dir)/summaries/top_ips",
+#            "templates": ["top_ips_summary_small.%Y-%m-%d-%H.json.gz"],
+#            "prune_ratio": 1.0
+#        }
+#    }
+#
+#    return static_rules
+#
+#def elaborate_rules(dynamic_rules):
+#    for rule_name, rule in dynamic_rules.items():
+#        if rule['templates'][0][-2:] == 'h5':
+#            rule['templates'].append(rule['templates'][0] + '.bak')
+#            rule['templates'].append(rule['templates'][0][:-2] + 'npz')
+#            rule['templates'].append(rule['templates'][0][:-2] + 'npz.bak')
+#        if rule['templates'][0][-2:] == 'gz':
+#            rule['templates'].append(rule['templates'][0] + '.temp')
+#            rule['templates'].append(rule['templates'][0] + '.tmp')
+#
+#def get_prune_rules():
+#    """
+#    Return prune rule definitions.
+#    """
+#    static_rules = get_static_rules()
+#    dynamic_rules, dynamic_skipped = get_dynamic_rules()
+#    slice_rules = deepy.cfg.slice_config.get("prune_overwrites", {})
+#
+#    # Slice can override rules, but dynamic and static shouldn't be defining
+#    # the same rules. Static rules are used for things we can't find in the
+#    # make system, so if it exists there we shouldn't need the static rule.
+#    common_rules = set(static_rules.keys()) & set(dynamic_rules.keys())
+#    if common_rules:
+#        log.warn("static-dynamic-common-rules {}".format(common_rules))
+#
+#    prune_rules = {}
+#    prune_rules.update(static_rules)
+#    prune_rules.update(dynamic_rules)
+#
+#    # Update via this method so just the keys we want to overwrite can be
+#    # overwritten instead of having to overwrite the whole rule.
+#    for k, v in slice_rules.items():
+#        prune_rules[k].update(v)
+#
+#    # Remove partial rules (e.g. 'flow0', 'flow1', etc) in favor of just
+#    # appending their respective templates to their respective base rule's
+#    # templates
+#    partial_mapping = get_partial_mapping()
+#    for rule_name, partial_rules in partial_mapping.items():
+#        partial_templates = [prune_rules[pr]["templates"] for pr in partial_rules]
+#        partial_templates = funcy.flatten(partial_templates)
+#        prune_rules[rule_name]["templates"].extend(partial_templates)
+#        for rule in partial_rules:
+#            del prune_rules[rule]
+#
+#    for rule in prune_rules.values():
+#        rule['directory'] = deepy.make.substitute_dollar_template(rule['directory'])
+#        rule['delta'] = delta(rule)
+#
+#    # elaborate and analyze
+#    def _recursive_dirs(path, skip_pred):
+#        for f in os.listdir(path):
+#            joined = os.path.join(path, f)
+#            if os.path.isdir(joined):
+#                if skip_pred(joined):
+#                    yield joined
+#                    for g in _recursive_dirs(joined, skip_pred):
+#                        yield g
+#
+#    elaborate_rules(prune_rules)
+#    #skip_dirs = set([
+#    #    '/pipedream/peeringdb',
+#    #    '/pipedream/salt-states',
+#    #    '/pipedream/cache/sites', # XXX ??
+#    #    '/pipedream/cache/infrastructure', # XXX ??
+#    #    '/pipedream/provision',
+#    #    '/pipedream/cache/bundles',
+#    #    '/pipedream/cache/bundles2',
+#    #    ])
+#    #for rule in dynamic_skipped.values():
+#    #    skip_dirs.add(deepy.make.substitute_dollar_template(rule['directory']))
+#
+#    return prune_rules

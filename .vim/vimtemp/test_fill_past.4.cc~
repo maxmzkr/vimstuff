@@ -1,0 +1,11 @@
+
+#include "./vm_app.h"
+
+int main() {
+  char * p = reinterpret_cast<char *>(vm_extend(1));
+  for (int i = 0; i < 4096; ++i) {
+    p[i] = 'p';
+  }
+  vm_syslog(p, 4096);
+  p[4096] = 'p';
+}

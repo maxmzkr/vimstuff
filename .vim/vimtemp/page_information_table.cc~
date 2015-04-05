@@ -1,0 +1,64 @@
+#include "./page_information_table.h"
+
+unsigned int Pit::memory_pages() {
+  return memory_pages_;
+}
+
+unsigned int Pit::disk_blocks() {
+  return disk_blocks_;
+}
+
+void Pit::set_memory_pages(unsigned int memory_pages) {
+  memory_pages_ = memory_pages;
+}
+
+void Pit::set_disk_blocks(unsigned int disk_blocks) {
+  disk_blocks_ = disk_blocks;
+}
+
+void Pit::free_memory_location(unsigned int memory_location) {
+  freed_memory_pages_.push(memory_location);
+}
+
+void Pit::free_disk_location(unsigned int disk_location) {
+  freed_disk_pages_.push(disk_location);
+}
+
+unsigned int Pit::get_next_memory_location() {
+  if (!freed_memory_pages_.empty()) {
+    unsigned int next_memory_location = freed_memory_pages_.front();
+    freed_memory_pages_.pop();
+    return next_memory_location;
+  } else {
+    unsigned int next_memory_location = current_memory_page_;
+    current_memory_page_++;
+    return next_memory_location;
+  }
+}
+
+unsigned int Pit::get_next_disk_location() {
+  if (!freed_disk_pages_.empty()) {
+    unsigned int next_memory_location = freed_disk_pages_.front();
+    freed_disk_pages_.pop();
+    return next_memory_location;
+  } else {
+    unsigned int next_memory_location = current_disk_page_;
+    current_disk_page_++;
+    return next_memory_location;
+  }
+}
+
+bool Pit::space_in_memory() {
+  return current_memory_page_ < memory_pages_ || !freed_memory_pages_.empty();
+}
+
+bool Pit::space_in_disk() {
+  return current_disk_page_ < disk_blocks_ || !freed_disk_pages_.empty();
+}
+
+unsigned int Pit::current_memory_page_ = 0;
+unsigned int Pit::current_disk_page_ = 0;
+std::queue<unsigned int> Pit::freed_memory_pages_;
+std::queue<unsigned int> Pit::freed_disk_pages_;
+unsigned int Pit::memory_pages_ = 0;
+unsigned int Pit::disk_blocks_ = 0;

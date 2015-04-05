@@ -1,76 +1,29 @@
-# enables c++11 on CAEN
-PATH := /usr/um/gcc-4.7.0/bin:$(PATH)
-LD_LIBRARY_PATH := /usr/um/gcc-4.7.0/lib64
-LD_RUN_PATH := /usr/um/gcc-4.7.0/lib64
+CXXFLAGS := -Wall -Werror -g -j4 -std=c++11
+LDFLAGS := -ldl -pthread
 
-# designate which compiler to use
-CXX			= g++
-# list of sources used in project
-SOURCES 	= $(wildcard *.cpp)
-# TESTSOURCES 	= $(wildcard *.cc)
-# list of objects used in project
-OBJECTS		= $(SOURCES:%.cpp=%.o)
-# TESTOBJECTS		= $(TESTSOURCES:%.cc=%.o)
-# name of the executable produced by the top level
-EXECUTABLE 	= DroneRouting
-# TESTEXECUTABLE = test
-# name of the tar ball created for submission
-SUBMIT_FILE = submit.tar.gz
+OBJS = libcpu.a
+TESTS_SRC = $(wildcard test*.cc)
+TESTS_OBJECTS = $(TESTS_SRC:%.cc=%.o)
+TESTS = $(TESTS_SRC:%.cc=%.out)
+THREADLIB = thread.o thread_impl.o mutex.o mutex_impl.o cv.o cv_impl.o cpu.o cpu_impl.o
 
-#Default Flags
-CXXFLAGS = -std=c++11 -Wall -Werror -Wextra -pedantic -g3
+all: $(THREADLIB) tests
 
-# make release - will compile "all" with $(CXXFLAGS) and the -O3 flag
-#				 also defines NDEBUG so that asserts will not check
-release: CXXFLAGS += -O3 -DNDEBUG
-release: all
+debug: CXXFLAGS += -DDO_VALGRIND
+debug: CXXFLAGS += -DDEBUG_BUILD
+debug: all
 
-# make debug - will compile "all" with $(CXXFLAGS) and the -g flag
-#              also defines DEBUG so that "#ifdef DEBUG /*...*/ #endif" works
-debug: CXXFLAGS += -g3 -DDEBUG
-debug: clean all
+%.o: %.cc
+	$(CXX) $(CXXFLAGS) -c $< $(LDFLAGS)
 
-debuggdb: CXXFLAGS += -g3 -DNDEBUG
-debuggdb: clean all
+tests: $(TESTS)
 
-# make profile - will compile "all" with $(CXXFLAGS) and the -pg flag
-profile: CXXFLAGS += -pg
-profile: clean all
+test%.o: test%.cc
+	$(CXX) $(CXXFLAGS) -c $< $(LDFLAGS)
 
-# highest target; sews together all objects into executable
-all: $(OBJECTS) $(TESTOBJECTS)
-	$(CXX) $(CXXFLAGS) $(OBJECTS) -o $(EXECUTABLE)
-	# $(CXX) $(CXXFLAGS) $(filter-out main.o,$(OBJECTS)) $(TESTOBJECTS) -o $(TESTEXECUTABLE)
+test%.out: test%.o $(THREADLIB)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(OBJS) $(LDFLAGS)
 
-# individual dependencies for objects
-# YOU NEED TO ADD YOUR OWN DEPENDENCIES HERE!!!
-driver.o: driver.cpp
-edge.o: edge.cpp
-node.o: node.cpp
-main.o: main.cpp edge.cpp node.cpp driver.cpp
-
-# rule for creating objects
-%.o:
-	$(CXX) $(CXXFLAGS) -c $*.cpp
-
-# rule for creating objects
-# test.o:
-# 	$(CXX) $(CXXFLAGS) -c test.cc
-
-# make clean - remove .o files, executable, tarball
 clean:
-	rm -f $(OBJECTS) $(EXECUTABLE) $(SUBMIT_FILE)
-
-# make submit.tar.gz - cleans, runs dos2unix, creates tarball
-MY_FILES=$(wildcard Makefile *.h *.cpp test*.txt)
-$(SUBMIT_FILE): $(MY_FILES)
-	dos2unix $(MY_FILES)
-	tar -vczf $(SUBMIT_FILE) $(MY_FILES)
-
-# shortcut for make submit.tar.gz (make submit)
-submit: submit.tar.gz
-
-# these targets do not create any files
-.PHONY: all release debug profile clean submit
-# disable built-in rules
-.SUFFIXES:
+	rm -f *~ *.out
+	find . -type f -name "*.o" | grep -v "threadsol.o" | xargs rm

@@ -353,6 +353,10 @@
 #  base:
 #    - /srv/salt
 
+file_roots:
+  base:
+    - /home/max/my-salt-states
+
 # The hash_type is the hash to use when discovering the hash of a file on
 # the master server. The default is md5, but sha1, sha224, sha256, sha384
 # and sha512 are also supported.

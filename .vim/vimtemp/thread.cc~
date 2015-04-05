@@ -1,0 +1,65 @@
+#include <iostream>
+#include <stdexcept>
+#include "./cpu.h"
+#include "./cpu_impl.h"
+#include "./thread.h"
+#include "./thread_impl.h"
+
+thread::thread(thread_startfunc_t func, void* params) {
+  cpu::interrupt_disable();
+  cpu::impl::get_guard();
+
+  // catch bad_alloc if it occurs to keep invariant true
+  try {
+    impl_ptr = new impl(func, params, this);
+  }
+  catch (std::bad_alloc) {
+    cpu::impl::release_guard();
+    cpu::interrupt_enable();
+    throw std::bad_alloc();
+  }
+
+  cpu::impl::release_guard();
+  cpu::interrupt_enable();
+}
+
+thread::~thread() {
+  // get each child thread and join it
+  if (impl_ptr != nullptr) {
+    impl_ptr->set_parent_thread(nullptr);
+  }
+}
+
+void thread::join() {
+  // grab guard
+  cpu::interrupt_disable();
+  cpu::impl::get_guard();
+
+  if (impl_ptr != nullptr) {
+    if (!impl_ptr->done()) {
+      // push to joining queue
+      thread::impl* this_thread = thread::impl::self();
+      impl_ptr->thread_to_joining_queue(this_thread);
+
+      // and then run next thread
+      cpu* this_cpu = cpu::self();
+      this_cpu->impl_ptr->run_next_thread();
+    }
+  }
+
+  // release guard
+  cpu::impl::release_guard();
+  cpu::interrupt_enable();
+}
+
+void thread::yield() {
+  // disable interrupts
+  cpu::interrupt_disable();
+  cpu::impl::get_guard();
+
+	thread::impl::yield();
+
+  // enable interrupts
+  cpu::impl::release_guard();
+  cpu::interrupt_enable();
+}

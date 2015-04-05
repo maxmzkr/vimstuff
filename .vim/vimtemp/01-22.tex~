@@ -1,0 +1,10 @@
+\documentclass{article}
+
+\usepackage{outlines}
+
+\begin{document}
+\secc[tested]{Title}{
+	\1 blah
+}
+
+\end{document}

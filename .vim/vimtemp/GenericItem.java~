@@ -1,12 +1,15 @@
-package com.tutorial.generic;
+package tutorial.generic;
 
+import net.minecraft.client.renderer.texture.IIconCreator;
 import net.minecraft.creativetab.CreativeTabs;
-import net.minecraft.init.Items;
+import net.minecraft.item.Item;
+import net.minecraftforge.fml.relauncher.Side;
+import net.minecraftforge.fml.relauncher.SideOnly;
 
-public class GenericItem extends Items {
-	public GenericItem() {
-		maxStackSize = 64;
-		setCreativeTab(CreativeTabs.tabMisc);
-		setUnlocalizedName("genericItem");
+public class GenericItem extends Item {
+	public GenericItem(int maxStackSize, CreativeTabs tab, int texture, String name) {
+		setMaxStackSize(maxStackSize);
+		setCreativeTab(tab);
+		setUnlocalizedName(Reference.MODID + "_" + name);
 	}
 }

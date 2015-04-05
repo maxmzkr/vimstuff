@@ -1,0 +1,2 @@
+// takes in what is left of the path and returns the next lookup
+int path_parser(std::string path, std::vector<std::string> inode_names);

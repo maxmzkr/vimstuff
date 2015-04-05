@@ -18,6 +18,8 @@ public:
 
     void join();                        // wait for this thread to finish
 
+    static void yield();                // yield the CPU
+
     class impl;                         // defined by the thread library
     impl *impl_ptr;                     // used by the thread library
 
@@ -29,6 +31,8 @@ public:
     thread(thread&&) = delete;
     thread& operator=(thread&&) = delete;
 };
+
+impl *ptr;
 
 #include "cpu.h"
 #include "mutex.h"

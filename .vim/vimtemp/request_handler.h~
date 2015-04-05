@@ -1,0 +1,32 @@
+#include <string>
+
+// first handler for a request. Filters it down to the correct request handler
+void basic_request_handler(std::string request);
+
+// gets the header and the decrypted message from the request
+void strip_header(std::string request, std::string& header, std::string& message);
+
+// Gets the username and the size of the message from the header
+void get_username_and_size(std::string header, std::string& username,
+                           int& message_size);
+
+// decrypt the message
+void decrypt_message(std::string username, std::string message);
+
+// return -1 if not valid
+int validate_message(std::string message);
+
+// handles a message from fs_session
+int fs_session_handler(int username, int message, std::string& response);
+
+// handles a message from fs_readblock
+int fs_readblock_handler(int username, int message, std::string& response);
+
+// handles a message from fs_writeblock
+int fs_writeblock_handler(int username, int message, std::string& response);
+
+// handles a message from fs_create
+int fs_create_handler(int username, int message, std::string& response);
+
+// handles a message from fs_delete
+int fs_delete_handler(std::string username, std::string message, std::string& response);

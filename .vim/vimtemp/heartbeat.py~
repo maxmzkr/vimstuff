@@ -1,0 +1,630 @@
+#!/usr/bin/env python
+
+'''
+Cron job run every 5 minutes that gathers system and flow / dns data
+from this VM and writes to S3.
+
+Note that a summarize_status.py cron job runs on the lead vm to create a
+deployment-wide summary file that is consumed by the UI
+
+
+You can configure the heartbeat by inserting a "heartbeat" configuration 
+section in slice.json.
+
+The configuration is merged by taking the slice-level "heartbeats" section and merging in the
+vm-level "heartbeats" section. VM-level section takes precedence.
+
+Parameters:
+
+    Ignores:
+        ignore_bgp
+        ignore_snmp
+        ignore_software_version
+        ignore_check_ui_log
+        ignore_check_ssh_log
+        ignore_missing_mapper_files
+        ignore_current_install
+        ignore_flowd
+        ignore_ui_status
+        ignore_h5flow_ago
+        ignore_drill_small_ago
+        ignore_gaps
+        ignore_router_lookup
+
+    Configuration:
+
+        ["directory_size_threshold"]: integer in GB (Default: 10)
+        ["bgp"]["timeout"]: integer in seconds (Default: 4)
+        ["bgp"]["reps"]: integer (Default: 5)
+        ["ssh"]["login_fails_threshold"]: integer (Default: 20)
+        ["mapper_files"]["extra_filenames"]: dict<string, string> (Default: {})
+        ["gaps"]["ignore_cubes"]: list of additional cube ids to ignore. (Default: [])
+        ["cubes_missing"]["hours"]: integer, number of hours into the past to look for cubes (Default: 6)
+
+
+'''
+
+import os
+import sys
+import time
+import json
+import gzip
+import psutil
+import socket
+import re
+import pexpect
+import argparse
+import glob
+import functools
+import StringIO
+import traceback
+import datetime
+import urllib2
+import multiprocessing
+import collections
+import subprocess
+import tables
+import ipaddr
+import calendar
+
+import deepy.slice_def
+import deepy.timerange
+import deepy.aws
+import deepy.cfg
+import deepy.log
+import deepy.store
+import deepy.util
+import deepy.dimensions 
+import deepy.cube
+import deepy.deploy
+import deepy.make
+import deepy.ui_status
+import deepy.status
+import deepy.local_queue
+import deepy.h5flowutil
+import deepy.pybird
+import deepy.metrics
+
+
+def hardy():
+    '''
+    catches all exceptions for a function
+    and logs them
+    '''
+    def real_decorator(f):
+        @functools.wraps(f)
+        def wrapper(*args, **kwds):
+            try:
+                ret = f(*args, **kwds)
+            except:
+                fp = StringIO.StringIO()
+                traceback.print_exc(file = fp)
+                #FIXME just barf for now, who watches the watchmen?
+                try:
+                    function_name = f.func_name
+                except:
+                    function_name = "UNKNOWN"
+
+                deepy.log.exception("Heartbeat information for {} failed to successfully execute".format(function_name))
+                return None
+            return ret
+        return wrapper
+    return real_decorator
+
+def get_heartbeat_config():
+    return deepy.status.get_heartbeat_config()
+
+@hardy()
+def get_software_version(deployment_id, filename="deepfield.deb"):
+    path = os.path.join(deployment_id, "software", "installed", filename)
+    try:
+        from apt.debfile import DebPackage
+        pkg = DebPackage(path)
+    except (SystemError, ImportError):
+        deepy.log.debug("No software detected in /%s/software/installed/" % (deployment_id))
+        return "No DeepField software detected"
+    return str(pkg.VERSION_NEWER)
+
+@hardy()
+def get_positions_missing(dim_db):
+    cubes = ['drill1', 'backbone_small']
+
+    # copypasta from cube_api.CubeApiUtil
+    now = datetime.datetime.utcnow()
+    end = calendar.timegm(now.timetuple())
+    start = calendar.timegm((now - datetime.timedelta(hours=1)).timetuple())
+
+    time_slice = deepy.slice_def.SliceDef()
+    time_slice['type'] = 'range_include'
+    time_slice['dimension'] = 'timestamp'
+    time_slice['values'] = {'start': start, 'end': end}
+
+    ret = deepy.util.recursive_default_dict()
+    for c in cubes:
+        cube_dims = None
+        try:
+            cube_dims = deepy.cube.cube_axes(c, 5*60, [time_slice], dimensions_db=dim_db)
+        except deepy.cube.QueryWarning as e:
+            deepy.log.exception('warning-fetching-cube-dims: {}'.format(e))
+            ret['error'] = e.get_dict()
+            return ret
+
+        for d in cube_dims:
+            x = deepy.cube.cube_positions(c, dim_name=d, time_slices=[time_slice], dimensions_db=dim_db)
+            if not x or len(x) < 2:
+                # ignore if not in db
+                if dim_db.get_by_id(d):
+                    ret[c][d] = x
+
+    return ret if ret else None
+
+@hardy()
+def load_h5flow_status():
+    if not deepy.metrics.is_vm_running_daemon("flowd"):
+        return None
+
+    #In deployments like Comcast we have a dedicated box for dnsflow.
+    # In this case flowd is running but we should not expect h5flow
+    if deepy.util.vm_or_slice_config_get("dnsflow_only"):
+        return None
+
+    status = deepy.util.recursive_default_dict()
+
+    archive_flow = deepy.util.vm_or_slice_config_get("archive_flow")
+    archive_h5flow = deepy.util.vm_or_slice_config_get("archive_h5flow")
+   
+    hours_back = 2
+    #If we are doing distributed processing we can lag behind a little more
+    if archive_flow and archive_h5flow:
+        hours_back = 3
+
+    now = datetime.datetime.utcnow() - datetime.timedelta(hours=hours_back)
+    end = deepy.timerange.floor_timestamp_to(now, '5T') 
+    begin = end - datetime.timedelta(hours=1)
+    file_str = os.path.join(deepy.cfg.h5flow_dir, "flow.%Y-%m-%d-%H-%M.h5")
+    for filename in deepy.timerange.generate_file_glob(file_str, begin, end, '5T'):
+        if not os.path.exists(filename):
+            #if we are archiving h5flow check the remote store before we alert
+            if deepy.util.vm_or_slice_config_get("archive_h5flow") and deepy.store.ls_files_remote([filename]):
+                continue
+            unused, ts, unused = os.path.basename(filename).split('.')
+            status.setdefault("not_finished", []).append(ts)
+
+    return status
+
+@hardy()
+def check_drop_flow(status, dim):
+    flowd_stat = status['flowd']
+
+    #If missing / total > than this number [0-100] then alert
+    missing_threshold = 5
+
+    if not flowd_stat or "routers" not in flowd_stat:
+        deepy.log.info("Missing flowd_stats")
+        return
+
+    deepy.log.debug("Checking flow status on %d routers" % (len(flowd_stat["routers"])))
+
+    #Get the routers dimension so we can ignore the routers with an ignore flag        
+    routers = dim.get_by_id(115)["positions"]
+    ignore = [pos['cname'] for pos in routers if 'convert_to' in pos]
+
+    router_name = ""
+    router_cname = ""
+    for r in flowd_stat["routers"]:
+        router_name = r['ip']
+        if 'name' in r:
+            router_cname = r['name']
+
+        time_string = ""
+
+        if router_name in ignore:
+            continue
+
+        # load dimension position data
+        try: 
+            matching_router = {}
+            for pos in routers:
+                if router_cname == routers[pos]['cname'] or router_cname == routers[pos]['name'] or router_name == routers[pos]['match']['flow_ip'][0]:
+                    matching_router = routers[pos]
+                    break
+
+            last_seen = matching_router.get('last_seen', 'never')
+
+            if last_seen != 'never':
+                last_time =  datetime.datetime.strptime(last_seen, "%Y-%m-%d-%H-%M")
+                current_time = datetime.datetime.utcnow()
+                delta = current_time - last_time
+                if delta.days > 0:
+                    time_string = "%s days" % (delta.days)
+                elif delta.seconds > 3600:
+                    time_string = "%s hours" % (delta.seconds / 3600)
+                else:
+                    time_string = "%s minutes" % (delta.seconds / 60) 
+        except KeyError: # cname doesn't exist...? no ip addr
+            pass
+
+        errors = []
+        notifications = []
+
+        # V10/V9/V5 errors
+        for v in ['v9', 'v5', 'v10']:
+            sequence_total = v + '_sequence_total'
+            sequence_missing = v + '_sequence_missing'
+            # Bad sequence numbers
+            if int(r.get(v + '_crazy_sequence_numbers', 0)):
+                string = "Inconsistent / RFC non-compliant %s sequence numbers" % (v)
+                notifications.append(string)
+            # Missing flow
+            if int(r.get(sequence_total, 0)) > 0: 
+                total_seq_range = r[sequence_missing] + r[sequence_total]
+                missing = float ("%3.1f" % ((float(r[sequence_missing]) / float(total_seq_range)) * 100))
+                if missing > missing_threshold:
+                    string = str(missing) + '%% of %s flows missing (%d/%d)' % (v, r[sequence_missing], total_seq_range)
+                    notifications.append(string)
+            # Missing templates
+            if int(r.get(v + '_missing_template', 0)) > 100:
+                notifications.append("High number of missing templates (%d)" % int(r[v + '_missing_template']))
+
+        # No flow
+        if time_string and float(r.get('fps', 0.0)) == 0.0:
+            errors.append("No flow (%s)" % (time_string))
+
+        # Bad duration
+        # Alert if more than 200 MB
+        if float(r.get("bytes_with_bad_duration", 0) > 1000000 * 500):
+            seconds = deepy.cfg.slice_config.get("max_flow_timeout_duration_seconds", 300)
+            minutes = seconds / 60.0
+            errors.append("Misconfigured flow time out (%2.1f Mbps with duration > %d minutes)" % (float(r['bytes_with_bad_duration'] * 8) / (1000000.0 * 300), minutes))
+
+        # Sflow multi-output
+        if r.get('sflow_multi_out'):
+            notifications.append("Multiple output interfaces in subflow.")
+
+        # Multicast not enabled
+        #if (int(r.get('multicast_input_bytes', 0)) > (.03*r['traffic_bps']) and int(r.get('multicast_output_bytes', -1) == 0)):
+        #    if 'snmp' in status:
+        #        for router in status['snmp']['routers']:
+        #            if router['snmp_ip'] == router_name and 'intfs' in router:
+        #                notifications.append("Multicast accounting not enabled")
+        #                break
+            
+        # Egress flow
+        if r.get('egress'):
+            notifications.append("Egress flow")
+
+        if int(r.get('sampling_rate', 0)) > 2000:
+            notifications.append('Low sampling rate (1/%d). Increase the sampling rate for improved granularity.' % r['sampling_rate'])
+
+        if errors:
+            r['router_errors'] = errors
+
+        if notifications:
+            r['router_notifications'] = notifications
+
+@hardy()
+def lookup_system_info(prev_hb):
+    # Assume all of the data dir resides on the same (relevant) volume
+    result = \
+    {
+        "disk_partitions": psutil.disk_partitions(),
+        "disk_usages": {p.mountpoint: psutil.disk_usage(p.mountpoint).percent for p in psutil.disk_partitions()},
+        "disk_usage": psutil.disk_usage(deepy.cfg.home_dir).percent,
+        "cpu_pcts": psutil.cpu_percent(interval=1, percpu=True),
+        "net_io_counters": psutil.network_io_counters(pernic=True),
+        "net_io": psutil.network_io_counters().bytes_sent + psutil.network_io_counters().bytes_recv,
+        "disk_io_counters": psutil.disk_io_counters(),
+        "disk_io": psutil.disk_io_counters().read_bytes + psutil.disk_io_counters().write_bytes,
+        "boot_time": time.ctime(psutil.BOOT_TIME),
+        "memory_per": psutil.virtual_memory().percent,
+        "memory_total": psutil.virtual_memory().total,
+        "percent_swap_used": psutil.swap_memory().percent
+    }
+
+    deepy.metrics.add_delta(result, prev_hb, 'net_io')
+    deepy.metrics.add_delta(result, prev_hb, 'disk_io')
+    deepy.metrics.add_delta(result, prev_hb, 'disk_usage')
+
+    return result
+
+@hardy()
+def is_disabled_on_vm(cron_job):
+    disabled = deepy.cfg.vm_config.get("disabled_cron_jobs")
+    if disabled and cron_job in disabled:
+        return True
+    return False
+
+def send_heartbeat (deployment_id, uuid, dry_run=False):
+    heartbeat_config = get_heartbeat_config()
+
+    dim_db = deepy.dimensions.DimensionsDB()
+
+    sysinfo_metric = deepy.metrics.SystemInfoMetric()
+    sysinfo = sysinfo_metric.collect()
+
+    vm_name = deepy.cfg.vm_config['name']
+
+    status = \
+    {
+        'deployment_id': deployment_id,
+        'uuid': uuid,
+        'name': vm_name,
+        'timestamp': time.ctime(),
+        'time': time.time(),
+        'memory_per': sysinfo["memory_per"],
+        'pipedream_disk_usage': sysinfo["pipedream_disk_usage"],
+        "max_other_disk_usage": sysinfo['max_other_disk_usage'],
+        "net_io_bps": sysinfo['net_io_sent'] + sysinfo['net_io_recv'],
+        "net_io_sent": sysinfo['net_io_sent'],
+        "net_io_recv": sysinfo['net_io_recv'],
+        "disk_iops": sysinfo['disk_iops'],
+        "uptime": sysinfo['uptime'],
+        "percent_swap_used": sysinfo['percent_swap_used'],
+        "swap_disabled": sysinfo['swap_disabled']
+    }
+
+    if not heartbeat_config.get('ignore_hostname'):
+        hostname = socket.gethostname()
+        status['hostname'] = hostname,
+
+    if not heartbeat_config.get('ignore_lan_ip'):
+        ip = deepy.metrics.IPMetric()
+        status['ip'] = ip.collect()
+
+    # Get this here so we have an accurate time of when this process started
+    now = deepy.timerange.floor_timestamp_to(datetime.datetime.utcnow(), "5T")
+
+    # Load the previous heartbeat so that we can calculate deltas
+    prev_hb = deepy.metrics.load_previous_heartbeat(now, uuid)
+
+    # BGP
+    daemon = None
+    if deepy.metrics.is_vm_running_daemon('bgpd'):
+        daemon = 'bgpd'
+    elif deepy.metrics.is_vm_running_daemon('bird'):
+        daemon = 'bird'
+    if daemon and not heartbeat_config.get('ignore_bgp'):
+        bgp = deepy.metrics.BGPMetric(daemon)
+        status['bgp'] = bgp.collect()
+
+    if not heartbeat_config.get('ignore_software_version'):
+        status['version'] = get_software_version(deployment_id)
+
+    if not heartbeat_config.get('ignore_top_memory_processes'):
+        top_memory_processes = deepy.metrics.ProcessesByMemoryMetric()
+        status['top_mem_procs'] = top_memory_processes.collect()
+    
+    if not is_disabled_on_vm('mine') and not heartbeat_config.get('ignore_missing_mine_files'):
+        mine_files = deepy.metrics.FindMissingMineFilesMetric()
+        status['mine_files'] = mine_files.collect()
+    
+    if not heartbeat_config.get('ignore_missing_mapper_files'):
+        mapper_files = deepy.metrics.FindMissingMapperFilesMetric()
+        status['mapper_files'] = mapper_files.collect()
+
+    # SNMP
+    if ((deepy.metrics.is_vm_running_extra_cron_job('snmp')
+        or deepy.metrics.is_vm_running_extra_cron_job('snmp_hourly'))
+            and not heartbeat_config.get('ignore_snmp')):
+        snmp = deepy.metrics.SNMPStatusMetric()
+        snmp_data = snmp.collect()
+        status['snmp'] = snmp_data['snmp']
+        status['snmp_last_modified'] = snmp_data['last_mod']
+
+    # Directory size
+    if not heartbeat_config.get('ignore_directory_size'):
+        large_dirs = deepy.metrics.DirMetric()
+        status['large_dirs'] = large_dirs.collect()
+
+
+    # Jobs queue size
+    vm = deepy.cfg.vm_config
+    jobs_queue_local_only = vm.get('jobs_queue_local_only')
+    if not jobs_queue_local_only:
+        try:
+            status['queue_size_remote'] = deepy.aws.get_sqs_queue_count(deployment_id)
+        except AttributeError:
+            pass
+    status['queue_size_local'] = deepy.local_queue.length()
+    status['queue_size'] = status.get('queue_size_remote', 0) + status['queue_size_local']
+
+    # CPU utilization
+    cpu_utilization = deepy.metrics.CPUMetric()
+    status['cpu_utilization'] = cpu_utilization.collect()
+    
+    # Core dumps
+    core_dumps = deepy.metrics.CoreFilesMetric()
+    status['core_dumps'] = core_dumps.collect()
+
+    # Git information
+    git = deepy.metrics.GitStatusMetric()
+    status['git'] = git.collect()
+
+    # sysstat information
+    sadf = deepy.metrics.SADFMetric()
+    status['sadf'] = sadf.collect()
+
+    # Interface counters
+    if "net_io_counters" in status:
+        net_io_counters = status["net_io_counters"]
+        for (intf, counters) in net_io_counters.items():
+            status['net_io_counters'][intf] = counters._asdict()
+
+    # Router lookup
+    if not heartbeat_config.get('ignore_router_lookup'):
+        router_lookup = deepy.metrics.RouterLookupMetric()
+        status['router_lookup'] = router_lookup.collect()
+
+    if (deepy.metrics.is_vm_running_daemon("home.py-store-only")) or (deepy.util.vm_is_master() and not deepy.util.is_any_vm_running_daemon("home.py-store-only")) and not deepy.util.vm_or_slice_config_get("dnsflow_only"): 
+        if deployment_id != 'status':
+            cubes_missing = deepy.metrics.MissingCubesMetric()
+            status['cubes_missing'] = cubes_missing.collect()
+
+            bundles_missing = deepy.metrics.MissingBundlesMetric()
+            status['bundles_missing'] = bundles_missing.collect()
+
+            bundle_status = deepy.metrics.BundleStatusMetric()
+            status['bundle_status'] = bundle_status.collect()
+
+            status['positions_missing'] = get_positions_missing(dim_db)
+
+            if not heartbeat_config.get('ignore_ui_status'):
+                ui_status = deepy.metrics.UIStatusMetric()
+                status['ui_status'] = ui_status.collect()
+
+                ui_page = deepy.metrics.UIPageMetric()
+                status['ui_page'] = ui_page.collect()
+
+            # how many seconds behind is drill_small
+            if not heartbeat_config.get('ignore_drill_small_ago'):
+                drill_small_ago = deepy.metrics.DrillSmallAgoMetric()
+                status['drill_small_ago'] = drill_small_ago.collect()
+
+            backbone_day_traffic = deepy.metrics.DayTrafficMetric(dim_db)
+            status['backbone_day_traffic'] = backbone_day_traffic.collect()
+
+            backbone_hour_traffic = deepy.metrics.HourTrafficMetric(dim_db)
+            status['backbone_hour_traffic'] = backbone_hour_traffic.collect()
+
+            # Backbone Traffic Anomaly
+            bdt = status.get('backbone_day_traffic')
+            if bdt is not None:
+                bbone = deepy.metrics.BackboneErrorMetric(dim_db, day_traffic=bdt)
+                status['traffic_error'] = bbone.collect()
+
+            # Backbone traffic comparisons
+            bht = status.get('backbone_hour_traffic')
+            if bht is not None:
+                traffic_change = deepy.metrics.BackboneChangeMetric(dim_db, hour_traffic=bht)
+                status['traffic_change'] = traffic_change.collect()
+
+        ui_log = deepy.metrics.UILogMetric()
+        status['ui_log'] = ui_log.collect()
+
+        # Gbps
+        gbps = deepy.metrics.TrafficMetric()
+        traffic = gbps.collect()
+        status['gbps'] = traffic.get('Gbps') if traffic else None
+
+    if deepy.metrics.is_vm_running_daemon("flowd") and not heartbeat_config.get("ignore_flowd"):
+
+        # how much flow is on the machine
+        flowd = deepy.metrics.H5FlowMetric()
+        status['flowd'] = flowd.collect()
+
+        # how many seconds behind is h5flow, now computed in H5FlowMetric
+        if status['flowd']:
+            status['h5flow_ago'] = status['flowd'].get('h5flow_ago')
+
+        flows = deepy.metrics.FlowsStatsMetric()
+        status['flows'] = flows.collect()
+
+        flowd_stats = deepy.metrics.FlowdStatsMetric()
+        status['flowd_pcap'] = flowd_stats.collect()
+
+        check_drop_flow(status, dim_db)
+
+        # DNS
+        dns = deepy.metrics.DNSStatusMetric()
+        status['dns'] = dns.collect()
+
+        # H5Flow
+        h5flow_errors = load_h5flow_status()
+        if h5flow_errors:
+            status['h5flow_errors'] = h5flow_errors
+
+    # Created by: make install
+    if os.path.exists(deepy.cfg.current_install_file) and not heartbeat_config.get('ignore_current_install'):
+        current_install = json.load(open(deepy.cfg.current_install_file))
+
+        status['revision'] = current_install['revision']
+        status['build_timestamp'] = current_install['buildTime']
+        build_ts = current_install['timestamp']
+
+        delta = datetime.datetime.utcnow() - datetime.datetime.utcfromtimestamp(build_ts)
+        if delta.days >= 2:
+            status["revision_alert"] = "Make install not run in %d days" % (delta.days)
+
+    syslog = deepy.metrics.SyslogMetric()
+    status['syslog'] = syslog.collect()
+
+    if deepy.util.vm_or_slice_config_get("carp_ip"):
+        carp_ip = deepy.util.vm_or_slice_config_get("carp_ip")
+        carp_master = deepy.metrics.CarpMasterMetric(carp_ip)
+        status['carp_master'] = carp_master.collect()
+
+    # Insert the configuration used for this run
+    status['heartbeat_config'] = heartbeat_config
+
+    # Put Alerts into the Heartbeat
+    alerts = deepy.status.check_for_alerts(status)
+    status['alerts'] = alerts
+
+    # Separate some 'less critical' alerts to notificaitons
+    notifications = deepy.status.check_for_notifications(status)
+    status['notifications'] = notifications
+
+    # Save
+    if dry_run:
+        print json.dumps(status, indent=2, cls=deepy.util.PipedreamJSONEncoder)
+    else:
+        time_str = now.strftime("%Y-%m-%d-%H-%M")
+        local_path = '{}/{}/vm/vm.{}.json.gz'.format(deepy.cfg.heartbeat_dir,
+                uuid, time_str)
+        deepy.store.simple_save_json(status, local_path)
+        deepy.log.info("save-hb {}".format(local_path))
+
+    # Send critical alerts immediately
+    if deepy.status.check_for_bgp_flap(status):
+        # XXX -- we send alerts from status. Not from every deployment - XXX
+        #try:
+        #    ses_conn = boto.connect_ses()
+        #    ses_conn.send_email(source="mailer@deepfield.net",
+        #       to_addresses=["dev@deepfield.net"],
+        #       subject="BGP Session Flapping",
+        #       format="text",
+        #       body="BGP session for {} flapped.".format(deepy.cfg.deployment_id)
+        #    )
+        #except boto.exception.BotoServerError as e:
+        #    deepy.log.error("boto-ses-error %s" % (str(e)))
+        deepy.log.critical("bgp-session-flapped")
+                   
+
+def parse_args():
+    p = argparse.ArgumentParser(description='''heartbeat that runs on each vm.''')
+    p.add_argument('-d', dest='deployment_id', action='store', required=False, type=str, help='')
+    p.add_argument('-u', dest='uuid', action='store', required=False, type=str, help='use this uuid')
+    p.add_argument('-n', dest='dry_run', action='store_true', default=False) 
+    p.add_argument('-l', dest='loglevel', action='store', default=None) 
+    args = p.parse_args()
+    return args
+
+def main():
+    args = parse_args()
+    if args.loglevel:
+        deepy.log.init(level=args.loglevel)
+
+    if args.deployment_id:
+        deployment_id = args.deployment_id
+        deepy.cfg.init(deployment_id)
+    else:
+        deepy.cfg.init()
+        deployment_id = deepy.cfg.deployment_id
+
+    deepy.util.lock("heartbeat.lock")
+
+    if not deployment_id:
+        deepy.log.error("Missing deployment_id")
+        sys.exit(1)
+
+    uuid = args.uuid
+    if not uuid:
+        uuid = deepy.cfg.vm_uuid
+        if not uuid:
+            deepy.log.error("Could not determine UUID")
+            sys.exit(1)
+    send_heartbeat (deployment_id, uuid, args.dry_run)
+
+if __name__ == '__main__':
+    main()
+

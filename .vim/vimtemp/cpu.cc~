@@ -1,0 +1,61 @@
+#include <cassert>
+#include <ucontext.h>
+#include <iostream>
+#include "./thread.h"
+#include "./thread_impl.h"
+#include "./cpu.h"
+#include "./cpu_impl.h"
+
+void cpu::init(thread_startfunc_t func, void* params) {
+  // We grab the guard now because run_next_thread uses global data
+  cpu::impl::get_guard();
+
+  // Set the interrupt table
+  interrupt_vector_table[IPI] = static_cast<interrupt_handler_t>(ipi_interrupt);
+  interrupt_vector_table[TIMER] =
+      static_cast<interrupt_handler_t>(cpu_interrupt);
+
+  // A cpu needs a place to store it's init context. This is a blank
+  // thread::impl that has the ability to hold it
+  thread::impl* first_thread;
+  first_thread = new thread::impl(nullptr);
+
+  impl_ptr = new impl(first_thread);
+
+
+  // If the func isn't null then it is a thread.
+  if (func != nullptr) {
+    // Thread constructors already get the guard and all the stuff so we have to
+    // do it outside the guard
+    thread::impl* t1 = new thread::impl(func, params, nullptr);
+    (void)t1;
+  }
+
+  // We set this as nooping because it is however, it is still going to check if
+  // there is something to run so it should not add itself to the nooping_cpu
+  // queue because it doesn't need an interrupt to check if there are any
+  // threads
+  impl_ptr->set_suspended(true);
+  while (true) {
+    // Everytime the cpu is woken up it should check if there is anything to run
+    // We can only return back to here when there isn't anything left to run
+    impl_ptr->run_next_thread();
+
+    // We are on a init thread so it is safe to delete the other thread contexts
+    thread::impl::clear_finished_queue();
+
+    // This time around we are going to go to sleep, so we need a signal to
+    // check if there is another thread. We should add ourselves to the suspended
+    // cpu queue
+    impl_ptr->set_suspended(true);
+    cpu::impl::add_suspended_cpu(this);
+
+    // We should hold the guard when we are suspended
+    cpu::impl::release_guard();
+    cpu::interrupt_enable_suspend();
+  }
+
+  // We should never get here. If we do, then we are returning from cpu::init
+  // which is wrong.
+  assert(false);
+}

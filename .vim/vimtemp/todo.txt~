@@ -1,0 +1,7 @@
+wrap all the user level functions in guards - max can change any function but not the functionality of it
+cv need to keep track of locks - zach error correction will edit cv functions potentially nothing else
+join - zach will change join
+thread destructors that use join - zach will only change thread destructor and thread constructor to keep track of it
+figure out what to do with timer interrupts - max should only modify a new function of the current interrupt function and cpu init
+  - same as reguler int
+  - another thread may have been running

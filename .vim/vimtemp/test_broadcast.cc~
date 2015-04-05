@@ -1,0 +1,65 @@
+#include <iostream>
+#include <cstdlib>
+#include "thread.h"
+
+using namespace std;
+
+int g = 0;
+
+mutex mutex1;
+cv cv1;
+
+void print_id(void *a) {
+  int *id = reinterpret_cast<int *>(a);
+  int i = *id;
+  cout << "print id called with id " << i << endl;
+
+  mutex1.lock();
+  assert_interrupts_enabled();
+  cout << "print id called with id " << i << endl;
+  while (g != 5) {
+		assert_interrupts_enabled();
+    cout << "print id with id " << i << " is waiting for a broadcast" << endl;
+    cv1.wait(mutex1);
+  }
+  cout << "print id with id " << i << " is done waiting, thank you broadcast" << endl;
+  g = i;
+  mutex1.unlock();
+  cout << "child thread is done" << endl;
+}
+
+void loop(void *a) {
+  char *id = reinterpret_cast<char *>(a);
+  int i;
+
+  cout << "loop called with id " << id << endl;
+
+  for (i = 0; i < 5; i++) {
+    intptr_t * i_ptr = new intptr_t();
+    *i_ptr = i;
+    thread t2((thread_startfunc_t)print_id, (void *)i_ptr);
+  }
+
+  cout << "spawned all childern" << endl;
+
+  // Yield so that all the children can run and start waiting
+  thread::yield();
+
+  g = 5;
+  mutex1.lock();
+  cv1.broadcast();
+  cv1.broadcast();
+  mutex1.unlock();
+  cout << "parent thread done" << endl;
+}
+
+void parent(void *a) {
+  intptr_t arg = (intptr_t)a;
+
+  cout << "parent called with arg " << arg << endl;
+  thread t1((thread_startfunc_t)loop, (void *)"child thread");
+}
+
+int main() {
+  cpu::boot(1, (thread_startfunc_t)parent, (void *)100, false, false, 0);
+}

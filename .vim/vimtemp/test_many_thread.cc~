@@ -1,0 +1,67 @@
+#include <cstdlib>
+#include <iostream>
+#include "./thread.h"
+
+mutex coutmutex;
+mutex largemutex;
+bool child_yield = false;
+
+struct Args {
+  thread* join_thread;
+  int id;
+};
+
+// 2
+void join(void *a) {
+  largemutex.lock();
+  Args *args = reinterpret_cast<Args *>(a);
+  coutmutex.lock();
+  std::cout << "join is joining " << args->id << std::endl;
+  coutmutex.unlock();
+  args->join_thread->join();
+  coutmutex.lock();
+  std::cout << "join has joined " << args->id << std::endl;
+  coutmutex.unlock();
+  largemutex.unlock();
+}
+
+// 1
+void child(void *a) {
+  largemutex.lock();
+  coutmutex.lock();
+  std::cout << "child func is yeilding" << std::endl;
+  coutmutex.unlock();
+  thread::yield();
+  coutmutex.lock();
+  std::cout << "child func is done yeilding" << std::endl;
+  coutmutex.unlock();
+  largemutex.unlock();
+}
+
+// 0
+void parent(void *a) {
+  coutmutex.lock();
+  std::cout << "parent func" << std::endl;
+  coutmutex.unlock();
+  thread *t1 = new thread((thread_startfunc_t)child, nullptr);
+  for (int i = 0; i < 10000; ++i) {
+    thread* t2 = new thread((thread_startfunc_t)join, reinterpret_cast<void*>(new Args{t1, i}));
+  }
+
+  coutmutex.lock();
+  std::cout << "parent is yielding" << std::endl;
+  coutmutex.unlock();
+  thread::yield();
+  coutmutex.lock();
+  std::cout << "parent is joining" << std::endl;
+  coutmutex.unlock();
+  t1->join();
+
+  coutmutex.lock();
+  std::cout << "joined done thread" << std::endl;
+  coutmutex.unlock();
+}
+
+int main() {
+  cpu::boot(13, (thread_startfunc_t)parent, (void *)100, true, true, 0);
+}

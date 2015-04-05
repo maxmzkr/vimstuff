@@ -1,0 +1,39 @@
+#include <sys/types.h>
+#include <unistd.h>
+#include "./vm_app.h"
+
+int main() {
+  pid_t pid = fork();
+  if (pid == 0) {
+    char *share_p = reinterpret_cast<char *>(vm_extend(1));
+    share_p[0] = 'a';
+
+    pid_t pid = fork();
+    if (pid == 0) {
+      char * p = reinterpret_cast<char *>(vm_extend(0));
+      p[0] = 'a';
+      p = reinterpret_cast<char *>(vm_extend(0));
+      p[0] = 'a';
+    } else {
+      share_p[0] = 'b';
+      char * p = reinterpret_cast<char *>(vm_extend(0));
+      p[0] = 'c';
+    }
+  } else {
+    vm_yield();
+    char *share_p = reinterpret_cast<char *>(vm_extend(1));
+    share_p[0] = 'a';
+
+    pid_t pid = fork();
+    if (pid == 0) {
+      char * p = reinterpret_cast<char *>(vm_extend(0));
+      p[0] = 'a';
+      p = reinterpret_cast<char *>(vm_extend(0));
+      p[0] = 'a';
+    } else {
+      share_p[0] = 'b';
+      char * p = reinterpret_cast<char *>(vm_extend(0));
+      p[0] = 'c';
+    }
+  }
+}

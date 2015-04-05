@@ -1,0 +1,6 @@
+#include "./vm_app.h"
+
+int main() {
+  char *p = reinterpret_cast<char *>(vm_extend(0));
+  *(p - 0x60000000) = 'a';
+}

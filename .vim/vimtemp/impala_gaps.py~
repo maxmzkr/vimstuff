@@ -1,0 +1,202 @@
+#!/usr/bin/env python
+
+import time
+import subprocess
+import argparse
+import math
+import os.path
+import os
+import re
+import datetime
+
+import deepy.cfg
+import deepy.cube
+import deepy.impala.gaps
+import deepy.timerange
+import deepy.log as log
+import deepy.impala.query
+
+def impala_exists(path):
+
+   #if not os.path.exists(path):
+   #    return True
+
+   cube_name = re.search('cubes/([^/]+)/(?:minutes|hours|days)', path)
+   if not cube_name:
+       log.warn('could-not-extract-cubename-from-%s' % (path))
+       return
+   cube_name = cube_name.group(1)
+   cube_step = re.search('cubes/[^/]+/(minutes|hours|days)', path)
+   if not cube_step:
+       log.warn('could-not-extract-cube-step-from-%s' % (path))
+       return
+   if 'minutes' in cube_step.group(1):
+       cube_step = 300
+   elif 'hours' in cube_step.group(1):
+       cube_step = 3600
+   else:
+       cube_step = 86400
+
+   ts = deepy.timerange.parse_datetime(path, '-')
+   ts = deepy.timerange.floor_timestamp_to(datetime.datetime.fromtimestamp(ts), '1D')
+   db = 'deepfield_%s_step%i' % (cube_name.replace('/', '_'), cube_step)
+   table = '%s_%s' % (cube_name, ts.strftime('%Y_%m_%d'))
+   query = 'select count(distinct _timestamp) from %s.%s where _timestamp=%i' % (db,table, int(deepy.timerange.parse_datetime(path, '-')))
+   log.debug(query)
+   rs = deepy.impala.query.run(query)
+   if rs is not None:
+       result = rs['count(distinct `_timestamp`)'][0]
+       log.debug("# for {}: {}".format(path, result))
+       if result == 1:
+           return True
+   else:
+       log.debug("No data for {}".format(path))
+
+   return False
+
+
+
+def show_stats(cube, step, start_ts, end_ts, day_tables=True, check_ts=False):
+    start_ts = datetime.datetime.fromtimestamp(start_ts)
+    end_ts = datetime.datetime.fromtimestamp(end_ts)
+    start_ts = deepy.timerange.floor_timestamp_to(start_ts, '1D')
+    end_ts = deepy.timerange.floor_timestamp_to(end_ts, '1D')
+
+    if check_ts:
+        measure = "count(distinct(_timestamp)) "
+    else:
+        measure = "count(distinct(insert_date)) "
+
+    if not day_tables:
+        template = 'select {} as _c0 from deepfield_{}_step{}.{} where ((year = %Y and month = %m and day = %d))'.format(measure, cube, step, cube)
+    else:
+        template = 'select {} as _c0 from deepfield_{}_step{}.{}_%Y_%m_%d'.format(measure, cube, step, cube)
+
+    if step == 3600:
+        step_str = 'hours'
+    elif step == 300:
+        step_str = 'minutes'
+
+    template_disk = 'ls -la /pipedream/cache/cubes/{}/{}/cube.%Y-%m-%d-*.h5 | wc -l'.format(cube, step_str)
+
+    tables = deepy.timerange.generate_file_glob(template, start_ts, end_ts, '1D')
+    disk_queries = deepy.timerange.generate_file_glob(template_disk, start_ts, end_ts, '1D')
+    #total_pos= 0
+    #total_ts = 0
+    count = 0
+    for table,disk in zip(tables, disk_queries):
+      try:
+          num_disk = subprocess.check_output([disk], shell=True)
+      except subprocess.CalledProcessError:
+          num_disk = 0
+      rs = deepy.impala.query.run(table)
+      if rs is not None:
+          #total =rs['_c0'][0]
+          inserted = rs['_c0'][0]
+          #positions = rs['_c1'][0]
+          print "{}/{} {}".format(inserted, num_disk, table)
+          #total_ts += total
+          #total_pos += positions
+          count += 1
+          #if total < 60*60*24 / step:
+          #    print "Not enough distinct ts ({} ) {}".format(total,  table)
+          #if positions > (total_pos / float(count))*1.25:
+          #    print "Possible double insert"
+          #    print "{} : {}   {}".format(positions, total_pos/float(count), table)
+
+
+def gap_find(args):
+
+    if args.deployment_id:
+        deepy.cfg.init(args.deployment_id)
+
+    rule = deepy.cube.get_rule(args.cube, args.step)
+    if not rule:
+        return
+
+    end_ts = int(time.time())
+    if args.end:
+        end_ts = deepy.timerange.get_timestamp(args.end)
+
+    step = int(deepy.timerange.convert_to_seconds(args.step))
+
+    end_ts = int(math.floor(end_ts / step)) * step
+    start_ts = end_ts
+    end_ts += step
+
+    if args.start:
+        start_ts = deepy.timerange.get_timestamp(args.start)
+
+    timesteps = range(start_ts, end_ts, step)
+    paths = []
+    for timestamp in timesteps:
+        expanded_targets = rule.expand(
+            {
+                "start_time": timestamp,
+                "end_time": timestamp
+            }
+        )
+        for expanded_target in expanded_targets:
+            paths.append(expanded_target.unique_id)
+
+    deepy.store.cache_load_from_remote(paths)
+
+    if args.valid:
+        deepy.impala.gaps.valid_times(args.cube, step, datetime.datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d"), datetime.datetime.fromtimestamp(end_ts).strftime("%Y-%m-%d"), day_tables=args.day_tables)
+        return
+
+    if args.stats:
+        show_stats(args.cube, step, start_ts, end_ts, day_tables=args.day_tables, check_ts=args.check_ts)
+        return
+
+    ts_paths = zip(timesteps, paths)
+    missing = []
+    for ts, path in ts_paths:
+        if not impala_exists(path):
+           print "Missing ", path
+           missing.append(path)
+
+    print "Missing cubes:"
+    missing_disk = 0
+    for m in missing:
+        out = m
+        if not os.path.exists(m):
+            out = "{} also missing on disk".format(m)
+            missing_disk += 1
+        print out
+
+    m = len(missing)
+    s = len(timesteps)
+    if s:
+        print 'Missing in impala {} / {} ({:.2%})'.format(m, s, float(m) / s)
+        print 'Missing in impala and on disk {} / {} ({:.2%})'.format(missing_disk, s, float(missing_disk) / s)
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=
+        '''
+        Check impala data for gaps
+
+        Examples:
+        ''', formatter_class=argparse.RawTextHelpFormatter)
+
+    parser.add_argument('-d', dest='deployment_id', default=None)
+    parser.add_argument('cube', help='cube name')
+    parser.add_argument('step', help='cube step size')
+    parser.add_argument('-s', '--start', help='start time')
+    parser.add_argument('--stats', action="store_true", help='Show details for each day')
+    parser.add_argument('--check_ts', action="store_true", help='check timestamps not inserted_time')
+    parser.add_argument('--valid', action="store_true", help='check valid time of entries')
+    parser.add_argument('-e', '--end', help='end time')
+    parser.add_argument('-l', '--log', help='log level')
+    parser.add_argument('--day-tables', action="store_true", help='check day tables rather than main tables')
+    args = parser.parse_args()
+    return args
+
+def main():
+    args = parse_args()
+    if args.log:
+        log.init(args.log)
+    gap_find(args)
+
+if __name__ == '__main__':
+    main()

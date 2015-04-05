@@ -1,0 +1,137 @@
+#!/usr/bin/env python
+
+import argparse
+import redis
+import json
+import os
+import sys
+import time
+import hashlib
+
+import deepy.util
+import deepy.cfg
+import deepy.cube
+import deepy.deepy_redis
+import deepy.dimensions
+import deepy.personalization
+import deepy.log as log
+import deepy.context
+
+
+
+#Default files to cache. If just the fname then just load it. If a tuple assume the second argument is a function to call after loading the file to modify the data
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description = '''Manually refresh the cache''')
+    p.add_argument('-k', dest = 'key_override', action = 'store', default=None, type=str, help ='Explicitly pass the bundle names to reload. Can be a single entry or comma seperated list')
+    p.add_argument('-d', dest = 'deployment_id', action = 'store', type=str, default=None, help ='Override deployment id')
+    p.add_argument('-l', dest = 'log_level', action = 'store', type=str, default=None, help ='Log level')
+    p.add_argument('-v', dest = 'verbose', action = 'store_true', default=False, help ='Verbose logging')
+    p.add_argument('--bundles', dest = 'reload_bundles', action = 'store_true', default=False, help ='Reload cached bundles')
+    p.add_argument('--dim-db', dest = 'dim_db', action = 'store_true', default=False, help ='Reload cached dim_db')
+    p.add_argument('--files', dest = 'reload_files', action = 'store_true', default=False, help ='Reload cached files')
+
+    args = p.parse_args()
+    return args
+
+
+
+
+def reload_bundles(keys):
+    if not isinstance(keys, list):
+        keys = [keys]
+  
+    bundles = deepy.deepy_redis.build_cached_bundles()
+    keys = list(set(keys + bundles.keys()))
+    #Form args and kwargs for each key
+    bundle_query_input = []
+    dimensions_db = deepy.dimensions.DimensionsDB()
+
+    for k in keys:
+        #Skip drill bundles
+        dim = deepy.deepy_redis.cached_bundles.get(k, {}).get("dim")
+        if dim:
+            continue
+        #form_args doesn't include dim_db so we need to include that also
+        args = deepy.deepy_redis.form_args(k, force_flag = True, dim_db=dimensions_db)
+        for arg in args:
+            bundle_query_input.append(arg)
+
+
+    #Call each query and force a cache reload
+    for args,kwargs in bundle_query_input:
+        log.info('caching-%s' % (args[0]))
+        deepy.cube.bundle_query(*args,**kwargs)
+           
+def reload_files(keys):
+    cached_files = deepy.deepy_redis.cached_files
+    if keys:
+        for k in keys:
+            deepy.deepy_redis.cache_read_file(k, force=True)
+    else:
+       extra_files = deepy.util.vm_or_slice_config_get("cached_files")
+       if extra_files:
+           cached_files += extra_files
+       for f in cached_files:
+           special_load = cached_files[f].get("special_load_func")
+           load_once = cached_files[f].get("load_once", False)
+           if special_load:
+               special_load(f, force=not load_once)
+           else:
+               deepy.deepy_redis.cache_read_file(f, force=not load_once)
+
+    # Always update context
+    cache = deepy.context.load_contexts()
+    deepy.deepy_redis.cache_write_object("contexts.json", cache, timeout=0)
+    
+
+def reload_cache(keys=None, bundle_override=False, file_override=False, dim_db=False):
+
+    if dim_db:
+        deepy.dimensions.cache_dimension_directory ()
+        return
+
+    keys = []
+    if keys:
+        keys = keys.split(',')
+        bundle_keys = []
+        file_keys = []
+        for k in keys:
+            if ".json" in keys:
+                file_keys.append(k)
+            else:
+                bundle_keys.append(k)
+      
+        if bundle_keys:
+            reload_bundles(bundle_keys)
+        if file_keys:
+            reload_files(file_keys)
+    elif file_override:
+       reload_files(None)
+    else:
+       reload_bundles(keys)
+
+def main():
+    args = parse_args()
+
+    if args.deployment_id:
+        deepy.cfg.init(args.deployment_id)
+
+    if args.log_level:
+        log.init(args.log_level)
+
+    if args.verbose:
+        log.init(level='DEBUG')
+
+    if args.dim_db:
+        deepy.util.lock('reload_cache_dim_db')
+    elif args.reload_files:
+        deepy.util.lock('reload_cache_files')
+    elif args.reload_bundles:
+        deepy.util.lock('reload_cache_bundles')
+
+    reload_cache(args.key_override, bundle_override=args.reload_bundles, file_override=args.reload_files, dim_db=args.dim_db)
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,350 @@
+import shutil
+import os
+import tempfile
+import datetime
+import pytz
+import boto
+from boto.s3.key import Key
+import deepy.cfg
+import deepy.util
+import deepy.ec2
+import deepy.timerange
+import deepy.log as log
+import subprocess
+import json
+import funcy
+import gzip
+
+class Fixture(object):
+
+    def __init__(self, fixture_id, relative_paths):
+        self.fixture_id = fixture_id
+        self.relative_paths = relative_paths
+        self.full_paths = [os.path.join(self.basepath, relative_path) for relative_path in self.relative_paths]
+        self.keyindex = {relative_path:full_path for relative_path, full_path in zip(self.relative_paths, self.full_paths)}
+
+    def get_basepath(self):
+        fixture_cache_directory = get_fixture_cache_directory()
+        return os.path.join(fixture_cache_directory, self.fixture_id)
+    basepath = property(get_basepath)
+
+    def keynames(self):
+        return self.relative_paths
+
+    def __getitem__(self, key):
+        if isinstance(key, (long, int)):
+            return self.full_paths[key]
+        elif isinstance(key, basestring):
+            return self.keyindex[key]
+        else:
+            raise KeyError("Key {} not present in fixture".format(key))
+
+    def as_json(self, key):
+        '''
+        Returns an object representing the fixture loaded as a json file.
+        '''
+        open_fn = open
+        if self[key].endswith('.gz'):
+            open_fn = gzip.open
+
+        with open_fn(self[key], 'r') as f:
+            return json.load(f)
+
+    def open_file(self, key, mode='r'):
+
+        '''
+        Returns an object representing the fixture loaded as a json file.
+        '''
+
+        return open(self[key], mode)
+
+
+def get_fixture_cache_directory():
+    if 'PIPEDREAM_FIXTURES_DIRECTORY' in os.environ:
+        return os.environ['PIPEDREAM_FIXTURES_DIRECTORY']
+    fixture_root = deepy.cfg.hood_dir if deepy.cfg.hood_dir != "/" else "/pipedream"
+    fixture_cache_directory = os.path.join(fixture_root, 'fixtures')
+    deepy.util.ensure_directory(fixture_cache_directory)
+    return fixture_cache_directory
+
+def get_fixture_bucket():
+    s3 = boto.connect_s3()
+    bucket = s3.get_bucket('fixtures.pdrlabs.net')
+    return bucket
+
+def import_fixture_from_deployment(deployment, fixture_id, cube_id, start=None, stop=None, step=300):
+    import deepy.cube
+    if deployment is None:
+        raise ValueError("Source deployment must be specified")
+    if fixture_id is None:
+        raise ValueError("Fixture ID must be specified")
+    if cube_id is None:
+        raise ValueError("Cube ID must be specified")
+
+    deepy.cfg.init(deployment)
+    slice_json, master_id = get_slice_and_master_id(deployment)
+    leader_vm = get_leader_vm(slice_json)
+
+    if start is None and stop is None:
+        start = datetime.datetime.now(pytz.utc) - datetime.timedelta(hours=1)
+
+    if step <= 300:
+        floor_to = '5T'
+    elif step <= 60*60*24:
+        floor_to = '1D'
+    else:
+        floor_to = '1M'
+
+    start = deepy.timerange.floor_timestamp_to(start, floor_to).strftime("%Y-%m-%d-%H-%M")
+    if stop:
+        stop = deepy.timerange.floor_timestamp_to(start, floor_to).strftime("%Y-%m-%d-%H-%M")
+    temporary_directory = tempfile.mkdtemp()
+
+    try:
+        rules = deepy.cube.find_cube_possible_rules(cube_id)
+        rules = filter(lambda x: x.time_step == step, rules)
+        if len(rules) != 1:
+            raise ValueError("No cube with id {} and step {} was found".format(cube_id, step))
+
+        rule = rules[0]
+        timestamps = get_timestamps(start = start, stop = stop, step = step)
+        filepaths = []
+        for timestamp in timestamps:
+            build_context = {
+                "start_time": timestamp,
+                "end_time": timestamp,
+            }
+            expanded_targets = rule.expand(build_context)
+            for expanded_target in expanded_targets:
+                filepaths.append('/pipedream/cache' + expanded_target.unexpanded_id.replace(deepy.cfg.cache_dir, ''))
+
+        log.info( 'SCPing {} to {}'.format(filepaths, temporary_directory))
+        scp(deployment, sources = filepaths, dest = temporary_directory)
+        save_files_to_fixture(fixture_id, [os.path.join(temporary_directory,fname) for fname in os.listdir(temporary_directory) ])
+
+    finally:
+        shutil.rmtree(temporary_directory)
+
+def save_files_from_fixture_to_fixture(src_fixture_id, src_keynames, dst_fixture_id, dst_keynames=funcy.repeat(None)):
+    '''
+    Copies files from a fixture to another fixture.
+
+    Args:
+        src_fixture_id: String identifying source fixture
+        src_keynames: Iterable key (file) names in source fixture to copy
+        dst_fixture_id: String identifying destination fixture
+        dst_keynames: Optional iterable destination key (file) names, uses source if missing
+    '''
+
+    log.info( "Copying {} from fixture {} to fixture {}".format(src_keynames, src_fixture_id, dst_fixture_id))
+    bucket = get_fixture_bucket()
+
+    src_key_prefix = src_fixture_id + '/'
+    dst_key_prefix = dst_fixture_id + '/'
+
+    for s, d in zip(src_keynames, dst_keynames):
+
+        if not d:
+            d = s
+
+        src_key = '{}/{}'.format(src_fixture_id, s)
+        dst_key = '{}/{}'.format(dst_fixture_id, d)
+
+        log.debug( "s3://{bucket}/{src_key} -> s3://{bucket}/{dst_key}".format(bucket=bucket.name, src_key=src_key, dst_key=dst_key))
+        bucket.copy_key(dst_key, bucket.name, src_key)
+
+def save_files_to_fixture(fixture_id, files, keynames=funcy.repeat(None), local_copy=False):
+    '''
+    Uploads the provided list of files (in the form of paths) to S3, using the specified fixture id.
+
+    Args:
+        fixture_id: String that will be used to uniquely identify this fixture in the testing framework
+        files: Iterable of file paths to be included in this fixture
+        keynames: Iterable of same length as files, destination key name, useful to rename files when putting in to fixture
+        local_copy: Also copy the files to the local fixture area to speed up the next sync.
+    '''
+    log.info( "Uploading {} to fixture bucket with id {}".format(files, fixture_id))
+    bucket = get_fixture_bucket()
+
+    key_prefix = fixture_id + '/'
+
+    if local_copy:
+        fixture_cache_directory = get_fixture_cache_directory()
+
+    for filepath, keyname in zip(files, keynames):
+
+        if not keyname:
+            keyname = os.path.split(filepath)[1]
+
+        output_key = key_prefix + keyname
+        k = Key(bucket)
+        k.key = output_key
+        log.debug( "{} -> s3://{}/{}".format(filepath, bucket.name, output_key))
+        k.set_contents_from_filename(filepath)
+
+        if local_copy:
+            fix_dst = os.path.join(fixture_cache_directory, output_key)
+            shutil.copyfile(filepath, fix_dst)
+
+def get_local_fixture_directory_from_id(fixture_id):
+    fixtures_directory = get_fixture_cache_directory()
+    fixture_directory = os.path.join(fixtures_directory, fixture_id)
+    return fixture_directory
+
+
+def load_fixture(fixture_id):
+    '''
+    Provides the caller with a list of local file paths associated with each file in the specified fixture. Files will
+    be downloaded to local cache if necessary.
+
+    Note that if the fixtures have changed in S3 but you have an old variant of it in your local cache, you will get the
+    cached version. Call sync_fixtures to prevent this.
+
+    Returns:
+        Iterable of local file paths constituting the fixture
+    '''
+
+    # First check to see if this fixture already exists in local cache
+    fixtures_directory = get_fixture_cache_directory()
+    fixture_directory = get_local_fixture_directory_from_id(fixture_id)
+    if not os.path.exists(fixture_directory):
+        sync_fixture(fixture_id)
+
+    if not os.path.exists(fixture_directory):
+        raise LookupError("Fixture with id {} not found".format(fixture_id))
+
+    fixture_paths = [os.path.join(root, filename) for root, _, filenames in  os.walk(fixture_directory) for filename in filenames]
+    rep = fixture_directory
+    if not fixture_directory[-1] == "/":
+        rep = rep + "/"
+    relative_paths = [fixture_path.replace(rep, '') for fixture_path in fixture_paths]
+
+    if len(relative_paths) == 0:
+        log.warn("Fixture id {} has no files".format(fixture_id))
+
+    return Fixture(fixture_id, relative_paths)
+
+def delete_fixture(fixture_id):
+    '''Deletes fixture with specified ID'''
+    bucket = get_fixture_bucket()
+    fixture_directory = get_local_fixture_directory_from_id(fixture_id)
+
+    # Remove from S3
+    for fixture_file_key in bucket.list(fixture_id):
+        fixture_file_key.delete()
+
+    # Remove from local
+    try:
+        shutil.rmtree(fixture_directory)
+    except OSError, e:
+        pass
+
+def delete_fixtures(fixture_ids):
+    for fixture_id in fixture_ids:
+        delete_fixture(fixture_id)
+
+def sync_fixture(fixture_id):
+    'Syncs the specified fixture with the local cache'
+    fixture_directory = get_local_fixture_directory_from_id(fixture_id)
+    if not os.path.exists(fixture_directory):
+        os.makedirs(fixture_directory)
+
+    # Try syncing with s3cmd if it's available
+    try:
+        s3cmd = subprocess.Popen(['s3cmd', 'sync', '--delete-removed', 's3://fixtures.pdrlabs.net/{fixture_id}/'.format(fixture_id=fixture_id), fixture_directory+"/"])
+        returncode = s3cmd.wait()
+        if returncode == 0:
+            return
+    except OSError as e:
+        pass
+
+    # Fall back on manual variant
+    bucket = get_fixture_bucket()
+    if not os.path.exists(fixture_directory):
+        os.makedirs(fixture_directory)
+    for fixture_file_key in bucket.list(fixture_id):
+        filename = os.path.split(fixture_file_key.key)[1]
+        out_filename = os.path.join(fixture_directory, filename)
+        do_fetch = False
+        if not os.path.exists(out_filename):
+            do_fetch = True
+        else:
+            source_etag = fixture_file_key.etag.replace('"', '')
+            with open(out_filename) as f:
+                dest_etag, dest_base64 = fixture_file_key.compute_md5(f)
+
+            if not source_etag == dest_etag:
+                do_fetch = True
+
+        if do_fetch:
+            log.debug('s3-get {}'.format(out_filename))
+            fixture_file_key.get_contents_to_filename(out_filename)
+
+def sync_all_fixtures():
+    'Syncs all available fixtures with fixture database in S3'
+    fixture_ids = list_fixtures()
+
+    for fixture_id in fixture_ids:
+        sync_fixture(fixture_id = fixture_id)
+
+
+def list_fixtures():
+    '''Returns a list of all fixture IDs'''
+    bucket = get_fixture_bucket()
+    fixture_ids = set()
+    for key in bucket.list():
+        fixture_id, filename = os.path.split(key.key)
+        fixture_ids.add(fixture_id)
+
+    return list(fixture_ids)
+
+
+def scp(source_hostname, sources, dest):
+
+    if len(sources) > 1:
+        scp_command = "scp -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null support@'{hostname}':'{{{files}}}' {dest}".format(hostname = source_hostname, files=','.join(sources), dest = dest)
+    else:
+        scp_command = "scp -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null support@'{hostname}':'{filename}' {dest}".format(hostname = source_hostname, filename=sources[0], dest = dest)
+
+    log.info(scp_command)
+    subprocess.call(scp_command, shell=True)
+
+
+def get_timestamps(start, stop, step = 300):
+    if start is None and stop is None:
+        raise ValueError("start and stop cannot both be None")
+    start_ts = None
+    stop_ts = None
+    if stop is not None:
+        stop_ts = deepy.util.get_timestamp(stop)
+        start_ts = stop_ts - step
+    if start is not None:
+        start_ts = deepy.util.get_timestamp(start)
+        if stop_ts is None:
+            stop_ts = start_ts + step
+
+    return range(start_ts, stop_ts, step)
+
+def get_leader_vm(slice_json):
+    if len(slice_json['vms']) == 1:
+        return slice_json['vms'][0]
+
+    for vm in slice_json['vms']:
+        if 'home.py' in vm['daemons']:
+            return vm
+
+    if not leader_vm:
+        log.info('Could not determine leader (multiple VMs exists & no one running home.py)')
+        return None
+
+def get_slice_and_master_id(deployment):
+    deepy.cfg.init(deployment)
+    slice_json = deepy.store.simple_load_json(deepy.cfg.slice_file, force_remote='s3')
+    if not slice_json:
+        log.warn('deployment {} not found'.format(deployment))
+        return None
+    master_id = slice_json.get('deployment_master', {}).get('deployment_id')
+
+    return slice_json, master_id
+
+

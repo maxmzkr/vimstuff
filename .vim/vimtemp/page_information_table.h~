@@ -1,0 +1,53 @@
+#ifndef PAGE_INFORMATION_TABLE_H_
+#define PAGE_INFORMATION_TABLE_H_
+
+#include <array>
+#include <queue>
+#include "./page_information_entry.h"
+
+class Pit {
+ public:
+  // Getters
+  static unsigned int memory_pages();
+  static unsigned int disk_blocks();
+
+  // Setters
+  static void set_memory_pages(unsigned int memory_pages);
+  static void set_disk_blocks(unsigned int disk_pages);
+
+  // Puts the location in memory into the free memory pages queue
+  // Used when destroying a page that is in physical memory
+  // Or when moving something from physical memory to disk
+  static void free_memory_location(unsigned int memory_location);
+
+  // Puts the disk locaiton into the freed disk pages queue
+  // Used when destroying a page that is in disk
+  // Or when moving something from disk to physical memory
+  static void free_disk_location(unsigned int disk_location);
+
+  // Returns either the current memory page or the front of the free memory
+  // pages
+  // used when moving something from disk to physical memory
+	// Or when zero filling
+  static unsigned int get_next_memory_location();
+
+	// Returns either the current disk page or the front of freed disk pages
+	// Used when moving something to disk
+  static unsigned int get_next_disk_location();
+
+  // Returns true if there is space in memory
+  static bool space_in_memory();
+
+  // Returns true if there is space on disk
+  static bool space_in_disk();
+
+ private:
+  static unsigned int current_memory_page_;
+  static unsigned int current_disk_page_;
+  static std::queue<unsigned int> freed_memory_pages_;
+  static std::queue<unsigned int> freed_disk_pages_;
+  static unsigned int memory_pages_;
+  static unsigned int disk_blocks_;
+};
+
+#endif  // PAGE_INFORMATION_TABLE_H_

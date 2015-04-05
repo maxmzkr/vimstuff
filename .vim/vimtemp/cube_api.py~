@@ -1,0 +1,1180 @@
+import arrow
+import funcy
+import traceback
+import re
+import datetime, calendar
+import json
+import csv
+import cStringIO
+import xlsxwriter
+import hashlib
+import msgpack
+
+import tornado.web
+import tornado.gen
+
+import base
+import deepy.cfg
+import deepy.deepy_redis
+import deepy.util
+import deepy.timerange
+import deepy.build
+import deepy.cube
+import deepy.slice_def
+import deepy.log as log
+import deepy.influxdb
+import deepy.dimensions
+from deepy.ui_celery.async_decorator import make_async
+import deepy.impala.impala_cube
+
+try:
+  import deepy.impala.query
+except ImportError as e:
+    log.fwarn('impala.query-import-failed-skipping', e)
+
+
+def call_cube_query(func, prof_requested, *args, **kwargs):
+    '''
+    Wrapper to set the profiling logger within celery async call.
+    '''
+    ui_config = deepy.deepy_redis.cache_read_file(deepy.cfg.ui_config_file) \
+                   or {}
+    query_profiling = ui_config.get('query_profiling', False) \
+                        or prof_requested
+
+    if query_profiling:
+        restore = deepy.cube.set_prof_logger(log.info)
+    retval = func(*args, **kwargs)
+    if query_profiling:
+        deepy.cube.set_prof_logger(restore)
+    return retval
+
+class QueryParamsError(Exception):
+    def __init__(self, message, api_message=None):
+        super(QueryParamsError, self).__init__(message)
+        self.api_message = api_message if api_message else message
+
+def parse_byte_limit(byte_limit):
+    def _make_int(x):
+        try:
+            return int(x)
+        except ValueError:
+            pass
+
+    if 'e' in byte_limit:
+        num, exp = byte_limit.split('e')
+        n = _make_int(num)
+        e = _make_int(exp)
+        byte_limit = float('{}e{}'.format(n, e))
+    else:
+        byte_limit = _make_int(byte_limit)
+
+    return byte_limit
+
+def parse_cache(val):
+    '''
+    Right now, integer timeout to be passed directly to redis if greater than
+    0.
+
+    TODO: accept absolute times, different formats.
+
+    Returns: val if it is an integer string, 0 if val is no or false, -1
+    otherwise.
+    '''
+    try:
+        return int(val)
+    except ValueError:
+        pass
+
+    accept = ['no', 'false']
+    if val.lower() in accept:
+        return 0
+    return -1
+
+class QueryParams(dict):
+    '''
+    Encapsulates some high-level query parsing. Create from tornado params and
+    kwargs.
+    '''
+
+    '''
+    Alternative names for things. Note that these aliases are translated on
+    both get and set, but the attribute is only created for the full translated
+    name.
+    '''
+    _aliases = {
+        'a': 'apply',
+        'd': 'dimensions',
+        'fast': 'impala',
+        'fastquery': 'impala',
+        'format': 'resp_format',
+        'm': 'measures',
+        's': 'slice',
+        'swift': 'impala',
+        'swiftquery': 'impala',
+        'tz': 'timezone',
+        'xd': 'xdimensions',
+    }
+
+    '''
+    These keywords are expected to appear more than once in the query (though
+    appearing only once is also valid). If they appear more than once, tornado
+    makes a list out of them (instead of just a string for one appearance).
+    Either way, the values become a list under the translated name -- use
+    'applys' to access it instead of 'apply'.
+    '''
+    _allow_list = {
+        'apply': 'applys',
+        'slice': 'slices'
+    }
+
+    '''
+    The values for these will have split(',') called on them and the set of
+    values returned will be distinct.
+    '''
+    _distinct = (
+        'dimensions',
+        'measures',
+        'xdimensions',
+    )
+
+    '''
+    These keys become attributes on this class.
+    '''
+    _make_attrs = (
+        'applys',
+        'byte_limit',
+        'cache',
+        'dimensions',
+        'impala',
+        'large',
+        'measures',
+        'parallel',
+        'pretty_print',
+        'query_profiling',
+        'resp_format',
+        'resp_format_method',
+        'slices',
+        'source_cube',
+        'timezone',
+        'xdimensions',
+    )
+
+    _default_resp_format = 'json'
+
+    '''
+    Valid values for that do not pass through cube_api
+    '''
+    _base_resp_formats = ['csv', 'json', 'xlsx']
+
+    '''
+    Values that should be rendered through cube_api
+    '''
+    _cube_api_resp_formats = ['barchart', 'cubism', 'datatable', 'graphtable', 'matrix', 'parsets', 'percentiles', 'sunburst', 'table', 'timegraph']
+
+    '''
+    Sets of keys that are mutually exclusive.
+    '''
+    _mutex_sets = (
+        frozenset(('dimensions', 'xdimensions')),
+    )
+
+    '''
+    Keys and value conversion functions.
+    '''
+    _types = {
+        'byte_limit': parse_byte_limit,
+        'cache': parse_cache,
+        'impala': lambda _: True, # XXX use x == '' instead?
+        'parallel': int,
+    }
+
+    '''
+    Keys to ignore during digest
+    '''
+    _ignore = frozenset((
+        'api_key',
+        'cache',
+        'parallel',
+        'pretty_print',
+        'resp_format', # use resp_format_method instead
+        'stacked',
+    ))
+
+    def __init__(self, query_params, query_kwargs=None):
+        '''
+        Takes params and kwargs pretty much straight from the tornado call.
+        '''
+        if query_kwargs is None:
+            query_kwargs = {}
+
+        for a in self._make_attrs:
+            setattr(self, a, None)
+
+        for v in self._allow_list.values():
+            setattr(self, v, [])
+
+        self.resp_format = 'json'
+        self.resp_format_method = self._default_resp_format
+
+        # just treat both the same for now
+        for k, v in funcy.iconcat(query_kwargs.iteritems(), query_params.iteritems()):
+            self[k] = v
+
+        current = frozenset(self.keys())
+        for s in self._mutex_sets:
+            members = current & s
+            if len(members) > 1:
+                members_str = ', '.join(members)
+                raise QueryParamsError("{}: all given together.".format(members_str),
+                        "Please specify only one of {}.".format(members_str))
+
+    def __getitem__(self, key):
+        '''
+        Converts aliases.
+        '''
+        if key in self._aliases:
+            key = self._aliases.get(key)
+        return dict.__getitem__(self, key)
+
+    def __setitem__(self, key, val):
+        '''
+        Not intended to be called outside of __init__!
+        '''
+
+        if key in self._aliases:
+            key = self._aliases.get(key)
+
+        if key in self._allow_list:
+            val = [val] if not isinstance(val, list) else val
+            key = self._allow_list[key]
+            try:
+                existing_val = dict.__getitem__(self, key)
+                existing_val += val
+                val = existing_val
+            except KeyError:
+                pass
+        else:
+            if isinstance(val, list):
+                raise QueryParamsError("More than one {} argument provided.".format(key),
+                        "Please give only one set of target {}.".format(key))
+
+            if key in self._distinct:
+                #For PLAT-111 see function helptext
+                if key == "dimensions":
+                    val = self._convert_bitwise_dimensions(val)
+                val = funcy.distinct(val.split(','))
+
+        if key == 'resp_format':
+            # If we have no displays, pass that along. The UI can handle it.
+            try:
+                val = [v.strip() for v in val.split(',')]
+            except:
+                val = []
+            self.process_resp_formats(val)
+
+        conv = self._types.get(key)
+        if conv:
+            try:
+                val = conv(val)
+            except ValueError:
+                val = None
+
+        if key in self._make_attrs:
+            setattr(self, key, val)
+        dict.__setitem__(self, key, val)
+
+    def _convert_bitwise_dimensions(self, val):
+        '''
+        This allows us to use dimension selections like
+        d=tcpflags[bit](syn,ack)
+        Since we assume we can call .split(',') on the dimensions field so
+          we turn it into something looking like:
+        d=tcpflags[bit]syn,tcpflags[bit]ack
+        '''
+        #                         Dimension               Func         Pos list
+        bw_dimensions_regex = '(([a-zA-Z0-9\-\.\_]+)\[([a-zA-Z0-9]+)\]\(([a-zA-Z0-9\-\.\_\,]+)\))'
+        matches = re.findall(bw_dimensions_regex, val)
+
+        if not matches:
+            return val
+
+        buf = val
+        replace_objs = []
+        for match in matches:
+            replace_src,dim,func,positions = match
+            for pos in positions.split(','):
+                replace_objs.append('{}[{}]{}'.format(dim,func,pos))
+        replace_target = ",".join(replace_objs)
+        return buf.replace(replace_src, replace_target)
+
+    def process_resp_formats(self, resp_formats):
+        '''
+        Wrapper to handle logic for processing response formats. Raises errors if there
+        are problems with the formats passed. Also, it sets the resp_format_method.
+        '''
+        valid_formats = self._cube_api_resp_formats + self._base_resp_formats
+        multiple = True
+
+        if len(resp_formats) == 1:
+            multiple = False
+
+        for rf in resp_formats:
+
+            # Make sure all of the formats passed are valid
+            if rf not in valid_formats:
+                valid_formats_str = ", ".join(valid_formats)
+                raise QueryParamsError("{} is not a valid response format.".format(rf),
+                        "Response format must be one of the following: {}".format(valid_formats_str))
+
+            # For now, avoid dealing with combinations of displays and raw data formats
+            if multiple and rf in self._base_resp_formats:
+                raise QueryParamsError("{} is not currently supported when creating a query for multiple displays.".format(rf),
+                        "Either remove {} from the list of displays or remove the other displays.".format(rf))
+
+            # Set response format if it's that kind of query
+            if rf == 'csv' or rf == 'xlsx':
+                setattr(self, 'resp_format_method', dict)
+            elif rf == 'json':
+                setattr(self, 'resp_format_method', rf)
+
+
+    def update(self, *args, **kwargs):
+        for k, v in dict(*args, **kwargs).iteritems():
+            self[k] = v
+
+    def hexdigest(self):
+        '''
+        Aware of multiple (list) values and distinct splits (such as measures,
+        dimensions). Doesn't try any harder than that to collapse queries that
+        are the same. The worst case here is that we cache more than we need
+        to.
+
+        Ignores certain params that don't affect the query, like cache.
+        '''
+        h = hashlib.new('sha1')
+        for k, v in sorted(self.iteritems()):
+            if k in self._ignore:
+                continue
+
+            h.update(k)
+            if not isinstance(v, list):
+                h.update(str(v))
+            else:
+                map(funcy.compose(h.update, str), sorted(v))
+        ret = h.hexdigest()
+        log.debug('computed hash {}'.format(ret))
+        return ret
+
+    def convert_json(self, cube_json):
+        'Takes json and returns it or a dict based on resp_format_method'
+        if self.resp_format_method == self._default_resp_format:
+            # slower - don't use pretty_print when looking for performance
+            if self.pretty_print is not None:
+                return json.dumps(json.loads(cube_json), indent=2)
+            return cube_json
+        return json.loads(cube_json)
+
+    def convert_result(self, result):
+        'Takes a query result and returns json or a dict based on resp_format_method'
+        if self.resp_format_method == self._default_resp_format:
+            if self.pretty_print is not None:
+                return result.get_json(2)
+            return result.get_json()
+        return result.get_dict()
+
+    def is_cube_api_resp_format(self):
+        'Check whether the query should pass through html'
+        if frozenset(self.resp_format).issubset(frozenset(self._cube_api_resp_formats)):
+            return True
+
+def get_cached_json(qp):
+    if qp.cache is not None:
+        log.warn('force-skip-query-cache')
+        return None
+
+    conn = deepy.deepy_redis.get_connection()
+    if not conn: # ?
+        return None
+
+    ret = deepy.deepy_redis.check_redis(qp.hexdigest(), conn)
+    if ret == False:
+        log.debug('check_redis miss? down? {}'.format(ret))
+        return None
+    if ret is None:
+        log.debug('check_redis miss? {}'.format(ret))
+        return None
+    log.debug('check_redis hit')
+    return msgpack.unpackb(ret, use_list=True)
+
+
+
+class CubeApiHandler(base.ApiHandler):
+    required_permissions = ['cube_api']
+
+    def post(self, *args, **kwargs):
+        raise tornado.web.HTTPError(405)
+
+    @tornado.web.asynchronous
+    @tornado.gen.coroutine
+    def get(self, *args, **kwargs):
+
+        log.info("cube-api-request-start")
+        status_json = { 'status': 'success', 'query': self.request.uri, 'responseFormatList': '', 'errors': [] }
+
+        # set these up front so that error pages also have access
+        template_args = {}
+        template_args['debug'] = deepy.cfg.debug
+        template_args['buildRev'] = deepy.cfg.current_install.get('revision', '')
+        template_args['buildTime'] = deepy.cfg.current_install.get('buildTime', '')
+        template_args['timezone'] = 'UTC'
+
+        try:
+            params = self.get_argument_list_dict()
+            qp = QueryParams(params, kwargs)
+            status_json['responseFormatList'] = qp.resp_format
+        except QueryParamsError as e:
+            log.error(e.message)
+            status_json['status'] = 'error'
+            status_json['message'] = e.api_message
+            status_json['errors'].append(e.message)
+            self.render("static/build/templates/cube_api.html", api_result=json.dumps(status_json), **template_args)
+            return
+
+        # Make sure we set a display timezone
+        user = self.get_effective_user_cfg()
+        user_tz = None
+        if user:
+            user_tz = user.get('timezone')
+
+        deployment_tz = deepy.cfg.ui_config.get("timezone")
+        timezone = qp.timezone or user_tz or deployment_tz or "UTC"
+        template_args['timezone'] = timezone
+
+        groupbys = []
+
+        # Multi-tenancy partitioning
+        slices = add_partition_slice(self.partitions, qp.slices[:])
+
+        timestep = None
+
+        # Find timestep
+        applys = qp.applys[:]
+        for a in qp.applys:
+            if a.startswith('timestep'):
+                applys.remove(a)
+                timestep = a[a.find('(')+1:a.find(')')]
+                timestep = CubeApiUtil.timesteps.get(timestep)
+            elif a.startswith('groupby'):
+                applys.remove(a)
+                groupbys.append(a)
+
+        #log.error("**************** %d" % timestep)
+        #print "*******************timestep
+
+        #sys.exit(0)
+
+        if timestep is None:
+            # Default to hour timestep if no timestep is provided; should be pretty safe to do
+            timestep = 3600
+
+        slice_data, error = extract_slice_defs(slices)
+        if error:
+            status_json['status'] = 'error'
+            status_json['message'] = error[0]
+            status_json['errors'].append(error[1])
+            self.render("static/build/templates/cube_api.html", api_result=json.dumps(status_json), **template_args)
+            return
+
+        _, _, slice_defs = slice_data
+
+        # Parse apply statements
+        # NOTE Treat these essentially like slice statements for now
+        a_stmt = CubeApiUtil.apply_stmt
+
+        apply_flags = {}
+        exclude_apply = set()
+
+        for a in applys:
+            match = a_stmt.match(a)
+            if match:
+                # Flag is False, True, or list of parameters (implies True).
+                a_fn = match.group('fun')
+                a_params = match.group('params')
+                if a_fn in apply_flags and not isinstance(apply_flags[a_fn], bool):
+                    apply_flags[a_fn].append([p.strip() for p in a_params.split(',')])
+                else:
+                    if '!' in a:
+                        exclude_apply.add(a_fn)
+                    else:
+                        apply_flags[a_fn] = False if '!' in a else True
+                        if apply_flags[a_fn] and len(a_params) > 0:
+                            apply_flags[a_fn] = [[p.strip() for p in a_params.split(',')]]
+
+            else:
+                error = "Invalid apply statement: " + a
+                log.error(error)
+                status_json['status'] = 'error'
+                status_json['message'] = "Please correct the malformed apply statement."
+                status_json['errors'].append(error)
+                self.render("static/build/templates/cube_api.html", api_result=json.dumps(status_json), **template_args)
+                return
+
+        # Process groupbys
+        groupby = []
+        expression = re.compile(r'groupby[^(]*\((.*)\)')
+        for gb in groupbys:
+            m = expression.match(gb)
+            arg_list = []
+            arg_groups = m.groups()
+            if arg_groups is not None:
+                gb_args = arg_groups[0]
+                diced = map(lambda x: x.strip(), gb_args.split(','))
+                arg_list = diced[1:]
+                dimension_name = diced[0]
+
+            if len(arg_list) < 1:
+                # Sending error to user might be a good idea, for now ignore
+                log.warn('invalid-group-by-expression: "' + gb + '"; ignoring.')
+                continue
+            groupby.append({'dimension': dimension_name, 'aggregators': arg_list})
+
+
+        if qp.is_cube_api_resp_format():
+            log.info("rendering-cube-api-html")
+            self.render("static/build/templates/cube_api.html", api_result=json.dumps(status_json), **template_args)
+            return
+
+        log.debug("Request inputs:\n\tsource_cube=%s,\n\tresp_format=%s,\n\tdimensions=%s,\n\txdimensions=%s,\n\tmeasures=%s,\n\ttimestep=%s,\n\tslices=%s,\n\tslice_defs=%s,\n\tapplys=%s,\n\tapply_flags=%s" \
+                % (qp.source_cube, qp.resp_format, qp.dimensions, qp.xdimensions, qp.measures, timestep, slices, slice_defs, applys, apply_flags))
+
+
+        # NOTE
+        # should we add in bundle queries as part of cube api?
+        # or add a parallel /bundle/<bundle-name>.json?....
+
+        # how to group queries together?
+        # - by cube names (and cube name patterns?)
+        # select them to modify them (for overrides)?
+
+        # query time vs build time bundles
+        # how to create query time builds
+        # - do I need them?
+        # - I need them for flexible time range queries over days
+
+        cube_json = get_cached_json(qp)
+        if cube_json:
+            cube = qp.convert_json(cube_json)
+            log.debug("cached-query-fetched")
+        else:
+            # Run query
+            # Don't pass in the dim_db; the cube_query will load it from within celery
+            dimensions_db = deepy.dimensions.DimensionsDB(redis_backed=True, no_disk_load=True)
+            if qp.impala:
+                try:
+                    result = yield make_async(deepy.impala.query.cube_query_api, src_cube_id=qp.source_cube,
+                            result_dimensions=qp.dimensions,
+                            exclude_dimensions=qp.xdimensions, required_measures=qp.measures,
+                            time_step=timestep, slice_defs=slice_defs,
+                            apply_flags=apply_flags, dimensions_db=dimensions_db,
+                            exclude_apply=exclude_apply, allow_large=qp.large, groupby=groupby,
+                            user=self.get_effective_user(), max_workers=qp.parallel, byte_limit=qp.byte_limit)
+                except NotImplementedError as e:
+                    self.api_error(message=\
+                        'Sorry, this feature is not implemented for swift queries. Please contact support@deepfield.net with any questions')
+                    return
+                except Exception as e:
+                    log.error(e)
+                    tb = traceback.format_exc()
+                    self.api_error(message='There was an error executing the query', errors=[e.args], traceback=tb)
+                    return
+            else:
+                try:
+                    result = yield make_async(call_cube_query,
+                            deepy.cube.cube_query, qp.query_profiling,
+                            src_cube_id=qp.source_cube,
+                            result_dimensions=qp.dimensions,
+                            exclude_dimensions=qp.xdimensions, required_measures=qp.measures,
+                            time_step=timestep, slice_defs=slice_defs,
+                            apply_flags=apply_flags, dimensions_db=dimensions_db,
+                            exclude_apply=exclude_apply, allow_large=qp.large, groupby=groupby)
+                except NotImplementedError as e:
+                    self.api_error(message=\
+                        'Sorry, this feature is not implemented for non-swift queries. Please contact support@deepfield.net with any questions')
+                    return
+                except Exception as e:
+                    log.error(e)
+                    tb = traceback.format_exc()
+                    self.api_error(message='There was an error executing the query', errors=[e.args], traceback=tb)
+                    return
+
+            cube = qp.convert_result(result)
+            log.debug("query-completed")
+
+            if qp.cache > 0:
+                deepy.deepy_redis.cache_write_object(qp.hexdigest(), result.get_json(), timeout=qp.cache)
+                log.debug("query-cached")
+
+
+        if qp.resp_format[0] == 'json':
+            self.set_header("Content-Type", "application/json; charset=UTF-8")
+            self.write(cube)
+            self.finish()
+        elif qp.resp_format[0] == 'csv':
+            out = cStringIO.StringIO()
+            wcsv = csv.writer(out)
+            wcsv.writerow(cube['meta_data']['dimensions']
+                    + cube['meta_data']['measures'])
+            wcsv.writerows(cube['cube'])
+            self.set_header("Content-Type", "text/csv")
+            self.write(out.getvalue())
+            self.finish()
+        elif qp.resp_format[0] == 'xlsx':
+            dimensions = cube['meta_data']['dimensions']
+            if not dimensions:
+                self.api_error("No data could be loaded for timerange.")
+            measures = cube['meta_data']['measures']
+            data = cube['cube']
+            timestamp_idx = dimensions.index('timestamp') if 'timestamp' in dimensions else None
+
+            out = cStringIO.StringIO()
+            options = \
+            {
+                'constant_memory': True,
+                'default_date_format': 'yyyy-mm-dd hh:mm:ss',
+                'tmpdir': deepy.cfg.data_tmp
+            }
+            wb = xlsxwriter.Workbook(out, options)
+            ws = wb.add_worksheet()
+
+            # Byte values --> KB, MB, GB
+            bytes_format_str = '[<1000000]0.00," K";[<1000000000]0.00,," M";0.00,,," G"'
+            bytes_format = wb.add_format()
+            bytes_format.set_num_format(bytes_format_str)
+
+            ws.write_row("A1", dimensions + measures)
+            for row_idx, row in enumerate(data, start=1):
+                for col_idx in range(len(row)):
+                    # Format timestamps nicely
+                    if col_idx == timestamp_idx:
+                        timestamp = datetime.datetime.utcfromtimestamp(row[col_idx])
+                        ws.write_datetime(row_idx, col_idx, timestamp)
+                    # Format byte values nicely
+                    else:
+                        ws.write(row_idx, col_idx, row[col_idx], bytes_format)
+            wb.close()
+
+            # Rewind the buffer
+            out.seek(0)
+
+            mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            self.set_header("Content-Type", mime_type)
+            self.write(out.read())
+            self.finish()
+
+        log.info("finished-handling-request")
+
+
+class CubeApiListHandler(base.ApiHandler):
+    required_permissions = ['cube_api']
+
+    def post(self, *args, **kwargs):
+        raise tornado.web.HTTPError(405)
+
+    def get(self, *args, **kwargs):
+
+        log.info("cube-api-list-request-start")
+
+        params = self.get_argument_list_dict()
+
+        try:
+            result = cube_list()
+        except deepy.cube.QueryError as e:
+            log.error(e)
+            self.api_error("There was an error executing the query.", e.args)
+            return
+
+        log.debug("query-completed")
+
+        indent = 2
+        if 'uglify' in params:
+            indent = None
+
+        self.set_header("Content-Type", "application/json; charset=UTF-8")
+        self.write(json.dumps(result, indent=indent))
+        self.finish()
+
+        log.info("finished-handling-request")
+
+
+class CubeApiAxesHandler(base.ApiHandler):
+    required_permissions = ['cube_api']
+
+    def post(self, *args, **kwargs):
+        raise tornado.web.HTTPError(405)
+    @tornado.web.asynchronous
+    @tornado.gen.coroutine
+    def get(self, *args, **kwargs):
+        log.info("cube-api-axes-request-start")
+
+        try:
+            params = self.get_argument_list_dict()
+            qp = QueryParams(params, kwargs)
+        except QueryParamsError as e:
+            log.error(e.message)
+            self.api_error("There was an error executing the query.", e.api_message)
+            return
+
+        # Required stuff
+        source_cube = kwargs['source_cube']
+        axis_type = kwargs['axis_type']
+
+        applys = params['a'] if 'a' in params else params['apply'] if 'apply' in params else []
+        applys = [applys] if not isinstance(applys, list) else applys
+        slices = params['s'] if 's' in params else params['slice'] if 'slice' in params else []
+        slices = [slices] if not isinstance(slices, list) else slices
+        timestep = None
+        prof_requested = 'query_profiling' in params
+
+        # Multi-tenancy partitioning
+        slices = add_partition_slice(self.partitions, slices)
+
+        # Find timestep
+        for a in applys:
+            if a.startswith('timestep'):
+                applys.remove(a)
+                timestep = a[a.find('(')+1:a.find(')')]
+                timestep = CubeApiUtil.timesteps[timestep] if timestep in CubeApiUtil.timesteps else None
+                break
+
+        if timestep is None:
+            # Default to hour timestep if no timestep is provided; should be pretty safe to do
+            timestep = 3600
+
+        slice_data, error = extract_slice_defs(slices)
+        if error:
+            self.api_error(error[0], error[1])
+            return
+
+        time_slices, _, _ = slice_data
+        # Load the dim_db from redis
+        dimensions_db = deepy.dimensions.DimensionsDB(redis_backed=True, no_disk_load=True)
+        if qp.impala:
+            dims, measures = yield make_async(deepy.impala.query.get_dimensions_measures, source_cube, timestep, dimensions_db)
+            result = dims
+            if axis_type == 'measures':
+                result = measures
+        else:
+            try:
+                result = yield make_async(call_cube_query, deepy.cube.cube_axes, prof_requested, src_cube_id=source_cube, time_step=timestep,
+                        time_slices=time_slices, axis_type=axis_type, dimensions_db=dimensions_db)
+            except deepy.cube.QueryError as e:
+                log.error(e)
+                self.api_error("There was an error executing the query.", e.args)
+                return
+
+        log.debug("query-completed")
+
+        result = {'cube': source_cube, axis_type: result}
+
+        indent = 2
+        if 'uglify' in params:
+            indent = None
+
+        self.set_header("Content-Type", "application/json; charset=UTF-8")
+        self.write(json.dumps(result, indent=indent))
+        self.finish()
+
+        log.info("finished-handling-request")
+
+
+class CubeApiPositionsHandler(base.ApiHandler):
+    required_permissions = ['cube_api']
+
+    def post(self, *args, **kwargs):
+        raise tornado.web.HTTPError(405)
+
+    @tornado.web.asynchronous
+    @tornado.gen.coroutine
+    def get(self, *args, **kwargs):
+
+        log.info("cube-api-positions-request-start")
+
+        params = self.get_argument_list_dict()
+
+        # Required stuff
+        source_cube = kwargs['source_cube']
+        dim = kwargs['dimension']
+
+        applys = params['a'] if 'a' in params else params['apply'] if 'apply' in params else []
+        applys = [applys] if not isinstance(applys, list) else applys
+        slices = params['s'] if 's' in params else params['slice'] if 'slice' in params else []
+        slices = [slices] if not isinstance(slices, list) else slices
+        timestep = None
+
+        # Multi-tenancy partitioning
+        slices = add_partition_slice(self.partitions, slices)
+
+        # Find timestep
+        for a in applys:
+            if a.startswith('timestep'):
+                applys.remove(a)
+                timestep = a[a.find('(')+1:a.find(')')]
+                timestep = CubeApiUtil.timesteps[timestep] if timestep in CubeApiUtil.timesteps else None
+                break
+
+        if timestep is None:
+            # Default to hour timestep if no timestep is provided; should be pretty safe to do
+            timestep = 3600
+
+        slice_data, error = extract_slice_defs(slices)
+        if error:
+            self.api_error(error[0], error[1])
+            return
+
+        time_slices, _, _ = slice_data
+        # Load from inside celery
+        dimensions_db = deepy.dimensions.DimensionsDB(redis_backed=True)
+        # dimensions_db = None
+        # Run query
+        try:
+            result = yield make_async(deepy.cube.cube_positions, src_cube_id=source_cube, time_step=timestep,
+                    time_slices=time_slices, dim_name=dim, dimensions_db=dimensions_db)
+        except deepy.cube.QueryError as e:
+            log.error(e)
+            self.api_error("There was an error executing the query.", e.args)
+            return
+
+        log.debug("query-completed")
+
+        result = {'cube': source_cube, 'positions': result}
+
+        indent = 2
+        if 'uglify' in params:
+            indent = None
+
+        self.set_header("Content-Type", "application/json; charset=UTF-8")
+        self.write(json.dumps(result, indent=indent))
+        self.finish()
+
+        log.info("finished-handling-request")
+
+
+class CubeApiDimensionMetaHandler(base.ApiHandler):
+    required_permissions = ['cube_api']
+
+    def post(self, *args, **kwargs):
+        raise tornado.web.HTTPError(405)
+
+    @tornado.web.asynchronous
+    @tornado.gen.coroutine
+    def get(self, *args, **kwargs):
+
+        log.info("cube-api-dimension-meta-request-start")
+
+        params = self.get_argument_list_dict()
+        result = yield make_async(deepy.cube.serve_dimensions, args, kwargs, params)
+        if result is None:
+            dim = kwargs['dimension']
+            if 'position' in kwargs:
+                pos = kwargs['position']
+                log.error("Unknown dimension or position; dim={}, pos={}".format(dim, pos))
+                self.api_error("Unknown dimension or position.", "{} or {} was not found.".format(dim, pos))
+            else:
+                log.error("Unknown dimension; dim={}".format(dim))
+                self.api_error("Unknown dimension.", "{} was not found.".format(dim))
+            return
+
+        self.set_header("Content-Type", "application/json; charset=UTF-8")
+        self.write(result)
+        self.finish()
+        log.info("finished-handling-request")
+
+class CubeApiUtil():
+
+    timesteps = {
+        '10sec': 10,
+        '10seconds': 10,
+        'seconds': 10,
+        '5min': 300,
+        '5minutes': 300,
+        'minutes': 300,
+        'hour': 3600,
+        'hours': 3600,
+        'day': 86400,
+        'days': 86400,
+        'month': 'month',
+        'months': 'month'
+    }
+    time_dim = 'timestamp'
+
+    slice_time_def = '^(?P<dim>' + time_dim + ')\(((?P<params>[a-zA-Z0-9\-]+(,[a-zA-Z0-9\-]+)*)|(?P<range_start>[a-zA-Z0-9\-]+):(?P<range_end>[a-zA-Z0-9\-]*))\)$'
+    slice_time_stmt = re.compile(slice_time_def)
+
+    slice_def = '^\!?(?P<dim>[a-zA-Z0-9\-\.\_]+)(\[(?P<func>[a-zA-Z0-9]+)\])?(:(?P<key_path>[a-zA-Z0-9\/\-\.\_]+))?\!?\((?P<params>[a-zA-Z0-9\/\-\.\_: \*\[\]\&]+(,[a-zA-Z0-9\/\-\.\_: \*\[\]\&]+)*)\)$'
+    slice_stmt = re.compile(slice_def)
+
+    apply_def = '^(?P<fun>[a-zA-Z0-9\-\.\_]+)\!?\((?P<params>[a-zA-Z0-9\-\.\_:= \<\>]*(,[\<\>a-zA-Z0-9\-\.\_:= ]+)*)\)$'
+    apply_stmt = re.compile(apply_def)
+
+    @staticmethod
+    def _cons_time_slice_def(stmt, match):
+        # Extract statement parts
+        s_type = 'range_include' if ':' in stmt else 'include'
+        s_dim = match.group('dim')
+
+        if s_type == 'range_include':
+            try:
+                start = CubeApiUtil._cons_timestamp(match.group('range_start'))
+                end = CubeApiUtil._cons_timestamp(match.group('range_end'))
+            except ValueError:
+                raise
+
+            s_vals = {'start': start, 'end': end}
+        else:
+            vals = match.group('params').split(',')
+            val_set = set()
+            for val in vals:
+                try:
+                    val_set.add(CubeApiUtil._cons_timestamp(val))
+                except ValueError:
+                    raise
+
+            s_vals = val_set
+
+        slice_def = deepy.slice_def.SliceDef()
+        slice_def['type'] = s_type
+        slice_def['dimension'] = s_dim
+        slice_def['values'] = s_vals
+
+        return slice_def
+
+    @staticmethod
+    def _cons_slice_def(stmt, match):
+        # Extract statement parts
+        s_type = 'exclude' if '!' in stmt else 'include'
+        s_dim = match.group('dim')
+        s_path = match.group('key_path')
+        s_func = match.group('func')
+
+        #Handling for different slice functions, for now just [bit]
+        if s_func == 'bit':
+            s_type = 'bitwise_nor' if s_type == "exclude" else 'bitwise_or'
+
+        vals = match.group('params').split(',')
+        val_set = set()
+        for val in vals:
+            if val.isalpha() and val.lower() in ['null', 'none']:
+                val_set.add(None)
+            elif val.isdigit():
+                val_set.add(int(val))
+            else:
+                val_set.add(val)
+        s_vals = val_set
+
+        slice_def = deepy.slice_def.SliceDef()
+        slice_def['type'] = s_type
+        slice_def['dimension'] = s_dim
+        slice_def['key_path'] = s_path
+        slice_def['values'] = s_vals
+
+        return slice_def
+
+    @staticmethod
+    def _match_timeback(val, now=None):
+        if now is None:
+            now = arrow.utcnow()
+
+        # when val is an empty string, only do now
+        # we do python slicing of a[3:] not a[:5]
+        if val == 'now' or val == '':
+            val = now.format('YYYY-MM-DDtHH-MM')
+            return val
+
+        pat = re.compile('-[0-9]+(min|mins|minute|minutes|hr|h|hours|hrs|hour|d|days|day|mon|months|month)', re.I)
+        m = pat.match(val)
+        if m is not None:
+            keys_func = ((('min', 'mins', 'minute', 'minutes'), 'minutes', 'YYYY-MM-DDtHH-mm'),
+                         (('h', 'hr', 'hours', 'hrs', 'hour'), 'hours', 'YYYY-MM-DDtHH'),
+                         (('days', 'day', 'd'), 'days', 'YYYY-MM-DD'),
+                         (('mon', 'month', 'months'), 'months', 'YYYY-MM'))
+            timeperiod = m.group(1)
+            _back = int(val.split(timeperiod)[0])
+            kws = None
+            for keys, _func, _format in keys_func:
+                if timeperiod in keys:
+                    kws = {}
+                    kws[_func] = _back
+                    break
+            val = now.replace(**kws).format(_format)
+
+        return val
+
+    @staticmethod
+    def _cons_timestamp(val):
+        val = CubeApiUtil._match_timeback(val)
+        ts = deepy.timerange.parse_datetime(val)
+        if ts is None:
+            raise ValueError(val)
+        return ts
+
+    @staticmethod
+    def _cons_default_time_slice_def():
+        now = datetime.datetime.utcnow()
+        end = calendar.timegm(now.timetuple())
+        start = calendar.timegm((now - datetime.timedelta(hours=24)).timetuple())
+
+        time_slice = deepy.slice_def.SliceDef()
+        time_slice['type'] = 'range_include'
+        time_slice['dimension'] = CubeApiUtil.time_dim
+        time_slice['values'] = {'start': start, 'end': end}
+
+        return time_slice
+
+
+def add_partition_slice(partitions, slices):
+    if partitions and 'slices' in partitions:
+        for d,p in partitions['slices'].iteritems():
+            slices += [d + "(" + p + ")"]
+    return slices
+
+
+def extract_slice_defs(slices):
+    # Parse slice statements
+    # TODO Eventually want to allow more complicated ops in slice (i.e. avg.sent.bps > 1000000)
+    s_time_stmt = CubeApiUtil.slice_time_stmt
+    s_stmt = CubeApiUtil.slice_stmt
+
+    time_slices = []
+    non_time_slices = []
+
+    for s in slices:
+        # Try to match a timestamp slice first, since it needs special handling
+        match = s_time_stmt.match(s)
+        if match:
+            try:
+                time_slices.append(CubeApiUtil._cons_time_slice_def(s, match))
+            except ValueError as ex:
+                return None, ('Please correct the malformed slice statement.', 'Invalid timestamp format: ' + ex.message)
+            continue
+
+        # Everything else
+        match = s_stmt.match(s)
+        if match:
+            a_slice = CubeApiUtil._cons_slice_def(s, match)
+            non_time_slices.append(a_slice)
+            continue
+
+        # Gave it our best, but it's crap
+        if not match:
+            error = "Invalid slice statement: " + s
+            log.error(error)
+            return None, ("Please correct the malformed slice statement.", [error])
+
+    if len(time_slices) == 0:
+        time_slices.append(CubeApiUtil._cons_default_time_slice_def())
+
+    slice_defs = time_slices + non_time_slices
+
+    return (time_slices, non_time_slices, slice_defs), None
+
+
+def cube_list():
+    result = {}
+
+    for rule_name, rule in deepy.build.util.construct_rules().iteritems():
+        meta = rule.get('meta', {})
+        cube_id = meta.get('cube_id')
+        time_step = rule.get('time_step')
+
+        if (cube_id):
+            if time_step == 10:
+                time_step = '10sec'
+            elif time_step == 300:
+                time_step = '5min'
+            elif time_step == 3600:
+                time_step = 'hour'
+            elif time_step == 86400:
+                time_step = 'day'
+
+            if cube_id not in result:
+                result[cube_id] = {'cube_id': cube_id, 'timesteps': [time_step]}
+            elif time_step not in result[cube_id]['timesteps']:
+                result[cube_id]['timesteps'].append(time_step)
+    return result
+
+class BaseCubeApiHandler(base.ApiHandler):
+    def post(self, *args, **kwargs):
+        raise tornado.web.HTTPError(405)
+
+    def publish_cube(self, cube_result, resp_format):
+        template_args = self.get_argument_list_dict()
+        template_args['debug'] = deepy.cfg.debug
+        template_args['buildRev'] = deepy.cfg.current_install.get('revision', '')
+        template_args['buildTime'] = deepy.cfg.current_install.get('buildTime', '')
+
+        template_args = self.get_argument_list_dict()
+        if resp_format == 'json':
+            indent = None
+            if 'pretty_print' in template_args:
+                indent = 2
+            self.set_header("Content-Type", "application/json; charset=UTF-8")
+            self.write(cube_result.get_json(indent))
+            self.finish()
+        elif resp_format == 'datatable' or resp_format == 'table':
+            self.render("templates/cube_datatable.html", cube=cube_result.get_json(), **template_args)
+        elif resp_format == 'timegraph':
+            self.render("templates/cube_timegraph.html", cube=cube_result.get_json(), **template_args)
+        elif resp_format == 'graphtable':
+            self.render("templates/cube_graphtable.html", cube=cube_result.get_json(), **template_args)
+        elif resp_format == 'csv':
+            cube = cube_result.get_dict()
+            out = cStringIO.StringIO()
+            wcsv = csv.writer(out)
+            wcsv.writerow(cube['meta_data']['dimensions']
+                    + cube['meta_data']['measures'])
+            wcsv.writerows(cube['cube'])
+            self.set_header("Content-Type", "text/csv")
+            self.write(out.getvalue())
+            self.finish()
+
+
+class CubeApiInfluxDB(BaseCubeApiHandler):
+    required_permissions = ['cube_api']
+
+    def get(self, *args, **kwargs):
+        log.info("cube-api-influxdb-start")
+
+        resp_format = kwargs['format'] if 'format' in kwargs else 'json'
+        params = self.get_argument_list_dict()
+        query_string = params['q'] if 'q' in params else params['query'] if 'query' in params else None
+
+        try:
+            result = deepy.influxdb.cube_query(query_string)
+        except:
+            log.debug("Failed to collect influxdb cube")
+            return
+
+        self.publish_cube(result, resp_format)
+
+        log.info("finished-handling-request")
+
+class CubeApiImpala(BaseCubeApiHandler):
+    required_permissions = ['cube_api']
+
+    def get(self, *args, **kwargs):
+        log.info("cube-api-impala-start")
+
+        resp_format = kwargs['format'] if 'format' in kwargs else 'json'
+        params = self.get_argument_list_dict()
+        query_string = params['q'] if 'q' in params else params['query'] if 'query' in params else None
+
+        try:
+            result = deepy.impala.impala_cube.cube_query(query_string)
+        except:
+            log.debug("Failed to collect impala cube")
+            return
+
+        self.publish_cube(result, resp_format)
+
+        log.info("finished-handling-request")

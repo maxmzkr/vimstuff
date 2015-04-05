@@ -1,0 +1,165 @@
+"""defines implementation specific targets"""
+
+import urlparse
+
+import pandas as pd
+
+
+import builder.targets
+import deepy.impala.tables as impala_tables
+import deepy.log as log
+import snakebite
+import snakebite.errors
+from deepy.build.deepy_util import deepy_command_substitution
+
+
+class DeepyLocalFileSystemTarget(builder.targets.LocalFileSystemTarget):
+    """Used to make sure that all the nodes have the deepy $(var)s replaced"""
+    def __init__(self, unexpanded_id, local_path, build_context, config=None):
+        super(DeepyLocalFileSystemTarget, self).__init__(
+                unexpanded_id, local_path, build_context,
+                config=config)
+        self.unique_id = deepy_command_substitution(self.unique_id)
+
+class DeepyGlobLocalFileSystemTarget(
+        builder.targets.GlobLocalFileSystemTarget):
+    """Used to make sure that all the nodes have the deepy $(var)s replaced"""
+    def __init__(self, unexpanded_id, pattern, build_context, config=None):
+        super(DeepyGlobLocalFileSystemTarget, self).__init__(
+                unexpanded_id, pattern, build_context,
+                config=config)
+        self.unique_id = deepy_command_substitution(self.unique_id)
+
+class DeepyS3BackedLocalFileSystemTarget(
+        builder.targets.S3BackedLocalFileSystemTarget):
+    """Used to make sure that all the nodes have the deepy $(var)s replaced"""
+    def __init__(self, unexpanded_id, local_path, build_context, config=None):
+        super(DeepyS3BackedLocalFileSystemTarget, self).__init__(
+                unexpanded_id, local_path, build_context,
+                config=config)
+        self.unique_id = deepy_command_substitution(self.unique_id)
+
+class DeepyS3BackedGlobLocalFileSystemTarget(
+        builder.targets.S3BackedGlobLocalFileSystemTarget):
+    """Used to make sure that all the nodes have the deepy $(var)s replaced"""
+    def __init__(self, unexpanded_id, pattern, build_context, config=None):
+        super(DeepyS3BackedGlobLocalFileSystemTarget, self).__init__(
+                unexpanded_id, pattern, build_context,
+                config=config)
+        self.unique_id = deepy_command_substitution(self.unique_id)
+
+
+# pdtest.py run
+class ImpalaTimePartitionedTarget(builder.targets.Target):
+
+    """An ImpalaTableTarget is a target that corresponds to the insertion of a single partition
+    into an impala table
+
+    The mtime is retrieved from the impala data index
+    The existence value is determined by the impala data index
+    """
+
+    def __init__(self, unexpanded_id, unique_id, build_context, dataset_name, time_step,
+                 compacted=False, config=None):
+        super(ImpalaTimePartitionedTarget, self).__init__(unexpanded_id, unique_id, build_context, config=config)
+        self.dataset_name = dataset_name
+        self.time_step = time_step
+        self.table_manager = self._get_table_manager()
+        self.compacted = compacted
+
+    def _get_snakebite_client(self):
+        return snakebite.client.AutoConfigClient()
+
+    def _get_table_manager(self):
+        return impala_tables.make_cube_data_manager(self.dataset_name, self.time_step)
+
+    @staticmethod
+    def _partition_exists_mtime(full_partition_path, hdfs_client):
+        try:
+            paths = tuple(hdfs_client.ls([full_partition_path]))
+        except snakebite.errors.FileNotFoundException:
+            return {'mtime': None, 'exists': False}
+        exists_paths = filter(lambda x: x['length'] !=0, paths)
+        mtime = max(map(lambda x: x['modification_time'], paths))
+        exists =  len(exists_paths) > 0
+        return {'mtime': mtime, 'exists': exists}
+
+    @staticmethod
+    def get_bulk_exists_mtime(targets):
+        """Gets all the exists and mtimes for the local paths and returns them
+        in a dict. Just as efficient as normal mtime and exists
+        """
+
+        # Get unique dataset/time_step pairs
+        tables = map(lambda x: x.get_table(), targets)
+        unique_tables = set(tables)
+
+        # Get locations for each table from impala
+        table_locations = {}
+        for table in unique_tables:
+            table_locations[table] = table.location
+
+        # For each target, decide if it exists and get its mtime if it does
+        exists_mtime_dict = {}
+        for target in targets:
+            location = table_locations[target.get_table()]
+            if location is not None:
+                location = urlparse.urlparse(location).path
+            else:
+                exists_mtime_dict[target.unique_id] = {'exists': False, 'mtime': None}
+                continue
+            partition_path = target.get_partition_path(target.build_context['start_time'])
+            full_path = '{}{}'.format(location, partition_path)
+            hdfs_client = target._get_snakebite_client()
+            exists_mtime_dict[target.unique_id] = ImpalaTimePartitionedTarget._partition_exists_mtime(
+                full_path, hdfs_client)
+
+        return exists_mtime_dict
+
+    def _get_exists_mtime(self):
+        location = self.get_table().location
+        if location is not None:
+            location = urlparse.urlparse(location).path
+        else:
+            return {'exists': False, 'mtime': None}
+        partition_path = self.get_partition_path(self.build_context['start_time'])
+        full_path = '{}{}'.format(location, partition_path)
+
+        result = self._partition_exists_mtime(full_path, self._get_snakebite_client())
+        return result
+
+    def get_exists(self, cached=True):
+        """Returns whether or exists
+        """
+        if cached and self.exists is not None:
+            return self.exists
+
+        self.get_mtime(cached=cached)
+        return self.exists
+
+    def get_mtime(self, cached=True):
+        """Returns the value of the mtime of the file as reported
+        by the hdfs
+        """
+        if cached and self.exists is not None:
+            return self.mtime
+
+        exists_mtime = self._get_exists_mtime()
+        self.mtime = exists_mtime['mtime']
+        self.exists = exists_mtime['exists']
+        return self.mtime
+
+    def get_table(self):
+        """Gets the table that contains this target's data
+
+        Returns:
+            table_name (string)
+        """
+        table = self.table_manager.get_insertion_table(self.build_context['start_time'])
+        return table
+
+    def get_partition_path(self, timestamp):
+        """Get partition path for this target. Does not include the prefix, this is only the
+        partition path, e.g. /year=2015/month=02/day=06
+        """
+        return self.table_manager.partition_path(timestamp, compacted=self.compacted)

@@ -1,0 +1,73 @@
+#include <iostream>
+#include "./cpu_impl.h"
+#include "./mutex.h"
+#include "./mutex_impl.h"
+#include "./thread_impl.h"
+#include "./cv.h"
+#include "./cv_impl.h"
+
+cv::cv() { impl_ptr = new impl(); }
+
+cv::~cv() { delete impl_ptr; }
+
+void cv::wait(mutex& wait_mutex) {
+  // lock and disable interrupts
+  cpu::interrupt_disable();
+  cpu::impl::get_guard();
+
+  // get blocked thread and add to waiting queue
+  thread::impl* wait_thread = thread::impl::self();
+  impl_ptr->add_waiting_thread(wait_thread);
+
+  // unlock mutex
+  wait_mutex.impl_ptr->unlock();
+
+  cpu* this_cpu = cpu::self();
+  this_cpu->impl_ptr->run_next_thread();
+
+  // when the thread returns from waiting it will continue the code here
+  guard = false;
+  cpu::interrupt_enable();
+  wait_mutex.lock();
+}
+
+void cv::signal() {
+  // instead of using the global guard, use the cv_lock first
+  // plus lock and unlock won't work once you've entered the guard
+  cpu::interrupt_disable();
+
+  // grab guard
+  cpu::impl::get_guard();
+
+  // move thread from waiting queue to ready queue
+	if (impl_ptr->waiting_thread()) {
+		impl_ptr->release_waiting_thread();
+	}
+
+  // release guard
+  guard = false;
+  cpu::interrupt_enable();
+}
+
+void cv::broadcast() {
+  // broadcast will need to be the same thing as signal just in a loop. You
+  // don't want to call signal directly because you should be locking outside
+  // the loop and signal will dead lock if you do that.
+  // Maybe factor out everything in signal inside the lock to prevent duplicate
+  // code
+
+  // lock
+  cpu::interrupt_disable();
+
+  // grab guard
+  cpu::impl::get_guard();
+
+  // take everything off waiting queue and put it in the ready queue
+  while (impl_ptr->waiting_thread()) {
+    impl_ptr->release_waiting_thread();
+  }
+
+  // release guard
+  guard = false;
+  cpu::interrupt_enable();
+}

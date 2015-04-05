@@ -1,0 +1,3 @@
+#!/bin/bash
+source /home/max/.bash/go/goapp.sh
+source /home/max/.bash/go/bin.sh

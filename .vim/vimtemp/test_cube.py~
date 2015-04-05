@@ -1,0 +1,978 @@
+import mock
+import unittest
+import gzip
+import json
+import random
+import collections
+import tempfile
+
+import numpy as np
+import pandas as pd
+
+import deepy.cube
+import deepy.cube_apply
+import deepy.dimensions
+import deepy.status
+import deepy.timerange
+import deepy.personalization as pszn
+
+from nose.tools import raises
+from testing import unit, fixtures, integration, fixture, mock_infrastructure
+
+# Utilities to neaten code.
+def _ch(cube_file):
+    ''' Load file into CubeHash '''
+    return deepy.cube.CubeLoader(cube_file).to_cube_hash()
+
+def _simple_query(query_dict, cube_file_list, ddb):
+    ''' Run single query over files. Can also pass single file. '''
+    if isinstance(cube_file_list, basestring):
+        cube_file_list = [cube_file_list]
+        cq = deepy.cube.CubeQuery(query_dict, ddb=ddb)
+        res_list = deepy.cube.cube_map_queries([cq], cube_files=cube_file_list)
+        res_cube = res_list[0][1]
+        return res_cube
+
+class CubeMiscTests(unittest.TestCase):
+    '''
+    Tests for some of the utility functions in cube.py
+    '''
+    @unit
+    def test_get_dim_list_ids_names_to_ids(self):
+        '''
+        Pass in a list of names. Expect a list of ids
+        '''
+
+        dim_mappings = {
+            'foo': 1,
+            'bar': 2,
+            'baz': 3
+        }
+        ddb = mock.Mock()
+        def gibn(dim):
+            return dim_mappings.get(dim)
+
+        test_dims = ['foo', 'bar', 'baz']
+        ddb.get_id_by_name = mock.Mock(side_effect=gibn)
+
+        ret_dims = set(deepy.cube.get_dim_list_ids(test_dims, ddb))
+        expected_dims = set(dim_mappings.values())
+        self.assertEqual(ret_dims, expected_dims)
+
+    @unit
+    def test_get_dim_list_ids_ids_to_ids(self):
+        '''
+        Pass in a list of ids. Expect the same ids back
+        '''
+        dim_mappings = {
+            '1': 1,
+            '2': 2,
+            '3': 3
+        }
+        ddb = mock.Mock()
+        def gibn(dim):
+            return None
+        def gbi(dim):
+            return dim_mappings.get(dim)
+        ddb.get_id_by_name = mock.Mock(side_effect=gibn)
+        ddb.get_by_id = mock.Mock(side_effect=gbi)
+
+        test_dims = ['1', '2', '3']
+
+        ret_dims = set(deepy.cube.get_dim_list_ids(test_dims, ddb))
+        self.assertEqual(ret_dims, set(test_dims))
+    @unit
+    def test_get_dim_list_ids_invalid_dim_id(self):
+        '''
+        Pass in a list of invalid ids. Should return nothing
+        '''
+        ddb = mock.Mock()
+        def gibn(dim):
+            return None
+        def gbi(dim):
+            return None
+        ddb.get_id_by_name = mock.Mock(side_effect=gibn)
+        ddb.get_by_id = mock.Mock(side_effect=gbi)
+        test_dims = ['1', '2', '3']
+
+        ret_dims = set(deepy.cube.get_dim_list_ids(test_dims, ddb))
+        self.assertFalse(ret_dims)
+
+    @unit
+    def test_get_dim_list_ids_invalid_dim_names(self):
+        '''
+        Pass in a list of invalid names. Should return nothing
+        '''
+        ddb = mock.Mock()
+        def gibn(dim):
+            return None
+        def gbi(dim):
+            return None
+        ddb.get_id_by_name = mock.Mock(side_effect=gibn)
+        ddb.get_by_id = mock.Mock(side_effect=gbi)
+        test_dims = ['foo', 'bar', 'baz']
+
+        ret_dims = set(deepy.cube.get_dim_list_ids(test_dims, ddb))
+        self.assertFalse(ret_dims)
+
+    @unit
+    def test_get_dim_list_ids_fake_dims(self):
+        '''
+        Pass in some known "fake" dimensions and some
+        actually fake dimensions. Should only return the
+        known fake dimensions
+        '''
+        ddb = mock.Mock()
+        def gibn(dim):
+            return None
+        ddb.get_id_by_name = mock.Mock(side_effect=gibn)
+        known_fake_dims = ['timestamp', 'user']
+        unknown_fake_dims = ['foo', 'bar', 'baz']
+
+        ret_dims = set(deepy.cube.get_dim_list_ids(known_fake_dims + unknown_fake_dims, ddb))
+        self.assertTrue(ret_dims, known_fake_dims)
+
+class CubeHashTests(unittest.TestCase):
+    '''
+    Lower-level tests of some CubeHash methods.
+    '''
+
+    def setUp(self):
+        self.fx = fixtures.load_fixture('onnet-small')
+
+    @mock_infrastructure
+    def test_compare(self):
+        fx = self.fx
+        ch1 = _ch(fx['cube.2014-01-28-21-45.h5'])
+        ch2 = _ch(fx['cube.2014-01-29-14-10.h5'])
+        ch3 = _ch(fx['cube.2014-01-28-21-45.h5'])
+        # Test equals.
+        self.assertFalse(ch1.equals(ch2))
+        self.assertTrue(ch1.equals(ch3))
+        # Test equals operators.
+        self.assertTrue(ch1 == ch3)
+        self.assertTrue(ch1 != ch2)
+
+    @mock_infrastructure
+    def test_get_measure(self):
+        ch1 = _ch(self.fx['cube.2014-01-28-21-45.h5'])
+        measure = ch1.get_measure('recv.bytes', 1)
+        self.assertEquals(74048000.0, measure)
+
+    @mock_infrastructure
+    def test_get_position_id(self):
+        ch1 = _ch(self.fx['cube.2014-01-28-21-45.h5'])
+        position_id = ch1.get_position_id('103.local', 3)
+        self.assertEquals(7162, position_id)
+
+    @mock_infrastructure
+    def test_get_position_ids(self):
+        ch1 = _ch(self.fx['cube.2014-01-28-21-45.h5'])
+        position_ids = ch1.get_position_ids('103.local')
+        self.assertEquals(7162, position_ids[3])
+
+    @mock_infrastructure
+    def test_get_position_by_dimension_name(self):
+        ch1 = _ch(self.fx['cube.2014-01-28-21-45.h5'])
+        ch1.dim_db = mock.Mock()
+        ch1.dim_db.get_id_by_name.return_value = '103.local'
+        position_id = ch1.get_position_id('origin_asn.local', 3)
+        self.assertEquals(7162, position_id)
+
+class CubeHashBoundsTests(unittest.TestCase):
+
+    @mock_infrastructure
+    @unit
+    def test_zero_length(self):
+        passed = True
+        pos = {'102': np.array([], dtype=np.uint32)}
+        meas = {'local_host_count': np.array([], dtype=np.float32)}
+        try:
+            deepy.cube.CubeHash.from_arrays(pos, meas)
+        except IndexError:
+            passed = False
+        self.assertTrue(passed)
+
+    @mock_infrastructure
+    @unit
+    def test_original_behavior(self):
+        truth = {
+            "cube": [
+                [
+                    1L,
+                    1402602057,
+                    3.0
+                ]
+            ],
+            "meta_data": {
+                "version": 2,
+                "dimensions": [
+                    "102",
+                    "timestamp"
+                ],
+                "measures": [
+                    "local_host_count"
+                ],
+                "time": {
+                    "valid_seconds": {
+                        1402602057: 3600
+                    },
+                    "step": 3600
+                },
+                "query_warnings": [],
+                "cube": None,
+                "query": None,
+                "url": None,
+                "urls": [],
+                "values_per_position": None
+            }
+        }
+        cube = deepy.cube.CubeHash.from_arrays({'102': np.array([1,1,1],
+            dtype=np.uint32)}, {'local_host_count': np.array([1.0,1.0,1.0],
+            dtype=np.float32)})
+        cube.add_timestamp_dimension(1402602057, 3600)
+        cube = dict(cube.get_dict())
+        cube["meta_data"] = dict(cube["meta_data"])
+        self.assertDictEqual(cube, truth)
+
+# Query path tests.
+# Sync fixtures:
+# s3cmd sync --delete-removed . s3://fixtures.pdrlabs.net/simple-cubes/
+class CubeQueryTests(unittest.TestCase):
+    # These applies are covered in separate tests: groupby_pandas,
+    # crowmile_distance, aggregate_connector
+    '''
+    TODO
+    groupby_attribute_connector
+    remove_empty_fake
+    optional dimensions
+    '''
+    # Simple input cube with 4 dimensions
+    def _build_in_4d(self):
+        pos = collections.OrderedDict()
+        ts = deepy.timerange.parse_datetime('2014-03-01-00', '-')
+        # 2x 2 days of hours = 96 positions
+        pos['timestamp'] = np.repeat(np.arange(ts, ts+24*3600*2, 3600), 2)
+        pos['1'] = np.tile(np.arange(2), 48)
+        pos['2'] = np.tile(np.arange(16), 6)
+        pos['3'] = np.tile(np.arange(32), 3)
+
+        meas = collections.OrderedDict()
+        meas['sent.bytes'] = np.ones(96)
+        meas['recv.bytes'] = np.arange(96.0)
+        c1 = deepy.cube.CubeHash.from_arrays(pos, meas, timestep=3600)
+
+        return c1
+
+    # Used to create initial input cubes.
+    def _create_fixtures(self):
+        fx = fixtures.load_fixture('simple-cubes')
+        deepy.cfg.init('fixtures')
+
+        c1 = self._build_in_4d()
+        c1.write_to_store(fx.basepath + '/in-4d.h5')
+
+    def setUp(self):
+        # Uncomment to build input fixtures.
+        #self._create_fixtures()
+        self.fx = fixtures.load_fixture('simple-cubes')
+
+    def init(self):
+        self.ddb = deepy.dimensions.DimensionsDB()
+        deepy.cfg.init()
+
+    @mock_infrastructure('merit')
+    def test_1d(self):
+        self.init()
+        # 1D rollup
+        res = _simple_query({'dimensions': ['1']},
+                self.fx['in-4d.h5'], self.ddb)
+        self.assertTrue(res == _ch(self.fx['out-1d.h5']))
+
+    @mock_infrastructure('merit')
+    def test_measure_fixup(self):
+        self.init()
+        res = _simple_query({
+            'dimensions': ['timestamp'],
+            'applies': [ { 'fn': 'measure_fixup' } ],
+            },
+            self.fx['in-4d.h5'], self.ddb)
+        self.assertTrue(res == _ch(self.fx['out-measure-fixup.h5']))
+
+    @mock_infrastructure('merit')
+    def test_time_dist(self):
+        self.init()
+        res = _simple_query({
+            'dimensions': ['timestamp', '1'],
+            'applies': [ {
+                'fn': 'time_dist',
+                'args': ['days', '95 98']
+                } ],
+            },
+            self.fx['in-4d.h5'], self.ddb)
+        self.assertTrue(res == _ch(self.fx['out-time-dist.h5']))
+
+    @mock_infrastructure('merit')
+    def test_group_other(self):
+        self.init()
+        res = _simple_query({
+            'dimensions': ['1', '3'],
+            'applies': [ {
+                'fn': 'group_other',
+                'args': ['3', 'null', '1', '2', '3', '4']
+                } ],
+            },
+            self.fx['in-4d.h5'], self.ddb)
+        self.assertTrue(res == _ch(self.fx['out-group-other.h5']))
+
+    @mock_infrastructure('merit')
+    def test_sort(self):
+        self.init()
+        res = _simple_query({
+            'dimensions': ['1', '2'],
+            'applies': [ {
+                'fn': 'sort',
+                'args': ['recv.bytes', 'desc']
+                } ],
+            },
+            self.fx['in-4d.h5'], self.ddb)
+        self.assertTrue(res == _ch(self.fx['out-sort.h5']))
+
+    @mock_infrastructure('merit')
+    def test_limit(self):
+        self.init()
+        res = _simple_query({
+            'dimensions': ['1', '2'],
+            'applies': [
+                { 'fn': 'sort',
+                'args': ['recv.bytes', 'desc'] },
+                { 'fn': 'limit',
+                'args': ['5'] },
+                ],
+            },
+            self.fx['in-4d.h5'], self.ddb)
+        self.assertTrue(res == _ch(self.fx['out-limit.h5']))
+
+    @mock_infrastructure('merit')
+    def test_timestep_change(self):
+        self.init()
+        res = _simple_query({
+            'dimensions': ['timestamp', '1'],
+            'applies': [
+                { 'fn': 'timestep_change',
+                'args': ['day'] },
+                ],
+            },
+            self.fx['in-4d.h5'], self.ddb)
+        self.assertTrue(res == _ch(self.fx['out-timestep-change.h5']))
+
+    @mock_infrastructure('merit')
+    def test_slice_negate(self):
+        self.init()
+        res = _simple_query({
+            'dimensions': ['1', '2'],
+            'applies': [
+                { 'fn': 'slice_negate' },
+                ],
+            'slices': [
+                { "dimension": "1",
+                    "type": "include",
+                    "values": ['null'] },
+                { "dimension": "2",
+                    "type": "include",
+                    "values": ['null','1','2','3','4','5'] },
+                ]
+            },
+            self.fx['in-4d.h5'], self.ddb)
+        self.assertTrue(res == _ch(self.fx['out-slice-negate.h5']))
+
+    @unittest.skip('out-names.h5 needs update')
+    @mock_infrastructure('merit')
+    def test_names(self):
+        self.init()
+        # Need actual dim_db for names.
+        ddb = deepy.dimensions.DimensionsDB(db_file=self.fx['dimensions_db.json.gz'])
+        res = _simple_query({
+            'dimensions': ['cdn'],
+            'applies': [
+                { 'fn': 'return_dimension_names' },
+                { 'fn': 'convert_to_names' },
+                ],
+            },
+            self.fx['drill_small.2014-04-11-13.h5'], ddb)
+        self.assertEquals(res, _ch(self.fx['out-names.h5']))
+
+    @mock_infrastructure('merit')
+    def test_groupby_attribute(self):
+        self.init()
+        # Tests mixture local/remote with groupby.
+        # Need actual dim_db for groups.
+        ddb = deepy.dimensions.DimensionsDB(db_file=self.fx['dimensions_db.json.gz'])
+        res = _simple_query({
+            'dimensions': ['class.local:group', 'class.remote:group',
+                'member.local:group', 'member.remote:group', 'member.remote']
+            },
+            self.fx['drill_small.2014-04-11-13.h5'], ddb)
+        self.assertTrue(res == _ch(self.fx['out-groupby-attr.h5']))
+
+    @integration
+    @mock_infrastructure('merit')
+    def test_time_dist_ci_1236(self):
+        self.init()
+        # Given
+        self.fx = fixtures.load_fixture('CI-1236')
+        dimensions = ['timestamp', self.ddb.get_id_by_name('service')]
+        input_cube_path = self.fx['cube.2014-11-03-12.h5']
+
+        # When
+        original = _simple_query({
+            'dimensions': dimensions,
+        }, input_cube_path, self.ddb)
+        res = _simple_query({
+            'dimensions': dimensions,
+            'applies': [ {
+                'fn': 'time_dist',
+                'args': ['days']
+                } ],
+            },
+            input_cube_path, self.ddb)
+
+        # Then
+        idx = res.measures.index('pctl.recv.bps.60')
+        recv_bps_p60 = res.measure_arrays[idx]
+        self.assertFalse((recv_bps_p60 == 0).all())
+
+class TestTimeDistCalc(unittest.TestCase):
+
+    @unittest.skip("Does not work, see ticket CI-1352 before"
+        " unskipping or trying to fix")
+    @mock_infrastructure('comcast2')
+    def test_simple_percentile_calculation_ci_1236(self):
+        # Given
+        tdc = deepy.cube_cy.TimeDistCalc()
+        timestamps = np.array([0,0,0,3600,3600,3600,7200,7200,7200],
+            dtype=np.uint32)
+        d_102_positions = np.array([1,1,2,1,1,2,1,1,1], dtype=np.uint32)
+        d_103_positions = np.array([1,2,3,1,2,3,1,2,3], dtype=np.uint32)
+        measure_values = np.array([42., 43., 44., 46, 47, 48, 49, 50, 51],
+            dtype=np.float32)
+        df = pd.DataFrame({
+            '102': d_102_positions,
+            '103': d_103_positions,
+            'recv.bps': measure_values.copy()/3600.*2*8,
+            'recv.bytes': measure_values.copy()*2,
+            'sent.bps': measure_values.copy()/3600.*8,
+            'sent.bytes': measure_values.copy(),
+            'timestamp': timestamps,
+            'total.bps': measure_values.copy()/3600.*3.*8,
+            'total.bytes': measure_values.copy()*3.
+        })
+        gb = df.groupby(('timestamp'), as_index=False, sort=False)
+        pctls = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75,
+            80, 85, 90, 95, 96, 97, 98, 99, 100]
+        pctl_meas_in = [u'recv.bps', u'sent.bps', 'total.bps']
+        copy_pctls = True
+
+        # When
+        pctl_out = tdc.calc_percentiles(gb, list(df.columns), pctls,
+            pctl_meas_in , copy_pctls)
+
+        # Then
+        # Nothing should be zero
+        for meas_ix, meas_id_in in enumerate(pctl_meas_in):
+            for pctl_ix, pctl_val in enumerate(pctls):
+                self.assertFalse((pctl_out[:, meas_ix, pctl_ix] == 0).all())
+
+class CubeApplyCostingTest(unittest.TestCase):
+
+    def setUp(self):
+        self.fixture = fixtures.load_fixture('ApplyCubeCostingTest')
+        self.cube = _ch(self.fixture['cube.2014-04-20-00-35.h5'])
+
+    def init(self):
+        self.dim_db = deepy.dimensions.DimensionsDB()
+        self.cube.dim_db = self.dim_db
+        self.apply_costing = deepy.cube_apply.ApplyCosting(['peer.remote'], {}, self.dim_db)
+
+    @mock_infrastructure('fastweb', config_only=False)
+    def test_get_cost_data(self):
+        self.init()
+        # Given
+        cube = self.cube
+        row_id = 0
+
+        # When
+        peer_id = cube.get_position_id('peer.remote', row_id)
+        peer = self.dim_db.get_by_name('peer.remote')['positions'][str(peer_id)]
+        cost_data = self.apply_costing.get_cost_data(peer)
+
+        # Then
+        self.assertEquals(cost_data, {'terms_description': 'Transit Costs', 'commit_mbps': 0, 'price_per_mbps': 0.73})
+
+    @integration
+    @mock_infrastructure('fastweb', config_only=False)
+    def test_get_cost(self):
+        self.init()
+        # Given
+        cube = _simple_query({
+          'dimensions': ['timestamp', 'peer.remote', 'router.local'],
+          'applies': [{'fn': 'time_dist', 'args': ['hours', '95']}]
+        }, self.fixture['cube.2014-04-20-00-35.h5'], self.dim_db)
+        row_id = 0
+        self.apply_costing.total_peer_cost[158] = {'cost':5, 'cost_per_mbps': 0.1}
+        self.apply_costing.total_peer_mbps[158] = 10000.
+
+        # When
+        cost = self.apply_costing.get_cost(cube, 0)
+
+        # Then
+        self.assertEquals(cost, {'cost': 1.8064020479999998, 'cost_per_mbps': 0.036128040959999996})
+
+    @integration
+    @mock_infrastructure('fastweb', config_only=False)
+    def test_apply(self):
+        self.init()
+        # Given
+        cube = _simple_query({
+          'dimensions': ['timestamp', 'peer.remote', 'router.local'],
+          'applies': [{'fn': 'time_dist', 'args': ['hours', '95']}]
+        }, self.fixture['cube.2014-04-20-00-35.h5'], self.dim_db)
+        row_id = 0
+
+        # When
+        cube_result = self.apply_costing.apply(cube)
+
+        # Then
+        self.assertTrue('cost' in cube_result.measures)
+        self.assertTrue('cost_per_mbps' in cube_result.measures)
+
+class CubeApplyGroupbyAttributeConnectorTest(unittest.TestCase):
+    def init(self):
+        self.fx = fixtures.load_fixture('ApplyGroupbyAttributeConnectorTest')
+        self.intf_cube = self.fx['interfaces.cube.2015-03-02-00-00.h5']
+        self.ddb = deepy.dimensions.DimensionsDB(
+            db_file=self.fx['dimensions_db.json.gz'])
+
+    @integration
+    @mock_infrastructure('merit')
+    def test_groubpy_region_baseline_local(self):
+        self.init()
+        cube = deepy.cube.CubeLoader(self.intf_cube)
+        apply_groupby = deepy.cube_apply.ApplyGroupbyAttributeConnector(
+            apply_args = [],
+            apply_kwargs = {
+                "output_dimension": "CableLabs_Region_Baseline.local"
+            },
+            dim_db = self.ddb
+        )
+
+        apply_groupby.process_cube_in(cube)
+        df = cube.to_data_frame()
+        gb = df.groupby('10210.local')
+        gbs = gb.sum()
+        self.assertAlmostEqual(gbs['output.bytes'][35], 12232712781824.0,
+                               delta=6.0e9)
+        self.assertAlmostEqual(gbs['input.bytes'][35], 12628524007424.0,
+                               delta=6.0e9)
+        self.assertAlmostEqual(gbs['output.bytes'][292], 3401802579968.0,
+                               delta=6.0e9)
+        self.assertAlmostEqual(gbs['input.bytes'][292], 3401864183808.0,
+                               delta=6.0e9)
+        self.assertAlmostEqual(gbs['output.bytes'][256], 16328819736576.0,
+                               delta=6.0e9)
+        self.assertAlmostEqual(gbs['input.bytes'][256], 16519566196736.0,
+                               delta=6.0e9)
+
+    @integration
+    @mock_infrastructure('merit')
+    def test_groubpy_region(self):
+        self.init()
+        cube = deepy.cube.CubeLoader(self.intf_cube)
+        apply_groupby = deepy.cube_apply.ApplyGroupbyAttributeConnector(
+            apply_args = [],
+            apply_kwargs = {
+                "output_dimension": "CableLabs_Region"
+            },
+            dim_db = self.ddb
+        )
+
+        apply_groupby.process_cube_in(cube)
+        df = cube.to_data_frame()
+        gb = df.groupby('210')
+        gbs = gb.sum()
+
+        self.assertAlmostEqual(gbs['output.bytes'][35], 12232712781824.0,
+                               delta=6e9)
+        self.assertAlmostEqual(gbs['input.bytes'][35], 12628524007424.0,
+                               delta=6e9)
+        self.assertAlmostEqual(gbs['output.bytes'][292], 3401802579968.0,
+                               delta=6e9)
+        self.assertAlmostEqual(gbs['input.bytes'][292], 3401864183808.0,
+                               delta=6e9)
+        self.assertAlmostEqual(gbs['output.bytes'][256], 16328819736576.0,
+                               delta=6e9)
+        self.assertAlmostEqual(gbs['input.bytes'][256], 16519566196736.0,
+                               delta=6e9)
+
+    @integration
+    @mock_infrastructure('
+    def test_groubpy_path(self):
+        self.init()
+        cube = deepy.cube.CubeLoader(self.intf_cube)
+        apply_groupby = deepy.cube_apply.ApplyGroupbyAttributeConnector(
+            apply_args = [],
+            apply_kwargs = {
+                "output_dimension": "CableLabs_path"
+            },
+            dim_db = self.ddb
+        )
+
+        apply_groupby.process_cube_in(cube)
+        df = cube.to_data_frame()
+        gb = df.groupby('212')
+        gbs = gb.sum()
+        self.assertAlmostEqual(gbs['output.bytes'][77952], 427086080.0,
+                              delta=8e5)
+        self.assertAlmostEqual(gbs['input.bytes'][77952], 103986000.0,
+                              delta=8e5)
+
+
+class CubeApplyCapacityTest(unittest.TestCase):
+
+    def init(self):
+        deepy.cfg.init('mediacom')
+        self.dimensions_db = deepy.dimensions.DimensionsDB()
+
+        self.fixture = fixtures.load_fixture('ApplyCubeCapacityTest')
+        self.cube = self.fixture['cube.2014-11-11-14-30.h5']
+
+        apply_args = []
+        apply_kwargs = {}
+        self.apply_capacity = deepy.cube_apply.ApplyCapacity(
+                apply_args = apply_args,
+                apply_kwargs = apply_kwargs,
+                dim_db = self.dimensions_db
+            )
+
+    @integration
+    @mock_infrastructure('mediacom')
+    def test_apply(self):
+        self.init()
+        # Given
+        cube = deepy.cube.CubeLoader(self.cube)
+
+        # When
+        self.apply_capacity.process_cube_in(cube)
+
+        # Then
+        self.assertTrue('capacity.bps' in cube.measures)
+
+
+class CubeApplyPandasTest(unittest.TestCase):
+
+    def setUp(self):
+        apply_args = []
+        apply_kwargs = {
+                'eliminate_dimension': "vm",
+                'aggregators':[
+                    {'fn':'max', 'args':[]},
+                    {'fn':'mean', 'args':[]}
+                ]
+        }
+
+        # Configure for status so we have the right dimensions db
+        deepy.cfg.init('status')
+
+        self.dimensions_db = deepy.dimensions.DimensionsDB()
+        apply_pandas = deepy.cube_apply.ApplyPandas(apply_args = apply_args,
+                apply_kwargs = apply_kwargs, dim_db = self.dimensions_db)
+
+        self.apply_pandas = apply_pandas
+
+    @fixture('heartbeats-cube')
+    def get_heartbeat_cube(self, heartbeat_cube):
+        ''
+        filename = heartbeat_cube[0]
+        cube = deepy.cube.cube_map([filename], dimensions_db = self.dimensions_db)
+        return cube
+
+    @integration
+    def test_apply(self):
+        # Given
+        input_cube = self.get_heartbeat_cube()
+        apply_pandas = self.apply_pandas
+
+        # When
+        output_cube = apply_pandas.apply(cube_result = input_cube)
+
+        # Then
+        self.assertTrue(self.dimensions_db.get_id_by_name('deployment') in output_cube.dimensions)
+        for measure in input_cube.measures:
+            for aggregation_function in apply_pandas.aggregation_functions:
+                function_name = aggregation_function['fn']
+                if function_name == 'mean':
+                    function_name = 'avg'
+                self.assertTrue(function_name + "." + measure in output_cube.measures)
+
+    @integration
+    @fixture('heartbeats-cube', get_one = True)
+    def test_groupby_pandas_from_cube_query(self, heartbeats_cube_path):
+        # Given
+        input_cube = self.get_heartbeat_cube()
+        groupby = [
+            {
+                'dimension': 'vm',
+                'aggregators': ['max','mean']
+            }
+        ]
+        deepy.cfg.init('status')
+
+        # When
+        with mock.patch('deepy.cube._find_cube_rule_match') as find_cube_rule_match:
+            find_cube_rule_match().get_target.return_value = heartbeats_cube_path
+            cube = deepy.cube.cube_query('heartbeat', groupby = groupby,
+                slice_defs = [
+                    {
+                        'dimension':'timestamp',
+                        'type': 'range_include',
+                        'values': {'start': 1390867200, 'end': 1391039700}
+                    }
+                ]
+            )
+
+            # Then
+            self.assertTrue('deployment' in cube.dimensions)
+            self.assertTrue('vm' not in cube.dimensions)
+
+    def test_timestamp_rollup_supported(self):
+        # Given
+        timestamp = 1390867200
+        positions = {
+            '102': np.array([1,2,2], dtype=np.uint32)
+        }
+        measures = {
+            'recv.bytes': np.array([0.0,1.0,2.0], dtype=np.float32)
+        }
+        cube = deepy.cube.CubeHash.from_arrays(positions, measures,
+            aggregate=False)
+        cube.add_timestamp_dimension(timestamp, 300)
+        apply_args = []
+        apply_kwargs = {
+            'eliminate_dimension': 'timestamp',
+            'aggregators': [
+                {'fn': 'mean', 'args': []}
+            ]
+        }
+        apply_pandas = deepy.cube_apply.ApplyPandas(apply_args=apply_args,
+                apply_kwargs=apply_kwargs, dim_db = self.dimensions_db)
+
+        # When
+        applied_cube = apply_pandas.apply(cube)
+
+        # Then
+        self.assertEqual(len(applied_cube.measure_arrays[0]), 2)
+
+class CubeApplyAggregateConnectorTest(unittest.TestCase):
+
+    def init(self):
+        self.dim_db = deepy.dimensions.DimensionsDB()
+        dim_id, new_dim = self.dim_db.add_dimension(deepy.dimensions.DIM_TYPES.ephemeral, "crowmile_distance")
+        new_dim['builders'] = ['aggregate_connector']
+
+        self.sample_position_ids = []
+        for d in "ABCDE":
+            pos_id, position = self.dim_db.add_position(new_dim, deepy.dimensions.POS_TYPES.general, d)
+            self.sample_position_ids.append(pos_id)
+
+        example_input_dimensions = ['market.local', 'pops.remote']
+
+        mapping = collections.defaultdict(dict)
+        mapping['dimensions'] = example_input_dimensions
+        position_map = collections.defaultdict(dict)
+        mapping['mapping'] = position_map
+
+        market = self.dim_db.get_by_name('market.local')
+        pop = self.dim_db.get_by_name('pops.remote')
+        counter = 0
+        for pos_id in market['positions']:
+            for pos_id2 in pop['positions']:
+                position_map[pos_id][pos_id2] = random.choice(self.sample_position_ids)
+
+        self.sample_mapping = mapping
+
+    @integration
+    @raises(ValueError)
+    @mock_infrastructure('merit')
+    def test_initialize(self):
+        self.init()
+        # Given
+        ApplyAggregateConnector = deepy.cube_apply.ApplyAggregateConnector
+
+        # When
+        apply_aggregate_connector = ApplyAggregateConnector(
+                apply_args=[],
+                apply_kwargs={'aggregate_dimension_name':"crowmile_distance"},
+                dim_db=self.dim_db
+            )
+
+        # Then
+        self.assertEquals(apply_aggregate_connector.aggregate_dimension_name, "crowmile_distance")
+
+    @integration
+    @mock_infrastructure('onnet')
+    @fixture('onnet-small')
+    def test_apply(self, onnet_small):
+        self.init()
+        count = 0
+        for filename in onnet_small:
+            count += 1
+            # Given
+            cube_loader = deepy.cube.CubeLoader(filename)
+            # When
+            with mock.patch("deepy.cube_apply.ApplyAggregateConnector._get_mapping") as _get_mapping:
+                _get_mapping.return_value = self.sample_mapping
+                apply_aggregate_connector = deepy.cube_apply.ApplyAggregateConnector(
+                    apply_args=[],
+                    apply_kwargs={'aggregate_dimension_name':"crowmile_distance"},
+                    dim_db=self.dim_db
+                )
+                apply_aggregate_connector.apply(cube_loader)
+
+            # Then
+        self.assertTrue(count > 0)
+
+    @integration
+    @mock_infrastructure('comcast')
+    @fixture('comcast-big-cube-single')
+    def test_query(self, onnet_small):
+        self.init()
+        count = 0
+
+        for filename in onnet_small:
+            count += 1
+            # Given
+
+            # When
+            with mock.patch("deepy.cube_apply.ApplyAggregateConnector._get_mapping") as _get_mapping:
+                _get_mapping.return_value = self.sample_mapping
+                output_cube = deepy.cube.cube_map([filename],
+                        result_dimensions=['crowmile_distance'],
+                        dimensions_db = self.dim_db)
+                _get_mapping.assert_any_call()
+
+                self.assertEquals(len(output_cube.dimension_arrays), 1)
+                self.assertEquals(len(output_cube.dimension_arrays[0]), 6)
+                continue
+
+            # When
+
+            # Then
+        self.assertTrue(count > 0)
+
+
+
+class CubeApplyCrowmileDistanceTest(unittest.TestCase):
+
+    def init(self):
+        deepy.cfg.init('merit')
+        self.dimensions_db = deepy.dimensions.DimensionsDB()
+
+        apply_args = ['router.local', 'router.remote']
+        apply_kwargs = {}
+        self.apply_crowmile_distbin = deepy.cube_apply.ApplyCrowmileDistance(
+                apply_args = apply_args,
+                apply_kwargs = apply_kwargs,
+                dim_db = self.dimensions_db
+        )
+
+    @fixture('onnet-small')
+    def get_sample_cube(self, heartbeats_cube):
+        filename = heartbeats_cube[0]
+        cube = deepy.cube.cube_map([filename], dimensions_db = self.dimensions_db)
+        return cube
+
+    @mock_infrastructure('merit')
+    def test_apply(self):
+        self.init()
+
+        # Given
+        input_cube = self.get_sample_cube()
+        apply_crowmile_distbin = self.apply_crowmile_distbin
+
+        # When
+        dimensions_before = input_cube.dimensions
+        input_dimensions = set(input_cube.dimensions)
+        output_cube = apply_crowmile_distbin.apply(input_cube)
+
+        # Then
+        output_dimensions = set(output_cube.dimensions)
+        self.assertEquals(len(output_dimensions), len(input_dimensions)+1) # Should add a dimension
+        added = output_dimensions - input_dimensions
+        self.assertEquals(len(added), 1)
+        added_dimension_id = tuple(added)[0]
+        added_dimension = output_cube.dim_db_local.get_by_id(added_dimension_id)
+
+        self.assertTrue(added_dimension is not None)
+
+    @mock_infrastructure('onnet')
+    @fixture('onnet-small')
+    def test_use_in_query(self, onnet_small):
+        self.init()
+        # Given
+        filenames = onnet_small
+
+        # When
+        for filename in filenames:
+            output_cube = deepy.cube.cube_map([filename], apply_flags = {'crowmile_distance': ['router.local', 'router.remote']}, dimensions_db = self.dimensions_db)
+
+        # Then
+            self.assertTrue(output_cube.dim_db_local.get_id_by_name('crowmile_distance_apply') is not None)
+
+class CubeTest(unittest.TestCase):
+    def init(self):
+        deepy.cfg.init('status')
+        self.dimensions_db = deepy.dimensions.DimensionsDB()
+
+    @fixture('heartbeats-cube', get_one = True)
+    def get_heartbeat_cube(self, heartbeats_cube):
+        ''
+        filename = heartbeats_cube
+        cube = deepy.cube.cube_map([filename], dimensions_db = self.dimensions_db)
+        return cube
+
+    @integration
+    @mock_infrastructure('merit')
+    def test_add_local_dimension(self):
+        # Given
+        dimensions_db = deepy.dimensions.DimensionsDB()
+        dim_id, new_dim = dimensions_db.add_dimension(deepy.dimensions.DIM_TYPES.ephemeral, 'test1')
+
+
+        cube = deepy.cube.CubeHash(
+            dimensions = ['1', '2', '3'],
+            step = {'valid_seconds': {1389657300: 300}, 'step': 300},
+            dim_db = dimensions_db
+        )
+
+        # When
+        dimension_id_out, new_dim = dimensions_db.add_dimension(deepy.dimensions.DIM_TYPES.ephemeral, 'test2')
+        cube.dim_db_local_add_dimensions([dimension_id_out])
+
+        # Then
+        self.assertTrue(dimension_id_out in cube.dimensions)
+
+    @integration
+    @mock_infrastructure('merit')
+    def test_cube_to_data_frame(self):
+        # Given
+        cube = self.get_heartbeat_cube()
+
+        # When
+        data_frame = cube.to_data_frame()
+
+        # Then
+        self.assertEquals(len(data_frame['cpu_pct']), 17)
+
+if __name__ == "__main__":
+    unittest.main()
+

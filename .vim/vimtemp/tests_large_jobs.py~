@@ -1,0 +1,166 @@
+"""Implimentations of the large job expander is here"""
+
+import deepy.build.large_jobs
+
+
+class Job1Top(deepy.build.jobs.Job):
+    """A job that the first job depends on"""
+    unexpanded_id = "job1_top"
+    def get_dependencies(self, build_context=None):
+        return {
+            "depends": [
+                deepy.build.expanders.Expander(
+                    deepy.build.targets.Target,
+                    "job1_super_target"),
+            ]
+        }
+
+    def get_targets(self, build_context=None):
+        return {
+            "produces": [
+                deepy.build.expanders.Expander(
+                    deepy.build.targets.Target,
+                    "job1_depends"),
+            ]
+        }
+
+
+class Job2Top(deepy.build.jobs.Job):
+    """A job that the second job depends on"""
+    unexpanded_id = "job2_top"
+    def get_dependencies(self, build_context=None):
+        return {
+            "depends": [
+                deepy.build.expanders.Expander(
+                    deepy.build.targets.Target,
+                    "job2_super_target"),
+            ]
+        }
+
+    def get_targets(self, build_context=None):
+        return {
+            "produces": [
+                deepy.build.expanders.Expander(
+                    deepy.build.targets.Target,
+                    "job2_depends"),
+            ]
+        }
+
+
+class Job3Top(deepy.build.jobs.Job):
+    """A job that the third job depends on"""
+    unexpanded_id = "job2_top"
+    def get_dependencies(self, build_context=None):
+        return {
+            "depends": [
+                deepy.build.expanders.Expander(
+                    deepy.build.targets.Target,
+                    "job3_super_target"),
+            ]
+        }
+
+    def get_targets(self, build_context=None):
+        return {
+            "produces": [
+                deepy.build.expanders.Expander(
+                    deepy.build.targets.Target,
+                    "job3_depends"),
+            ]
+        }
+
+
+class LargeJobExpanderTest(deepy.build.large_jobs.LargeJobExpander):
+    """Used to test that the large job expander can be expanded correctly"""
+    @classmethod
+    def expand_large(cls, config=None):
+        if config is None:
+            config = {}
+
+        jobs = [LargeJobExpanderTest("job1"), LargeJobExpanderTest("job2")]
+
+        if config.get("job3", False):
+            jobs.append(LargeJobExpanderTest("job3"))
+
+        return jobs
+
+    def get_enable(self):
+        enable_dict = {
+            "job1": True,
+            "job2": False,
+            "job3": False,
+        }
+
+        if self.config.get("job3", False):
+            enable_dict["job3"] = True
+
+        return enable_dict[self.job_id]
+
+    def get_targets(self):
+        targets_dict = {
+            "job1": {
+                "produces": [
+                    deepy.build.expanders.Expander(
+                        deepy.build.targets.Target,
+                        "job1_target"),
+                ],
+            },
+            "job2": {
+                "produces": [
+                    deepy.build.expanders.Expander(
+                        deepy.build.targets.Target,
+                        "job2_target"),
+                ],
+            },
+        }
+
+        if self.config.get("job3", False):
+            targets_dict["job3"] = {
+                "produces": [
+                    deepy.build.expanders.Expander(
+                        deepy.build.targets.Target,
+                        "job3_target"),
+                ],
+            }
+
+
+        return targets_dict.get(self.job_id, {})
+
+    def get_dependencies(self):
+        depends_dict = {
+            "job1": {
+                "depends": [
+                    deepy.build.expanders.Expander(
+                        deepy.build.targets.Target,
+                        "job1_depends"),
+                ],
+            },
+            "job2": {
+                "depends": [
+                    deepy.build.expanders.Expander(
+                        deepy.build.targets.Target,
+                        "job2_depends"),
+                ],
+            },
+        }
+
+        if self.config.get("job3", False):
+            depends_dict["job3"] = {
+                "depends": [
+                    deepy.build.expanders.Expander(
+                        deepy.build.targets.Target,
+                        "job3_depends"),
+                ]
+            }
+
+        return depends_dict.get(self.job_id, {})
+
+    def get_command(self):
+        command_dict = {
+            "job1": "run_job1",
+            "job2": "run_job2",
+        }
+
+        if self.config.get("job3", True):
+            command_dict["job3"] = "run_job3"
+
+        return command_dict[self.job_id]

@@ -1,0 +1,195 @@
+#!/usr/bin/env python
+
+import time
+import argparse
+import math
+import funcy
+import os.path
+import operator
+import pprint
+import os
+import sys
+import collections
+
+import deepy.cfg
+import deepy.cube
+import deepy.timerange
+
+def exists(path):
+    return (os.path.exists(path) and os.path.isfile(path)) or (deepy.store.ls_files_remote([path]))
+
+def get_total_seconds(f):
+    return sum(deepy.cube.CubeLoader(f, meta_only=True).time['valid_seconds'].values())
+
+def print_summary(all_files, missing, incomplete, invalid):
+    m = len(missing)
+    i = len(incomplete) if incomplete is not None else 0
+    x = len(invalid)
+    s = len(all_files)
+
+    if missing:
+        print 'Missing:'
+        print '\n'.join(map(funcy.second, missing))
+
+    if incomplete:
+        print 'Incomplete:'
+        print '\n'.join(map(funcy.second, incomplete))
+
+    if s:
+        print '{} files in range'.format(s)
+        print '{:8} ({:3.2%}) missing'.format(m, float(m) / s)
+        print '{:8} ({:3.2%}) incomplete'.format(i, float(i) / s)
+
+def gap_find(args):
+    if args.deployment:
+        deepy.cfg.init(args.deployment)
+
+    rule = deepy.cube.get_rule(args.cube, args.step)
+    if not rule:
+        return
+
+    end_ts = int(time.time())
+    if args.end:
+        end_ts = deepy.timerange.get_timestamp(args.end)
+
+    step = int(deepy.timerange.convert_to_seconds(args.step))
+
+    end_ts = int(math.floor(end_ts / step)) * step
+    start_ts = end_ts
+    end_ts += step
+
+    if args.start:
+        start_ts = deepy.timerange.get_timestamp(args.start)
+
+    timesteps = range(start_ts, end_ts, step)
+    paths = []
+    for timestamp in timesteps:
+        expanded_targets = rule.expand(
+            {
+                "start_time": timestamp,
+                "end_time": timestamp
+            }
+        )
+        for expanded_target in expanded_targets:
+            paths.append(expanded_target.unique_id)
+
+    if args.ls:
+        mtimes = deepy.store.ls_files_remote(paths)
+        times = funcy.map(collections.defaultdict(lambda: None, mtimes), paths)
+        missing = 0
+        for p, t in zip(paths, times):
+            if not t:
+                missing += 1
+                deepy.log.debug("missing {}".format(p))
+        total = len(paths)
+        if missing > 0:
+            print "{}/{}".format(total - missing, total)
+        else:
+            print "No gaps."
+        return
+
+    deepy.store.cache_load_from_remote(paths)
+
+    all_files = zip(timesteps, paths)
+    missing = funcy.remove(funcy.compose(exists, funcy.second), all_files)
+    invalid = missing[:]
+
+    incomplete = None
+    if args.check_valid_seconds:
+        file_step = deepy.timerange.convert_to_seconds(rule['file_step'])
+        present = sorted(set(all_files) - set(missing))
+        incomplete = funcy.filter(funcy.compose(lambda x: x < file_step, get_total_seconds, funcy.second), present)
+        invalid.extend(incomplete)
+        invalid = sorted(invalid)
+
+    if args.all:
+        invalid = all_files
+
+    if not args.fast_forward:
+        print_summary(all_files, missing, incomplete, invalid)
+    else:
+
+        def find_replacement(t):
+            def gap_dig(week_width, minutes_width, hours_width):
+                def around(size, width, center):
+                    cts = lambda x: center + (size * x)
+                    up = funcy.imap(cts, range(1, width + 1, 1))
+                    down = funcy.imap(cts, range(-1, -width - 1, -1))
+                    return funcy.iconcat([center], funcy.interleave(up, down))
+
+                # find weeks first
+                week_seconds = 86400 * 7
+                week_dates = funcy.drop(1, around(week_seconds, week_width, t))
+
+                # look around each date
+                day_width = minutes_width if step == 300 else hours_width
+                more_dates = funcy.imapcat(funcy.partial(around, step, day_width), week_dates)
+                targets = funcy.imap(rule.get_target, more_dates)
+                return funcy.some(exists, targets)
+
+            # depth first
+            found = gap_dig(4, 2, 1)
+            if found:
+                return found
+
+            # widen
+            return gap_dig(6, 6, 2)
+
+        ffed = 0
+        for ts, target in invalid:
+            print target
+            source = find_replacement(ts)
+            if source:
+                command = "ff.py {} {}".format(source, target)
+                ffed += 1
+
+                print command
+                if args.commit:
+                    os.system(command)
+            else:
+                print "Failed to find replacement for", target
+        print "{} / {}".format(ffed, len(invalid))
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=
+        '''
+        Find/fill data gaps
+
+        Examples:
+
+            Cube_drill_small_5min gaps over an 8 hour period --
+            gaps.py -s 2014-04-17-10-00 -e 2014-04-17-18-00 drill_small 5min
+
+            Dry run of what commands would be run to fast forward the data --
+            gaps.py -F -s 2014-04-17-10-00 -e 2014-04-17-18-00 drill_small 5min
+
+            Fast forward over gaps (should only use if we don't have the historical data) --
+            gaps.py -F --commit -s 2014-04-17-10-00 -e 2014-04-17-18-00 drill_small 5min
+        ''', formatter_class=argparse.RawTextHelpFormatter)
+
+    parser.add_argument('-d', '--deployment', help='deployment id')
+
+    parser.add_argument('cube', help='cube name')
+    parser.add_argument('step', help='cube step size')
+    parser.add_argument('-s', '--start', help='start time')
+    parser.add_argument('-e', '--end', help='end time')
+    parser.add_argument('-F', '--fast-forward', action='store_true', help='ff cubes from a week ago to fill gaps')
+    parser.add_argument('--commit', action='store_true', help='actually execute commands')
+    parser.add_argument('-a', '--all', action='store_true', help='copy over all data in timerange, not just gaps')
+    parser.add_argument('-c', '--check-valid-seconds', action='store_true', help='pop open the cube meta and check the valid seconds against the file step size (warning: slow)')
+    parser.add_argument('--ls', action='store_true', help='only ls_files_remote')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Turn on verbose logging')
+
+    args = parser.parse_args()
+    return args
+
+def main():
+    args = parse_args()
+
+    if args.verbose:
+        deepy.log.init(level='DEBUG')
+
+    gap_find(args)
+
+if __name__ == '__main__':
+    main()

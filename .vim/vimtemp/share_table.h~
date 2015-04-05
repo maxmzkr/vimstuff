@@ -1,0 +1,22 @@
+#ifndef SHARE_TABLE_H_
+#define SHARE_TABLE_H_
+
+#include <unordered_map>
+#include "./page_information_entry.h"
+
+class ShareTable {
+ public:
+  // Returns a pie if there is a valid pie otherwise nullptr
+  static Pie * get_pie(unsigned int share_id);
+
+  // Assigsn a pie with the int
+  static void set_pie(unsigned int share_id, Pie* pie);
+
+  // Delets the pie from the map
+  static void delete_pie(unsigned int share_id);
+
+ private:
+  static std::unordered_map<unsigned int, Pie*>;
+};
+
+#endif  // SHARE_TABLE_H_

@@ -1,0 +1,13 @@
+#include <iostream>
+#include "./vm_app.h"
+
+int main() {
+  char *p0 = reinterpret_cast<char *>(vm_extend(0));
+  char *p1 = reinterpret_cast<char *>(vm_extend(0));
+  char *p2 = reinterpret_cast<char *>(vm_extend(0));
+
+  // assure that the program isn't saving zero filled messages
+  std::cout << p0[0] << "\n";
+  std::cout << p1[0] << "\n";
+  std::cout << p2[0] << "\n";
+}

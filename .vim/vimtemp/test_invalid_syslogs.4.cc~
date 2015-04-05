@@ -1,0 +1,19 @@
+#include "./vm_app.h"
+
+int main() {
+    char *p;
+    p = reinterpret_cast<char *>(vm_extend(0));
+    p[0] = 'h';
+    p[1] = 'e';
+    p[2] = 'l';
+    p[3] = 'l';
+    p[4] = 'o';
+    vm_syslog(p - 1, 0);
+    vm_syslog(p - 1, 5);
+    vm_syslog(p + 4097, 5);
+    vm_syslog(p + 4096, 5);
+    vm_syslog(p, (1<<31) + 5);
+    vm_syslog(p, 536870912);
+    vm_syslog(p, 4096);
+    vm_syslog(p, 5);
+}

@@ -1,4 +1,18 @@
-my-salt-states
-==============
+# dambe.maxmzkr.3
 
-Location to put all my salt related stuff
+The times we deferred work are the following
+- Zero-filling
+  - Deferred zero-filling on the extension of the page
+  - Actually zero filled when there first read or write happened
+- Clock placement/Physical memory placement
+  - Deferred adding a page to the clock or putting it in physical memory on a page extension
+  - Actually placed the page into the clock/physmem on the first read or write
+- Dirty disk write
+  - Deferred writing to disk when the physical memory was not dirty
+  - Actually wrote the memory to disk when the physical memory had been written to since the last write to disk
+- Didn't write zero filled memory to disk
+  - Deferred when the zero filled memory was evicted
+  - Instead, went back to the first state and zero filled again according to normal policy as zero filling is quicker than writing to and reading from disk.
+- Didn't write to disk on every write
+  - Deferred work when there was a write to disk
+  - Actually wrote to disk when there was no space in physmem and the page was being evicted.

@@ -37,6 +37,8 @@ except ImportError:
     numpy = None
 
 HOME = Dir('.').path
+SYSTEMS_ROOT = os.path.join('/usr', 'local', 'systems')
+SALT_ROOT = os.path.join(SYSTEMS_ROOT, 'salt')
 
 # Specify if crawler on command line
 BUILD_TYPE = "deployment"
@@ -53,7 +55,7 @@ CFLAGS = Split('-g -ggdb -fno-strict-aliasing -Wall')
 if is_linux():
     # -Wno-unused-function needed for cython compatability reference:
     # http://stackoverflow.com/questions/14201192/what-is-this-import-umath-function
-    CFLAGS += Split('-Werror -Wno-unused-function')
+    CFLAGS += Split('-Wno-unused-function')
 
 # Global installation directories
 INSTALL_DIR = os.path.join('/', 'var', 'local', 'pipedream')
@@ -106,6 +108,7 @@ INCLUDES = [
     "lib/h5flow",
     "lib/hll",
     "lib/deepylog",
+    "lib/logflow",
     "third-party/cii-2.0/include",
     "third-party/cii-2.0/include",
     "third-party/libdnet-1.12/trunk/include",
@@ -114,6 +117,7 @@ INCLUDES = [
     "/opt/local/include",
     "/usr/local/include/",
     "third-party/cityhash-c",
+    "third-party/aguri",
     "third-party/jansson-2.4/src/",
     "third-party/blosc/blosc",
     "third-party/blosc/hdf5",
@@ -135,6 +139,7 @@ LIBPATHS = [
     'lib/pipedream',
     'lib/tags',
     'lib/classify',
+    'lib/logflow',
     'lib/dimensions',
     'lib/hll',
     'lib/deepylog',
@@ -143,6 +148,7 @@ LIBPATHS = [
     '/opt/local/lib',
     'fakeinstall/lib',
     'third-party/cityhash-c',
+    'third-party/aguri',
     'third-party/blosc/blosc'
 ]
 
@@ -520,6 +526,12 @@ def build_dimensions(envcy, deps=None):
 
     return i
 
+
+
+
+
+
+
 def build_classify(envcy, deps=None):
     if not deps:
         deps = []
@@ -543,7 +555,7 @@ def build_h5flow(envcy, deps=None):
     if not deps:
         deps = []
 
-    deps += Split('dnsflow h5flow flow ipfrag dnet event z hll jansson deepylog cii pcre hdf5 blosc pipedream')
+    deps += Split('dnsflow logflow h5flow flow ipfrag dnet event z hll jansson deepylog cii pcre hdf5 blosc pipedream')
 
     pyx = 'lib/h5flow/h5flow_cy'
     name = 'lib/h5flow/h5flow'
@@ -558,11 +570,32 @@ def build_h5flow(envcy, deps=None):
 
     return i
 
+
+def build_aguri(envcy, deps=None):
+    if not deps:
+        deps = []
+
+    deps += Split('aguri z pipedream deepylog')
+
+    pyx = 'lib/aguri/aguri_cy'
+    name = 'lib/aguri/aguri'
+
+    c_files = Split('lib/aguri/aguri_extra.c ')
+    o = build_cython_so(envcy, pyx, c_files, name=name, LIBPREFIX='', LIBS=deps)
+
+    set_general_depends(o, envcy)
+
+    i = envcy.Install(PYX_INSTALL_DIR, o)
+    envcy.Alias('aguri', i)
+
+    return i
+
+
 def build_h5cube(envcy, deps=None):
     if not deps:
         deps = []
 
-    deps += Split('z hdf5 jansson deepylog cii pcre blosc hll dnet')
+    deps += Split('z hdf5 jansson logflow deepylog cii pcre blosc hll dnet')
 
     pyx = 'lib/h5cube/h5cube_cy'
     name = 'lib/h5cube/h5cube'
@@ -599,7 +632,7 @@ def build_percentile(env):
     pctl = env.SharedObject('lib/percentile/pctl.cpp',
             CPPPATH=['lib/percentile'],
             LIBS=['m', 'stdc++'],
-            CCFLAGS=['-O3', '-Wall', '-Werror'])
+            CCFLAGS=['-O3', '-Wall'])
     so = 'lib/percentile/libdfpctl.so'
     pctllib = env.SharedLibrary(so, [pctl])
     install_so = env.Install(PYX_INSTALL_DIR, pctllib)
@@ -621,7 +654,10 @@ def build_deepy(envcy, deps=None):
     deepy_dst = os.path.join(PYX_INSTALL_DIR, "deepy")
     builder_dst = os.path.join(PYX_INSTALL_DIR, "builder")
     build_dst = os.path.join(PYX_INSTALL_DIR, "deepy", "build")
+    rules_dst = os.path.join(PYX_INSTALL_DIR, "deepy", "rules_db")
+    prune_dst = os.path.join(PYX_INSTALL_DIR, "deepy", "prune")
     event_dst = os.path.join(PYX_INSTALL_DIR, "deepy", "event")
+    defender_dst = os.path.join(PYX_INSTALL_DIR, "deepy", "defender")
     impala_dst = os.path.join(PYX_INSTALL_DIR, "deepy", "impala")
     impala_apply_dst = os.path.join(PYX_INSTALL_DIR, "deepy", "impala", "apply")
     celery_dst = os.path.join(PYX_INSTALL_DIR, "deepy", "ui_celery")
@@ -633,8 +669,17 @@ def build_deepy(envcy, deps=None):
     builder_src = Glob('lib/builder/*.py')
     install_builder = envcy.Install(builder_dst, builder_src)
 
-    build_src = Glob('lib/builder/*.py')
+    prune_src = Glob('lib/deepy/prune/*.py')
+    install_prune = envcy.Install(prune_dst, prune_src)
+
+    rules_src = Glob('lib/deepy/rules_db/*.py')
+    install_rules = envcy.Install(rules_dst, rules_src)
+    
+    build_src = Glob('lib/deepy/build/*.py')
     install_build = envcy.Install(build_dst, build_src)
+
+    rules_src = Glob('lib/deepy/rules_db/*.py')
+    install_rules = envcy.Install(rules_dst, rules_src)
 
     event_src = Glob('lib/deepy/event/*.py')
     install_event = envcy.Install(event_dst, event_src)
@@ -645,10 +690,13 @@ def build_deepy(envcy, deps=None):
     impala_apply_src = Glob('lib/deepy/impala/apply/*.py')
     install_impala_apply = envcy.Install(impala_apply_dst, impala_apply_src)
 
+    defender_src = Glob('lib/deepy/defender/*.py')
+    install_defender = envcy.Install(defender_dst, defender_src)
+
     celery_src = Glob('lib/deepy/ui_celery/*.py')
     install_celery = envcy.Install(celery_dst, celery_src)
 
-    return [install_deepy, install_build, install_event, install_impala, install_celery, install_so, install_impala_apply]
+    return [install_deepy, install_build, install_event, install_impala, install_defender, install_celery, install_so, install_impala_apply, install_builder, install_prune, install_rules]
 
 def build_routemap(envcy, deps=None):
     if not deps:
@@ -777,8 +825,7 @@ def main():
         tar_wheels=['@tar cvfz {} {}'.format('wheels.tar.gz', WHEELHOUSE_DIR)],
         tarapt=['@tar cvfz apt.tar.gz /var/cache/apt/archives/ /var/lib/apt/lists'],
         upload_tarapt=['@s3cmd put --acl-public apt.tar.gz "%s"' % (S3CMD_TARAPT_DIR)],
-        salt_development=['@cd {}/salt-states; git pull'.format(HOME), '@sudo salt-call --local -l debug state.highstate'],
-        development=['@cd {}/salt-states; pwd; git pull'.format(HOME), '@sudo salt-call --local -l debug state.highstate', link_git_hooks],
+        development=['@cd {}; git pull'.format(SYSTEMS_ROOT), '@sudo salt-call -l debug state.highstate', link_git_hooks],
         link_git_hooks=[link_git_hooks],
         salt_highstate=['@sudo salt-call state.highstate'],
         test=['@pdtest.py run -u'],
@@ -804,6 +851,16 @@ def main():
     libcityhash = env.StaticLibrary('third-party/cityhash-c/libcityhash.a', cs, CFLAGS=CFLAGS+['-fPIC', '-msse4.2', '-O3'])
     env.Alias('cityhash', libcityhash)
     set_general_depends(libcityhash, env)
+
+    ################################################################################
+    # third-party/aguri
+    ################################################################################
+
+    cs = Split('third-party/aguri/aguri.c')
+    set_general_depends(cs, env, default_target=False)
+    libaguri = env.StaticLibrary('third-party/aguri/libaguri.a', cs, CFLAGS=CFLAGS+['-fPIC', '-msse4.2', '-O3'])
+    env.Alias('aguri', libaguri)
+    set_general_depends(libaguri, env)
 
     ################################################################################
     # lib/ipfrag
@@ -840,7 +897,7 @@ def main():
 
     cs = Split('third-party/blosc/blosc/blosc.c third-party/blosc/blosc/blosclz.c third-party/blosc/blosc/shuffle.c third-party/blosc/hdf5/blosc_filter.c')
     set_general_depends(cs, env, default_target=False)
-    libblosc = env.StaticLibrary('third-party/blosc/blosc/libblosc.a', cs, CFLAGS=CFLAGS+['-I/usr/local/include', '-fPIC', '-msse4.2', '-O3'])
+    libblosc = env.StaticLibrary('third-party/blosc/blosc/libblosc.a', cs, CFLAGS=CFLAGS+['-I/usr/local/include', '-fPIC', '-msse4.2', '-O3'], CPPPATH=INCLUDES)
     set_general_depends(libblosc, env)
     env.Alias('blosc', libblosc)
 
@@ -849,7 +906,7 @@ def main():
     ################################################################################
 
     cs = [os.path.join('lib/pipedream',x)
-       for x in Split('prefix.c ptrie.c predicates.c dcap.c fileutil.c')]
+       for x in Split('prefix.c ptrie.c predicates.c dcap.c fileutil.c gzslurp.c')]
     set_general_depends(cs, env, default_target=False)
     libpipedream = env.StaticLibrary('lib/pipedream/libpipedream.a', cs, CPPPATH=INCLUDES, CFLAGS=CFLAGS+['-fPIC'], LIBS=['python2.7'])
     set_general_depends(libpipedream, env)
@@ -890,6 +947,16 @@ def main():
     bgp_install = build_bgp(envcy, [libblosc, libpipedream])
 
     ################################################################################
+    # lib/logflow
+    ################################################################################
+
+    cs = 'lib/logflow/logflow.c'
+    set_general_depends(cs, env, default_target=False)
+    liblogflow = env.StaticLibrary('lib/logflow/liblogflow.a', cs, CPPPATH=INCLUDES, CFLAGS=CFLAGS+['-fPIC'])
+    env.Alias('liblogflow', liblogflow)
+    set_general_depends(liblogflow, env)
+
+    ################################################################################
     # lib/classify -- just the library (Ordering issue)
     ################################################################################
 
@@ -907,19 +974,25 @@ def main():
     libh5flow = env.StaticLibrary('lib/h5flow/libh5flow.a', cs, CPPPATH=INCLUDES, CFLAGS=CFLAGS+['-fPIC', '-g'])
     set_general_depends(libh5flow, env)
 
-    h5flow_install = build_h5flow(envcy, [libblosc, libdims, libh5flow, libdnsflow, libbgp, libpipedream, libclassify, libflow, libipfrag, libhll])
+    h5flow_install = build_h5flow(envcy, [libblosc, libdims, liblogflow, libh5flow, libdnsflow, libbgp, libpipedream, libclassify, libflow, libipfrag, libhll])
 
     ################################################################################
     # lib/classify -- Just the cython
     ################################################################################
 
-    classify_install = build_classify(envcy, [libblosc, libdims, libh5flow, libdnsflow, libbgp, libpipedream, libhll])
+    classify_install = build_classify(envcy, [libblosc, libdims, liblogflow, libh5flow, libdnsflow, libbgp, libpipedream, libhll])
 
     ################################################################################
     # lib/h5cube
     ################################################################################
 
     h5cube_install = build_h5cube(envcy, [libblosc, libdims, libclassify, libh5flow, libdnsflow, libpipedream])
+
+    ################################################################################
+    # lib/aguri
+    ################################################################################
+
+    aguri_install = build_aguri (envcy, [libaguri, libpipedream])
 
     ################################################################################
     # lib/routemap
@@ -1022,6 +1095,7 @@ def main():
     pyfiles += Glob('connectors/shared/peer_relationship.py')
     pyfiles += Glob('connectors/telarg/access_type.py')
     pyfiles += Glob('connectors/aliant/access.py')
+    pyfiles += Glob('connectors/fastly/customers.py')
 
     pyfiles += Glob('lib/deepy/linkedin.py')
     pyfiles += Glob('flowd/flowd_tests/flowd_util.py')
@@ -1032,9 +1106,11 @@ def main():
     pyfiles += Glob('deployment/impala/loadcubequeue.py')
     pyfiles += Glob('deployment/impala/test_impalad.py')
     pyfiles += Glob('deployment/impala/impala_index.py')
+    pyfiles += Glob('deployment/impala/impala_view.py')
 
     pyfiles += Glob('deployment/vss/vss-make-vss-cubes.py')
     pyfiles += Glob('deployment/vss/vss-master-fetch.py')
+    pyfiles += Glob('deployment/vss/vss_air_miles.py')
 
     # don't install these python files
     EXCEPTIONS = Split('lib/setup.py lib/flow/setup.py')
@@ -1054,7 +1130,7 @@ def main():
     code_root = os.path.abspath(os.getcwd())
 
     with open('setup.sh', 'w') as fp:
-        pydirs = Split('lib lib/flowd lib/classify lib/pipedream lib/dimensions lib/dnsflow lib/bgp lib/h5flow lib/routemap lib/h5cube lib/testing/scripts async_celery')
+        pydirs = Split('lib lib/flowd lib/classify lib/aguri lib/pipedream lib/dimensions lib/dnsflow lib/bgp lib/h5flow lib/routemap lib/h5cube lib/testing/scripts async_celery')
         pydirs += third_party_python_dirs
         for pd in pydirs:
             pd = os.path.join(code_root, pd)
@@ -1063,8 +1139,9 @@ def main():
         pd = os.path.join(code_root, 'config/components_db.json')
         print >>fp, 'export PIPEDREAM_COMPONENTS_DB={}'.format(pd)
 
-        pydirs = Split('flow mine ddos probe flowd classify bundles dimensions cron_jobs crawling bgp routemap connectors/shared flowd flowd/flowd_tests dnsflow')
+        pydirs = Split('flow mine ddos probe flowd classify bundles dimensions cron_jobs crawling bgp routemap connectors/shared flowd flowd/flowd_tests dnsflow util')
         pydirs += Split('search_ips deployment cube status routeviews snmp jobs cloudmapping genome ui qa lib/testing/scripts deployment/impala deployment/vss async_celery')
+        pydirs += Split('hll')
         for pd in pydirs:
             pd = os.path.join(code_root, pd)
             print >>fp, 'export PATH={}:$PATH'.format(pd)
@@ -1085,10 +1162,10 @@ def main():
     config_files = Split('''components_db.json attributes.json
                             geoip_latlon_db.json maxmind_city_locations.csv.gz
                             zips.json countries.json rc.json roles.json
-			    system_context.json
                             cablelabs-isp.json.gz
                             cablelabs-paths.json.gz
-                            cablelabs-sources.json.gz''')
+                            cablelabs-sources.json.gz
+                            nav_default.json''')
     config_files = [os.path.join('config', x) for x in config_files]
     config_install = env.Install(DEFINES_DIR, config_files)
     env.Alias('defines', config_install)
@@ -1179,7 +1256,7 @@ def main():
 
     grunt_build = None
     if not ARGUMENTS.get('no-grunt'):
-        grunt_build = env.Command(['ui/static/build/vendor.css' , 'ui/static/build/deepfield.css', 'ui/static/build/templates/chrome.html'], grunt_src, build_grunt)
+        grunt_build = env.Command(['ui/static/build/vendor.css' , 'ui/static/build/deepfield.css', 'ui/static/build/templates/ui_wrapper.html'], grunt_src, build_grunt)
         env.Alias('grunt_build', grunt_build)
         env.Default(grunt_build)
 
@@ -1194,7 +1271,7 @@ def main():
 
     grunt_install = None
     if not ARGUMENTS.get('no-grunt'):
-        grunt_install = env.Command("DOES_NOT_EXIST", ['ui/static/build/vendor.css' , 'ui/static/build/deepfield.css', 'ui/static/build/templates/chrome.html'], install_grunt)
+        grunt_install = env.Command("DOES_NOT_EXIST", ['ui/static/build/vendor.css' , 'ui/static/build/deepfield.css', 'ui/static/build/templates/ui_wrapper.html'], install_grunt)
         env.Alias('grunt_install', grunt_install)
 
     ################################################################################
@@ -1269,7 +1346,7 @@ def main():
     install_list = deepy_install_list + [SCRIPT_DIR, INSTALL_DIR, DEFINES_DIR, grunt_build, grunt_install, staging, cert, ddalias,
             record_install, record_support_user, record_code_root, pipedream_install,
             dimensions_install, dnsflow_install, bgp_install, h5flow_install, classify_install,
-            h5cube_install, routemap_install, flowd_install, third_party_deps,
+            h5cube_install, aguri_install, routemap_install, flowd_install, third_party_deps,
             jar_install, udflibs, percentile_install]
     for k,v in third_party_deps_install.iteritems():
         install_list += v

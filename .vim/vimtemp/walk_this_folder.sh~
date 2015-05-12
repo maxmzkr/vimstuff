@@ -8,9 +8,4 @@ source /home/max/.bash/go/go.sh
 source /home/max/.bash/deepfield/virtual_evn.sh
 
 source /home/max/.bash/git/git_branch.sh
-<<<<<<< HEAD
 source /home/max/.bash/haskell/haskell.sh
-=======
-
-source /home/max/.bash/haskell/path.sh
->>>>>>> 3417a6149c207c7080fe2aacd20fa9a981a48591

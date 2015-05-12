@@ -39,7 +39,7 @@ Plugin 'git://git.wincent.com/command-t.git'
 
 " these are the ones I installed
 " fuzzy autocomplete like in sublime
-Plugin 'Valloric/YouCompleteMe'
+" Plugin 'Valloric/YouCompleteMe'
 Plugin 'scrooloose/syntastic.git'
 
 " finds files in git repo

@@ -1,3 +1,15 @@
+import deepy.cfg
+
+def slice_enabled(key):
+    slice = deepy.cfg.slice_config
+    enabled_jobs = slice.get("enabled_jobs", {})
+    return enabled_jobs.get(key, False)
+
+def extra_cron_jobs_enabled(key):
+    vm_config = deepy.cfg.vm_config
+    extra_cron_jobs = vm_config.get("extra_cron_jobs", [])
+    return key in extra_cron_jobs
+
 rules = {
     "make_rules": {
 #             Automatic variables: ,
@@ -39,7 +51,6 @@ rules = {
                 "cube_drill1_5min": "5min",
                 "cube_drill_small_network_5min": "5min",
                 "cube_drill_small_5min": "5min"
-                #"snmp5min": "5min"
             }
         },
 
@@ -51,16 +62,12 @@ rules = {
                 "cubes_hour_deployment": "1h",
             },
             "depends":{
-                "cube_snmp": "1d",
                 "cube_geo1_hour": "1h",
                 "cube_drill1_hour": "1h",
                 "cube_drill_small_hour": "1h",
                 "cube_drill_small_network_hour": "1h",
                 "cube_origin_asn_remote3_hour": "1h",
                 "cube_aspaths_remote3_hour": "1h",
-                # "cube_backbone_hour": "1h",
-                # "cube_sub_count_backbone_total_hour": "1h",
-                # "cube_backbone_small_hour": "1h",
                 "interface_hour": "1h",
                 "cubes_from_h5flow_ipcount_hour": "1h",
             },
@@ -74,11 +81,10 @@ rules = {
                 "cubes_day_deployment": "1d"
             },
             "depends": {
+                "cube_snmp": "1d",
                 "cube_geo1_day": "1d",
                 "cube_drill1_day": "1d",
                 "snmp5min_day": "1d"
-                #"cube_big_cube_day": "1d",
-                # "cube_backbone_small_day": "1d"
             }
         },
 
@@ -95,14 +101,22 @@ rules = {
                 "cube_sites2_month_top_list": "1d",
                 "cube_aspaths_remote2_month": "1d",
                 "cube_aspaths_remote2_month_top_list": "1d",
-                "cube_bgp_origin_asn_local_month": "1d", 
+                "cube_bgp_origin_asn_local_month": "1d",
                 "cube_bgp_origin_asn_local_month_top_list": "1d"
             },
+        },
+
+        "snmp_json": {
+            "__comment": "created outside of make system by cron job snmp.py",
+            "target": "$(cache_dir)/snmp/snmp.%Y-%m-%d-%H-%M.json.gz",
+            "file_step": "5min",
+            "prune_ratio": 67,
         },
 
         "snmp5min": {
             "note": "***** craig new in sprint-14-snmp ****",
             "target": "$(cubes_dir)/snmp/minutes/cube.%Y-%m-%d-%H-%M.h5",
+            "prune_ratio": 73,
             "file_step": "5min",
             "time_step": "5min",
             "recipe": [
@@ -113,14 +127,22 @@ rules = {
             }
         },
 
-         "snmphour": {
+        "snmphour": {
             "note": "***** craig new in sprint-14-snmp ****",
             "target": "$(cubes_dir)/snmp/hours/cube.%Y-%m-%d-%H.h5",
             "file_step": "1h",
             "time_step": "1h",
+            "prune_ratio": 68, # XXX
             "meta": {
                 "cube_id": "snmp"
             }
+        },
+
+        "snmp10s": {
+            "__comment": "fake target",
+            "target": "$(cubes_dir)/snmp/seconds/cube.%Y-%m-%d-%H-%M-%S.h5",
+            "file_step": "10s",
+            "prune_ratio": 4.8,
         },
 
         "protectiongroup_hour": {
@@ -128,6 +150,7 @@ rules = {
             "target": "$(cubes_dir)/protectiongroup/hours/cube.%Y-%m-%d-%H.h5",
             "file_step": "1h",
             "time_step": "1h",
+            "prune_ratio": 50, # XXX
             "meta": {
                 "cube_id": "protectiongroup"
             }
@@ -135,12 +158,20 @@ rules = {
 
         "protectiongroup_5min": {
             "note": "***** craig cloud defender sprint-21 testing ****",
-            "target": "$(cubes_dir)/protectiongroup/minutes/cube.%Y-%m-%d-%H.h5",
+            "target": "$(cubes_dir)/protectiongroup/minutes/cube.%Y-%m-%d-%H-%M.h5",
             "file_step": "5min",
             "time_step": "5min",
+            "prune_ratio": 63.2,
             "meta": {
                 "cube_id": "protectiongroup"
             }
+        },
+
+        "protectiongroup_10s": {
+            "__comment": "fake target",
+            "target": "$(cubes_dir)/protectiongroup/seconds/cube.%Y-%m-%d-%H-%M-%S.h5",
+            "file_step": "10s",
+            "prune_ratio": 2.4,
         },
 
         "snmp5min_day": {
@@ -149,6 +180,7 @@ rules = {
             "cache_time": "2h",
             "file_step": "1d",
             "time_step": "5min",
+            "prune_ratio": 76.8,
             "meta": {
                 "cube_id": "snmp"
             },
@@ -173,14 +205,15 @@ rules = {
             "cache_time": "2h",
             "time_step": "1h",
             "file_step": "1d",
-            "prune_ratio": 450.0
+            "prune_ratio": 280.8,
         },
 
         "heartbeat_markers": {
             "target": "$(cubes_dir)/heartbeats/markers/%Y-%m-%d-%H-%M.marker",
             "file_step": "5min",
             "time_step": "5min",
-            "prune_ratio": 0.0
+            "prune_ratio": 50, # XXX
+            "aggressive": True,
         },
 
         "cube_heartbeats": {
@@ -198,7 +231,8 @@ rules = {
             "target": "$(cubes_dir)/heartbeats/minutes/cube.%Y-%m-%d-%H-%M.h5",
             "time_step": "5min",
             "file_step": "5min",
-            "prune_ratio": 4.0
+            "prune_ratio": 50, # XXX
+            "aggressive": True,
         },
 
         "ui_log_hour": {
@@ -214,7 +248,7 @@ rules = {
             },
             "time_step": "1h",
             "file_step": "1h",
-            "prune_ratio": 100.0
+            "prune_ratio": 93.8,
         },
 
         "ui_log_day": {
@@ -230,27 +264,51 @@ rules = {
             "time_step": "1d",
             "file_step": "1d",
             "target": "$(cubes_dir)/log_cubes/ui/days/cube.%Y-%m-%d.h5",
-            "prune_ratio": 400.0
+            "prune_ratio": 350.4,
+        },
+
+        "ui_log_perf_day": {
+            "__comment": "fake target, not sure what creates this",
+            "file_step": "1d",
+            "target": "$(cubes_dir)/log_cubes/perf/days/cube.%Y-%m-%d.h5",
+            "prune_ratio": 285.6,
+        },
+
+        "flow_10s": {
+            "__comment": "fake target",
+            "file_step": "10s",
+            "target": "$(flows_dir)/flow.%Y-%m-%d-%H-%M-%S.pcap.gz",
+            "prune_ratio": 1,
         },
 
         "flow": {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(flows_dir)/flow.%Y-%m-%d-%H-%M.pcap.gz",
-            "prune_ratio": 1.0
+            "prune_ratio": 1,
+        },
+
+        "dnsflow_10s": {
+            "__comment": "fake target",
+            "file_step": "10s",
+            "target": "$(dnsflows_dir)/dns.%Y-%m-%d-%H-%M-%S.pcap.gz",
+            "prune_ratio": 1.01,
         },
 
         "dnsflow": {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(dnsflows_dir)/dns.%Y-%m-%d-%H-%M.pcap.gz",
-            "prune_ratio": 1.0
+            "prune_ratio": 1.01,
         },
+
         "qwilt_logs": {
             "time_step": "5min",
             "file_step": "5min",
+            "prune_ratio": 50.0, # XXX
             "target": "$(qwilt_logs_dir)/qwilt.%Y-%m-%d-%H-%M.log"
         },
+
         "h5qwilt": {
             "__comment":[
                 "5min h5qwilt"
@@ -258,14 +316,16 @@ rules = {
             "depends": {
                 "qwilt_logs": "5min"
             },
-            "local_only": True,
+            "local_only": False,
             "recipe": [
                 "h5qwilt.py -t %Y-%m-%d-%H-%M"
             ],
             "time_step": '5min',
             "file_step": '5min',
-            "target": "$(h5qwilt_dir)/qwilt.%Y-%m-%d-%H-%M.h5"
+            "target": "$(h5qwilt_dir)/qwilt.%Y-%m-%d-%H-%M.h5",
+            "prune_ratio": 50, # XXX
         },
+
         "h5flow": {
             "__comment": "flow to h5flow",
             "depends": {
@@ -279,7 +339,21 @@ rules = {
             "file_step": '5min',
             "target": "$(h5flow_dir)/flow.%Y-%m-%d-%H-%M.h5.raw",
             "alternates": ["$(h5flow_dir)/flow.%Y-%m-%d-%H-%M.h5"],
-            "prune_ratio": 1.6
+            "prune_ratio": 1.6, # XXX
+        },
+
+        "h5dns_cache": {
+            "__comment": "h5dns side effect I think",
+            "file_step": "5min",
+            "target": "$(h5dns_dir)/dns.%Y-%m-%d-%H-%M.h5.cache",
+            "prune_ratio": 1.01,
+        },
+
+        "h5dns_cache_10s": {
+            "__comment": "h5dns side effect I think (10s)",
+            "file_step": "10s",
+            "target": "$(h5dns_dir)/dns.%Y-%m-%d-%H-%M-%S.h5.cache",
+            "prune_ratio": 1.01,
         },
 
         "h5dns": {
@@ -298,7 +372,14 @@ rules = {
                 "dnsflow.py $A -t %Y-%m-%d-%H-%M"
             ],
             "target": "$(h5dns_dir)/dns.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 1.0
+            "prune_ratio": 1.01,
+        },
+
+        "h5dns_10s": {
+            "__comment": "fake target",
+            "file_step": "10s",
+            "target": "$(h5dns_dir)/dns.%Y-%m-%d-%H-%M-%S.h5",
+            "prune_ratio": 1.01,
         },
 
         "bgpdumps": {
@@ -315,8 +396,6 @@ rules = {
             "local_only": True,
             "force": True,
             "cache_time": "10min",
-            "time_step": "5min",
-            "file_step": "5min",
             "recipe": [
                 "bgp.py"
             ],
@@ -327,8 +406,6 @@ rules = {
             "__comment": "Build routemap H5 file",
             "local_only": True,
             "force": True,
-            "time_step": "5min",
-            "file_step": "5min",
             "recipe": [
                 "routemap.py"
             ],
@@ -353,10 +430,19 @@ rules = {
                 "classify.py $A -t %Y-%m-%d-%H-%M"
             ],
             "target": "$(h5flow_dir)/flow.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 1.6
+            "prune_ratio": 1.6,
+        },
+
+        "h5flow_hardlink": {
+            "__comment": "sometimes h5flow bps doesn't prune these",
+            "file_step": "5min",
+            "target": "$(h5flow_dir)/flow.%Y-%m-%d-%H-%M.h5.*",
+            "prune_ratio": 1.01,
+            "aggressive": True,
         },
 
         "classified_h5flow_10s": {
+            "prune_ratio": 1.6,
             "time_step": "10s",
             "file_step": "10s",
             "local_only": True,
@@ -378,22 +464,6 @@ rules = {
             "target": "$(cubes_from_h5flow_marker_dir)/cubes_from_h5flow_5min/%Y-%m-%d-%H-%M.marker",
         },
 
-        "cubes_stream_bps_5min_not_local": {
-            "meta": {
-                "cube_id": "stream_bps",
-            },
-            "depends": {
-                "classify_h5flow": "5min"
-            },
-            "recipe": [
-                "h5flow_bps.py $A -t %Y-%m-%d-%H-%M --data-frame"
-            ],
-            "target": "$(cubes_dir)/stream_bps/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "file_step": "5min",
-            "ignore_missing": True,
-            "time_step": "5min"
-        },
-
         "cubes_stream_bps_5min": {
             "meta": {
                 "cube_id": "stream_bps",
@@ -402,13 +472,15 @@ rules = {
                 "classify_h5flow": "5min"
             },
             "recipe": [
-                "h5flow_bps.py $A -t %Y-%m-%d-%H-%M --cube --data-frame"
+                "h5flow_bps.py $A -c vss -t %Y-%m-%d-%H-%M -r $^ -w $@"
             ],
-            "target": "$(cubes_dir)/stream_bps/minutes/cube.%Y-%m-%d-%H-%M.h5",
+            "prune_ratio": 10, # XXX
+            "target": "$(cache_dir)/bps/minutes/cube.%Y-%m-%d-%H-%M.h5",
             "local_only": True,
             "file_step": "5min",
             "ignore_missing": True,
-            "time_step": "5min"
+            "time_step": "5min",
+            "enabled": extra_cron_jobs_enabled("cubes_stream_bps_5min"),
         },
 
         "h5flow_aguri": {
@@ -417,10 +489,17 @@ rules = {
             },
             "file_step": "10s",
             "time_step": "10s",
+            "prune_ratio": 1.6, # XXX
             "recipe": [
                 "h5flow_aguri.py $A -t %Y-%m-%d-%H-%M-%S"
             ],
             "target": "$(cache_dir)/ddos/aguri/aguri.%Y-%m-%d-%H-%M-%S.h5"
+        },
+
+        "cube_onnet_5min": {
+            "file_step": "5min",
+            "target": "$(cubes_dir)/onnet/minutes/cube.%Y-%m-%d-%H-%M.h5",
+            "prune_ratio": 150, # XXX
         },
 
         "cube_big_cube_5min": {
@@ -433,7 +512,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/big_cube/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 150.0
+            "prune_ratio": 248.63,
         },
 
         "cube_big_cube_10sec": {
@@ -443,7 +522,7 @@ rules = {
             "time_step": "10sec",
             "file_step": "10sec",
             "target": "$(cubes_dir)/big_cube/seconds/cube.%Y-%m-%d-%H-%M-%S.h5",
-            "prune_ratio": 150.0
+            "prune_ratio": 2.4,
         },
 
         "cube_site_peer_5min": {
@@ -456,7 +535,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/site_peer/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 20.0
+            "prune_ratio": 1.01, # XXX
         },
 
         "cube_sub_count_cloud_total_5min": {
@@ -469,7 +548,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/sub_count_cloud_total/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 100.0
+            "prune_ratio": 1.01, # XXX
         },
 
         "cube_sub_count_ip_version_5min": {
@@ -482,7 +561,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/sub_count_ip_version/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 100.0
+            "prune_ratio": 1.01, # XXX
         },
 
         "cube_sub_count_ip_version_total_5min": {
@@ -495,7 +574,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/sub_count_ip_version_total/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 100.0
+            "prune_ratio": 1.01, # XXX
         },
 
         "cube_sub_count_site_total_5min": {
@@ -508,7 +587,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/sub_count_site_total/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 100.0
+            "prune_ratio": 100.0, # XXX
         },
 
         "cube_sub_count_cloud_5min": {
@@ -521,7 +600,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/sub_count_cloud/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 100.0
+            "prune_ratio": 100.0, # XXX
         },
 
         "cube_sub_count_category_5min": {
@@ -534,7 +613,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/sub_count_category/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 100.0
+            "prune_ratio": 100.0, # XXX
         },
 
         "cube_sub_count_site_peer_5min": {
@@ -547,16 +626,17 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/sub_count_site_peer/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 25.0
+            "prune_ratio": 25.0, # XXX
         },
 
-          "cube_sub_count_site_peer_hour": {
-             "meta": {
-                 "cube_id": "sub_count_site_peer"
-             },
-             "time_step": "1h",
-             "file_step": "1h",
-             "target": "$(cubes_dir)/sub_count_site_peer/hours/cube.%Y-%m-%d-%H.h5"
+        "cube_sub_count_site_peer_hour": {
+            "meta": {
+                "cube_id": "sub_count_site_peer"
+            },
+            "time_step": "1h",
+            "file_step": "1h",
+            "prune_ratio": 50, # XXX
+            "target": "$(cubes_dir)/sub_count_site_peer/hours/cube.%Y-%m-%d-%H.h5"
          },
 
         "cube_sub_count_site_5min": {
@@ -569,7 +649,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/sub_count_site/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 100.0
+            "prune_ratio": 100.0, # XXX
         },
 
         "cube_sub_count_category_total_5min": {
@@ -582,9 +662,15 @@ rules = {
                 "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/sub_count_category_total/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 20.0
+            "prune_ratio": 20.0, # XXX
         },
 
+        "cube_sub_count_site_peer_total_hour": {
+            "__comment": "side effect from cubes from h5flow ipcount hour?",
+            "file_step": "5min",
+            "target": "$(cubes_dir)/sub_count_site_peer_total/hours/cube.%Y-%m-%d-%H.h5",
+            "prune_ratio": 40.0, # XXX
+        },
 
         "cube_sub_count_site_peer_total_5min": {
              "meta": {
@@ -596,7 +682,7 @@ rules = {
                 "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/sub_count_site_peer_total/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 20.0
+            "prune_ratio": 20.0, # XXX
         },
 
         "cube_interface_5min": {
@@ -613,7 +699,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/interface/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 300.0
+            "prune_ratio": 236,
         },
 
         "cube_interface_10sec": {
@@ -623,7 +709,7 @@ rules = {
             "time_step": "10sec",
             "file_step": "10sec",
             "target": "$(cubes_dir)/interface/seconds/cube.%Y-%m-%d-%H-%M-%S.h5",
-            "prune_ratio": 300.0
+            "prune_ratio": 2.4,
         },
 
         "snmp_quality": {
@@ -639,7 +725,7 @@ rules = {
             "time_step": "1d",
             "file_step": "1d",
             "target": "$(cubes_dir)/snmp_quality/days/cube.%Y-%m-%d.h5",
-            "prune_ratio": 400.0
+            "prune_ratio": 280.8,
         },
 
         "snmp_quality_router": {
@@ -655,7 +741,7 @@ rules = {
             "time_step": "1d",
             "file_step": "1d",
             "target": "$(cubes_dir)/snmp_quality_router/days/cube.%Y-%m-%d.h5",
-            "prune_ratio": 400.0
+            "prune_ratio": 268.8,
         },
 
         "supplychain": {
@@ -670,7 +756,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(supplychain_dir)/supplychain.%Y-%m-%d-%H-%M.json.gz",
-            "prune_ratio": 90.0
+            "prune_ratio": 90.0, # XXX
         },
 
         "cubes_from_h5flow_ipcount_hour": {
@@ -699,7 +785,7 @@ rules = {
             "cache_time": "2h",
             "time_step": "1d",
             "file_step": "1d",
-            "prune_ratio": 50.0
+            "prune_ratio": 50.0, # XXX
         },
 
         "rocketfuel_trace": {
@@ -711,7 +797,7 @@ rules = {
             "time_step": "1d",
             "file_step": "1d",
             "target": "$(geoip_dir)/rocketfuel/traces/rocketfuel.%Y-%m-%d.json.gz",
-            "prune_ratio": 160.0
+            "prune_ratio": 624,
         },
 
         "infrastructure_count_cdn": {
@@ -720,7 +806,7 @@ rules = {
                 "cube_id": "infrastructure_count_cdn"
             },
             "target": "$(cubes_dir)/infrastructure_count_cdn/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 5.50,
+            "prune_ratio": 5.50, # XXX
             # "depends": {
             #     "cubes_from_h5flow_5min": "5min"
             # },
@@ -741,7 +827,7 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/interface/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 300.0
+            "prune_ratio": 223.3,
         },
 
         "cube_big_cube_hour": {
@@ -758,7 +844,7 @@ rules = {
 
             "file_step": "1h",
             "target": "$(cubes_dir)/big_cube/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 530.0
+            "prune_ratio": 145.1,
         },
 
         "cube_sub_count_cloud_total_hour": {
@@ -771,7 +857,7 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/sub_count_cloud_total/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 100.0
+            "prune_ratio": 100.0, # XXX
         },
 
         "cube_sub_count_ip_version_hour": {
@@ -784,7 +870,7 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/sub_count_ip_version/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 500.0
+            "prune_ratio": 500.0, # XXX
         },
 
         "cube_sub_count_ip_version_total_hour": {
@@ -797,7 +883,7 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/sub_count_ip_version_total/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 500.0
+            "prune_ratio": 500.0, # XXX
         },
 
         "cube_sub_count_site_total_hour": {
@@ -810,7 +896,7 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/sub_count_site_total/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 230.0
+            "prune_ratio": 230.0, # XXX
         },
 
         "cube_sub_count_cloud_hour": {
@@ -823,21 +909,21 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/sub_count_cloud/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 500.0
+            "prune_ratio": 500.0, # XXX
         },
 
         "cube_sub_count_category_hour": {
-             "meta": {
-                 "cube_id": "sub_count_category"
-             },
-             "depends_one_or_more": {
-                 "cube_big_cube_5min": "5min"
-             },
-             "time_step": "1h",
-             "file_step": "1h",
-             "target": "$(cubes_dir)/sub_count_category/hours/cube.%Y-%m-%d-%H.h5",
-             "prune_ratio": 500.0
-         },
+            "meta": {
+                "cube_id": "sub_count_category"
+            },
+            "depends_one_or_more": {
+                "cube_big_cube_5min": "5min"
+            },
+            "time_step": "1h",
+            "file_step": "1h",
+            "target": "$(cubes_dir)/sub_count_category/hours/cube.%Y-%m-%d-%H.h5",
+            "prune_ratio": 500.0, # XXX
+        },
 
         "cube_sub_count_site_hour": {
             "meta": {
@@ -849,20 +935,20 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/sub_count_site/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 300.0
+            "prune_ratio": 300.0, # XXX
         },
 
         "cube_sub_count_category_total_hour": {
-             "meta": {
-                 "cube_id": "sub_count_category_total"
-             },
-             "depends_one_or_more": {
-                 "cube_big_cube_5min": "5min"
-             },
-             "time_step": "1h",
-             "file_step": "1h",
-             "target": "$(cubes_dir)/sub_count_category_total/hours/cube.%Y-%m-%d-%H.h5",
-             "prune_ratio": 300.0
+            "meta": {
+                "cube_id": "sub_count_category_total"
+            },
+            "depends_one_or_more": {
+                "cube_big_cube_5min": "5min"
+            },
+            "time_step": "1h",
+            "file_step": "1h",
+            "target": "$(cubes_dir)/sub_count_category_total/hours/cube.%Y-%m-%d-%H.h5",
+            "prune_ratio": 300.0, # XXX
         },
 
         "cube_geo1_hour": {
@@ -893,7 +979,7 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/geo1/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 500.0
+            "prune_ratio": 198,
         },
 
         "cube_geo1_day": {
@@ -910,7 +996,7 @@ rules = {
             "cache_time": "2h",
             "time_step": "1d",
             "file_step": "1d",
-            "prune_ratio": 550.0
+            "prune_ratio": 252,
         },
 
         "cube_drill1_5min": {
@@ -947,7 +1033,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/drill1/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 325.0
+            "prune_ratio": 288.46,
         },
 
         "cube_drill1_hour": {
@@ -979,7 +1065,7 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/drill1/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 630.0
+            "prune_ratio": 302.5,
         },
 
         "cube_drill1_day": {
@@ -996,7 +1082,7 @@ rules = {
             "time_step": "1d",
             "file_step": "1d",
             "target": "$(cubes_dir)/drill1/days/cube.%Y-%m-%d.h5",
-            "prune_ratio": 575.0
+            "prune_ratio": 271.2,
         },
 
         "cube_drill_small_5min": {
@@ -1006,23 +1092,14 @@ rules = {
             },
             "depends": {
                 "cube_drill1_5min": "5min",
-                # "cube_origin_asn_remote2_month_top_list": "month", TODO in new-make-execution convert to ignore_mtime
-                # "cube_company2_month_top_list": "month", "month", TODO in new-make-execution convert to ignore_mtime
-                # "cube_sites2_month_top_list": "month", "month", TODO in new-make-execution convert to ignore_mtime
-                # "cube_aspaths_remote2_month_top_list": "month" "month", TODO in new-make-execution convert to ignore_mtime
             },
-            #"prerequisites_dict": {
-                #"preqs_top_origins": ["$(cubes_dir)/origin_asn.remote2/months/top_list.%Y-%m.json.gz"],
-                #"preqs_top_sites": ["$(cubes_dir)/sites2/months/top_list.%Y-%m.json.gz"],
-                #"preqs_top_aspaths": ["$(cubes_dir)/aspaths.remote2/months/top_list.%Y-%m.json.gz"]
-            #},
             "recipe": [
                 "cube_op.py $A -o $@ -t 300  -A group_other(origin_asn.local,null,<c.top_origins>)  -A group_other(aspaths.local,null,<c.top_aspaths>) -A group_other(origin_asn.remote,null,<c.top_origins>) --arg_join c.top_origins='$(cubes_dir)/origin_asn.remote2/months/top_list.%Y-%m.json.gz' -A group_other(aspaths.remote,null,<c.top_aspaths>) --arg_join c.top_aspaths='$(cubes_dir)/aspaths.remote2/months/top_list.%Y-%m.json.gz' -A group_other(sites,null,<c.top_sites>) -A group_other(company,null,<c.top_companies>) --arg_join c.top_companies='$(cubes_dir)/company2/months/top_list.%Y-%m.json.gz' --arg_join c.top_sites='$(cubes_dir)/sites2/months/top_list.%Y-%m.json.gz' {cube_drill1_5min}"
             ],
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/drill_small/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 325.0
+            "prune_ratio": 341.04,
         },
 
         "cube_drill_small_network_5min": {
@@ -1034,6 +1111,7 @@ rules = {
             },
             "time_step": "5min",
             "file_step": "5min",
+            "prune_ratio": 117.52,
             "target": "$(cubes_dir)/drill_small_network/minutes/cube.%Y-%m-%d-%H-%M.h5",
             "recipe": [
                 "cube_op.py $A -o $@ -O $D $^"
@@ -1055,6 +1133,7 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/drill_small_network/hours/cube.%Y-%m-%d-%H.h5",
+            "prune_ratio": 106.7,
             "recipe": [
                 "cube_op.py $A -o $@ -A timestep_change(hours) $^"
             ],
@@ -1069,15 +1148,7 @@ rules = {
             "__comment": "Using group_other for big dimensions. Make sure that null is kept out of other so it can be excluded when the dimension is used as drill dimension (2nd level). Also, can't slice null for a particular dimension out because that traffic will be part of the total for another dimension.",
             "depends": {
                 "cube_drill1_hour": "1h",
-                # "cube_origin_asn_remote2_month_top_list": "month", TODO in new-make-execution convert to ignore_mtime
-                # "cube_sites2_month_top_list": "month", TODO in new-make-execution convert to ignore_mtime
-                # "cube_aspaths_remote2_month_top_list": "month" TODO in new-make-execution convert to ignore_mtime
             },
-            #"prerequisites_dict": {
-                #"preqs_top_origins": ["$(cubes_dir)/origin_asn.remote2/months/top_list.%Y-%m.json.gz"],
-                #"preqs_top_sites": ["$(cubes_dir)/sites2/months/top_list.%Y-%m.json.gz"],
-                #"preqs_top_aspaths": ["$(cubes_dir)/aspaths.remote2/months/top_list.%Y-%m.json.gz"]
-            #},
             "recipe": [
                 "cube_op.py $A -o $@ -t 3600 -A group_other(origin_asn.local,null,<c.top_origins>) -A group_other(origin_asn.remote,null,<c.top_origins>) --arg_join c.top_origins='$(cubes_dir)/origin_asn.remote2/months/top_list.%Y-%m.json.gz'  -A group_other(aspaths.local,null,<c.top_aspaths>)  -A group_other(aspaths.remote,null,<c.top_aspaths>) --arg_join c.top_aspaths='$(cubes_dir)/aspaths.remote2/months/top_list.%Y-%m.json.gz' -A group_other(sites,null,<c.top_sites>) --arg_join c.top_sites='$(cubes_dir)/sites2/months/top_list.%Y-%m.json.gz' {cube_drill1_hour}"
             ],
@@ -1087,7 +1158,7 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/drill_small/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 400.0
+            "prune_ratio": 362,
         },
 
         "cube_company2_month": {
@@ -1107,6 +1178,7 @@ rules = {
                 "company"
             ],
             "cache_time": "2h",
+            "prune_ratio": 288,
             "time_step": "month",
             "file_step": "month",
             "target": "$(cubes_dir)/company2/months/cube.%Y-%m.h5" # TODO
@@ -1125,6 +1197,7 @@ rules = {
             "cache_time": "2h",
             "time_step": "month",
             "file_step": "month",
+            "prune_ratio": 360,
             "target": "$(cubes_dir)/company2/months/top_list.%Y-%m.json.gz" # TODO
         },
         "cube_origin_asn_remote2_month": {
@@ -1143,6 +1216,7 @@ rules = {
             "dimensions": [
                 "origin_asn.remote"
             ],
+            "prune_ratio": 360,
             "cache_time": "2h",
             "time_step": "month",
             "file_step": "month",
@@ -1163,6 +1237,7 @@ rules = {
             "cache_time": "2h",
             "time_step": "month",
             "file_step": "month",
+            "prune_ratio": 360,
             "target": "$(cubes_dir)/origin_asn.remote2/months/top_list.%Y-%m.json.gz" # TODO, no data?
         },
 
@@ -1173,7 +1248,6 @@ rules = {
             },
             "depends": {
                 "cube_drill1_hour": "1h",
-                # "cube_origin_asn_remote2_month_top_list": "month", TODO in new-make-execution convert to ignore_mtime
             },
             "recipe": [
                 "cube_op.py $A -o $@ -t 3600 -S origin_asn.remote!=null -A group_other(origin_asn.remote,<c.top_origins>) --arg_join c.top_origins='$(cubes_dir)/origin_asn.remote2/months/top_list.%Y-%m.json.gz' $^"
@@ -1181,7 +1255,7 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/origin_asn.remote3/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 35.0
+            "prune_ratio": 67.4,
         },
 
         "cube_sites2_month": {
@@ -1203,6 +1277,7 @@ rules = {
             "cache_time": "2h",
             "time_step": "month",
             "file_step": "month",
+            "prune_ratio": 288,
             "target": "$(cubes_dir)/sites2/months/cube.%Y-%m.h5" # TODO, no data?
         },
         "cube_sites2_month_top_list": {
@@ -1219,6 +1294,7 @@ rules = {
             "cache_time": "2h",
             "time_step": "month",
             "file_step": "month",
+            "prune_ratio": 360,
             "target": "$(cubes_dir)/sites2/months/top_list.%Y-%m.json.gz" # TODO, no data?
         },
 
@@ -1241,6 +1317,7 @@ rules = {
             "cache_time": "2h",
             "time_step": "month",
             "file_step": "month",
+            "prune_ratio": 288,
             "target": "$(cubes_dir)/aspaths.remote2/months/cube.%Y-%m.h5" # TODO, no data?
         },
 
@@ -1258,6 +1335,7 @@ rules = {
             "cache_time": "2h",
             "time_step": "month",
             "file_step": "month",
+            "prune_ratio": 360,
             "target": "$(cubes_dir)/aspaths.remote2/months/top_list.%Y-%m.json.gz" # TODO, no data?
         },
 
@@ -1276,7 +1354,7 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/aspaths.remote3/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 35.0
+            "prune_ratio": 69.9,
         },
 
         "searchips": {
@@ -1289,7 +1367,7 @@ rules = {
             ],
             "time_step": "5min",
             "file_step": "5min",
-            "prune_ratio": 300.0,
+            "prune_ratio": 21.5,
             "target": "$(cache_dir)/search_ips/summary.%Y-%m-%d-%H-%M.json.gz"
         },
 
@@ -1303,7 +1381,8 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/vm_stat/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 300.0
+            "prune_ratio": 2,
+            "aggressive": True,
         },
 
         # TODO does not get run
@@ -1315,6 +1394,7 @@ rules = {
                 "match_dnsflow.py -t %Y-%m-%d-%H-%M -r 6 -c 500 -R -o $(cubes_dir)/dnsflow_matches/cube.%Y-%m-%d-%H-%M.h5"
             ],
             "target": "$(cubes_dir)/dnsflow_matches/cube.%Y-%m-%d-%H-%M.h5",
+            "prune_ratio": 50.0, # XXX
             "meta": {
                 "cube_id": "dnsflow_matches"
             }
@@ -1330,7 +1410,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/sub_count_backbone_total/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 100.0
+            "prune_ratio": 100.0, # XXX
         },
 
         "cube_sub_count_backbone_total_hour": {
@@ -1343,7 +1423,7 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/sub_count_backbone_total/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 500.0
+            "prune_ratio": 500.0, # XXX
         },
 
         "cube_backbone_5min": {
@@ -1356,7 +1436,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/backbone/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 300.0
+            "prune_ratio": 235.9,
         },
 
         "cube_backbone_10sec": {
@@ -1366,18 +1446,18 @@ rules = {
             "time_step": "10sec",
             "file_step": "10sec",
             "target": "$(cubes_dir)/backbone/seconds/cube.%Y-%m-%d-%H-%M-%S.h5",
-            "prune_ratio": 300.0
+            "prune_ratio": 2.4,
         },
 
          "cube_backbone_5min_test": {
             "meta": {
                 "cube_id": "backbone_test"
             },
+            "prune_ratio": 2.56,
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/backbone_test/minutes/cube.%Y-%m-%d-%H-%M.h5",
         },
-
 
         "cube_backbone_hour": {
             "meta": {
@@ -1392,7 +1472,7 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/backbone/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 300.0
+            "prune_ratio": 113.1,
         },
 
         "cube_bgp_origin_asn_local_month": {
@@ -1410,6 +1490,7 @@ rules = {
             "meta": {
                 "cube_id": "bgp_origin_asn_local"
             },
+            "prune_ratio": 72,
             "time_step": "month",
             "file_step": "month",
             "target": "$(cubes_dir)/bgp_origin_asn.local/months/cube.%Y-%m.h5"
@@ -1428,9 +1509,96 @@ rules = {
             "meta": {
                 "cube_id": "bgp_origin_asn_local"
             },
+            "prune_ratio": 72,
             "time_step": "month",
             "file_step": "month"
         },
+
+        "context_datacenter_5min": {
+            "__comment": "fake target for non-discoverable context cube",
+            "prune_ratio": 69.63,
+            "file_step": "5min",
+            "target": "$(cubes_dir)/datacenter/minutes/cube.%Y-%m-%d-%H-%M.h5",
+        },
+
+        "context_datacenter_10s": {
+            "__comment": "fake target for non-discoverable context cube",
+            "prune_ratio": 4.8,
+            "file_step": "10s",
+            "target": "$(cubes_dir)/datacenter/seconds/cube.%Y-%m-%d-%H-%M-%S.h5",
+        },
+
+        "context_subscriber_5min": {
+            "__comment": "fake target for non-discoverable context cube",
+            "prune_ratio": 17.24,
+            "file_step": "5min",
+            "target": "$(cubes_dir)/subscriber/minutes/cube.%Y-%m-%d-%H-%M.h5",
+        },
+
+        "context_subscriber_10s": {
+            "__comment": "fake target for non-discoverable context cube",
+            "prune_ratio": 4.8,
+            "file_step": "10s",
+            "target": "$(cubes_dir)/subscriber/seconds/cube.%Y-%m-%d-%H-%M-%S.h5",
+        },
+
+        "context_subscriber_hour": {
+            "__comment": "fake target for non-discoverable context cube",
+            "prune_ratio": 150, # XXX
+            "file_step": "5min",
+            "target": "$(cubes_dir)/subscriber/hours/cube.%Y-%m-%d-%H.h5",
+        },
+
+        "flow_templates_10s": {
+            "__comment": "fake target for flow templates created by flowd on some deployments",
+            "prune_ratio": 17,
+            "file_step": "10s",
+            "target": "$(templates_dir)/flow_template.%Y-%m-%d-%H-%M-%S.pcap.gz",
+        },
+
+        "flow_templates_h5_10s": {
+            "__comment": "fake target for flow templates created by flowd on some deployments",
+            "prune_ratio": 17,
+            "file_step": "10s",
+            "target": "$(templates_dir)/flow_template.%Y-%m-%d-%H-%M-%S.h5.pcap.gz",
+        },
+
+        "flow_templates": {
+            "__comment": "fake target for flow templates created by flowd on some deployments",
+            "prune_ratio": 17,
+            "file_step": "5min",
+            "target": "$(templates_dir)/flow_template.%Y-%m-%d-%H-%M.pcap.gz",
+        },
+
+        "flow_templates_h5": {
+            "__comment": "fake target for flow templates created by flowd on some deployments",
+            "prune_ratio": 17,
+            "file_step": "5min",
+            "target": "$(templates_dir)/flow_template.%Y-%m-%d-%H-%M.h5.pcap.gz",
+        },
+
+        "tmp_air_miles": {
+            "__comment": "fake target for air_miles crc files in tmp",
+            "prune_ratio": 10,
+            "file_step": "day",
+            "target": "$(data_tmp)/.cube.%Y-%m-%d.air_miles*",
+            "aggressive": True,
+        },
+
+        "hll_big_cube_10s": {
+            "__comment": "fake target for ???",
+            "prune_ratio": 2.4,
+            "file_step": "10s",
+            "target": "$(cache_dir)/hll/big_cube/seconds/hll.%Y-%m-%d-%H-%M-%S.h5",
+        },
+
+        "hll_protectiongroup_10s": {
+            "__comment": "fake target for ???",
+            "prune_ratio": 2.4,
+            "file_step": "10s",
+            "target": "$(cache_dir)/hll/protectiongroup/seconds/hll.%Y-%m-%d-%H-%M-%S.h5",
+        },
+
     },
 
     "make_rule_template_config": {
@@ -1453,6 +1621,7 @@ rules = {
             },
             "time_step": "5min",
             "file_step": "5min",
+            "prune_ratio": 120.98,
             "target": "$(cubes_dir)/backbone_small_bgp/minutes/cube.%Y-%m-%d-%H-%M.h5",
             "recipe": [
                 "cube_op.py $A -o $@ -O $D $^"
@@ -1474,6 +1643,7 @@ rules = {
             },
             "time_step": "1h",
             "file_step": "1h",
+            "prune_ratio": 108.4,
             "target": "$(cubes_dir)/backbone_small_bgp/hours/cube.%Y-%m-%d-%H.h5",
             "recipe": [
                 "cube_op.py $A -o $@ -A timestep_change(hours) $^"
@@ -1492,6 +1662,7 @@ rules = {
             },
             "time_step": "5min",
             "file_step": "5min",
+            "prune_ratio": 2.56,
             "target": "$(cubes_dir)/backbone_test/minutes/cube.%Y-%m-%d-%H-%M.h5",
         },
 
@@ -1502,12 +1673,7 @@ rules = {
 
             "depends": {
                 "cube_backbone_5min": "5min",
-                # "cube_aspaths_remote2_month_top_list": "month", TODO in new-make-execution convert to ignore_mtime
-                # "cube_origin_asn_remote2_month_top_list": "month", TODO in new-make-execution convert to ignore_mtime
             },
-            #"prerequisites_dict": {
-                #"preqs_top_origins": ["$(cubes_dir)/origin_asn.remote2/months/top_list.%Y-%m.json.gz"],            #"preqs_top_aspaths": ["$(cubes_dir)/aspaths.remote2/months/top_list.%Y-%m.json.gz"]
-            #},
             "recipe": [
                 "cube_op.py $A -o $@ -t 300 -A group_other(origin_asn.remote,null,<c.top_origins>) --arg_join c.top_origins='$(cubes_dir)/bgp_origin_asn.local/months/top_list.%Y-%m.json.gz' -A group_other(origin_asn.local,null,<c.top_origins>)   -A group_other(aspaths.remote,null,<c.top_aspaths>) --arg_join c.top_aspaths='$(cubes_dir)/aspaths.remote2/months/top_list.%Y-%m.json.gz' -A group_other(aspaths.local,null,<c.top_aspaths>) -A group_other(sites,null,<c.top_sites>) -A group_other(company,null,<c.top_companies>) --arg_join c.top_companies='$(cubes_dir)/company2/months/top_list.%Y-%m.json.gz' --arg_join c.top_sites='$(cubes_dir)/sites2/months/top_list.%Y-%m.json.gz' -O $D {cube_backbone_5min}"
             ],
@@ -1539,7 +1705,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "target": "$(cubes_dir)/backbone_small/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 300.0
+            "prune_ratio": 258.53,
         },
 
         "cube_backbone_small_hour": {
@@ -1555,7 +1721,7 @@ rules = {
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/backbone_small/hours/cube.%Y-%m-%d-%H.h5",
-            "prune_ratio": 300.0
+            "prune_ratio": 299,
         },
 
         "cube_backbone_aspaths_small_5min": {
@@ -1568,7 +1734,7 @@ rules = {
                 "cube_op.py $A -o $@ -t 60 -D $D -A group_other(sites,null,<c.top_sites>) --arg_join c.top_sites='$(cubes_dir)/sites2/months/top_list.%Y-%m.json.gz' $^"
             ],
             "target": "$(cubes_dir)/backbone_aspaths_small/minutes/cube.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 100.0,
+            "prune_ratio": 95.68,
             "meta": {
                 "cube_id": "backbone_aspaths_small"
             },
@@ -1591,6 +1757,7 @@ rules = {
             "recipe": [
                 "cube_op.py $A -o $@ -t 60 -D $D -A 'asn_eval_aspath_expand()' $^"
             ],
+            "prune_ratio": 130.69,
             "target": "$(cubes_dir)/backbone_asn/minutes/cube.%Y-%m-%d-%H-%M.h5",
             "meta": {
                 "cube_id": "backbone_asn"
@@ -1616,6 +1783,7 @@ rules = {
             "recipe": [
                 "cube_op.py $A -o $@ -t 60 -D $D --arg_join c.top_sites='$(cubes_dir)/sites2/months/top_list.%Y-%m.json.gz' --arg_join c.top_origins='$(cubes_dir)/origin_asn.remote2/months/top_list.%Y-%m.json.gz' --arg_join c.top_asns='$(cubes_dir)/backbone_asn2/months/top_list_2000.%Y-%m.json.gz' -S asn=<c.top_asns> -A group_other(origin_asn.local,null,<c.top_origins>) -A group_other(sites,null,<c.top_sites>) $^"
             ],
+            "prune_ratio": 3.28,
             "target": "$(cubes_dir)/backbone_asn_small/minutes/cube.%Y-%m-%d-%H-%M.h5",
             "meta": {
                 "cube_id": "backbone_asn"
@@ -1644,6 +1812,7 @@ rules = {
             ],
             "time_step": "1h",
             "file_step": "1h",
+            "prune_ratio": 252.9,
             "target": "$(cubes_dir)/backbone_asn/hours/cube.%Y-%m-%d-%H.h5",
         },
 
@@ -1657,6 +1826,7 @@ rules = {
             "recipe": [
                 "cube_op.py $A -o $@ -t 60 -D $D -A 'asn_eval_interconnection()' $^"
             ],
+            "prune_ratio": 93.57,
             "target": "$(cubes_dir)/backbone_asn_total/minutes/cube.%Y-%m-%d-%H-%M.h5",
             "meta": {
                 "cube_id": "backbone_asn_total"
@@ -1665,7 +1835,6 @@ rules = {
                 "timestamp",
                 "interconnection",
                 "peer.local",
-                "service",
                 "category",
                 "aspaths.local",
                 "sites",
@@ -1692,6 +1861,7 @@ rules = {
             "cache_time": "2h",
             "time_step": "month",
             "file_step": "month",
+            "prune_ratio": 360,
             "target": "$(cubes_dir)/backbone_asn2_ind/months/cube.%Y-%m.h5",
         },
 
@@ -1709,6 +1879,7 @@ rules = {
             "cache_time": "2h",
             "time_step": "month",
             "file_step": "month",
+            "prune_ratio": 288,
             "target": "$(cubes_dir)/backbone_asn2_ind/months/top_list.%Y-%m.json.gz",
         },
 
@@ -1731,6 +1902,7 @@ rules = {
             "cache_time": "2h",
             "time_step": "month",
             "file_step": "month",
+            "prune_ratio": 288,
             "target": "$(cubes_dir)/backbone_asn2/months/cube.%Y-%m.h5",
         },
 
@@ -1748,6 +1920,7 @@ rules = {
             "cache_time": "2h",
             "time_step": "month",
             "file_step": "month",
+            "prune_ratio": 288,
             "target": "$(cubes_dir)/backbone_asn2/months/top_list.%Y-%m.json.gz",
         },
 
@@ -1765,6 +1938,7 @@ rules = {
             "cache_time": "2h",
             "time_step": "month",
             "file_step": "month",
+            "prune_ratio": 216,
             "target": "$(cubes_dir)/backbone_asn2/months/top_list_200.%Y-%m.json.gz",
         },
 
@@ -1781,6 +1955,7 @@ rules = {
             ],
             "time_step": "month",
             "file_step": "month",
+            "prune_ratio": 72,
             "target": "$(cubes_dir)/backbone_asn2/months/top_list_2000.%Y-%m.json.gz",
         },
 
@@ -1798,6 +1973,7 @@ rules = {
             "cache_time": "2h",
             "time_step": "month",
             "file_step": "month",
+            "prune_ratio": 288,
             "target": "$(cubes_dir)/backbone_asn2_ind/months/top_list_200.%Y-%m.json.gz",
         },
 
@@ -1813,6 +1989,7 @@ rules = {
             ],
             "time_step": "1h",
             "file_step": "1h",
+            "prune_ratio": 62.6,
             "target": "$(cubes_dir)/bpeer2/hours/cube.%Y-%m-%d-%H.h5"
         },
 
@@ -1829,6 +2006,7 @@ rules = {
             ],
             "time_step": "5min",
             "file_step": "5min",
+            "prune_ratio": 50, # XXX
             "target": "$(cubes_dir)/backbone_interface_small/minutes/cube.%Y-%m-%d-%H-%M.h5",
             "dimensions": [
                 "timestamp",
@@ -1850,6 +2028,7 @@ rules = {
             ],
             "time_step": "5min",
             "file_step": "5min",
+            "prune_ratio": 50, # XXX
             "target": "$(cubes_dir)/interface_capacity/minutes/cube.%Y-%m-%d-%H-%M.h5",
             "dimensions": [
                 "CableLabs_path",
@@ -1875,8 +2054,8 @@ rules = {
             "cache_time": "2h",
             "time_step": "month",
             "file_step": "month",
+            "prune_ratio": 72,
             "target": "$(cubes_dir)/bpeer2/months/cost_list.%Y-%m.json.gz",
-        }
-
+        },
     }
 }

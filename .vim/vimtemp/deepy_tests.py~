@@ -1,18 +1,25 @@
 """Used to test the jobs that are in jobs"""
 
 import unittest
-import collections
 import mock
 import os.path
+import concurrent.futures
 
 import testing
 import builder.build
 import builder.jobs
+from builder.build import BuildManager
+from builder.execution import ExecutionManager, ExecutionResult
+from builder.tests.tests_jobs import EffectJobDefinition
+from builder.tests.execution_tests import ExtendedMockExecutor
+
 import deepy.build.deepy_jobs
 import deepy.build.deepy_build
+from deepy.build.deepy_build import DeepyBuildManager
 import deepy.build.deepy_util
 import deepy.build.deepy_jobs as deepy_jobs
 import deepy.build.deepy_targets as deepy_targets
+import deepy.build.deepy_execution as deepy_execution
 import deepy.query_rules
 import deepy.cfg
 import deepy.timerange
@@ -20,6 +27,7 @@ import deepy.build.deepy_metas
 arrow = deepy.timerange.arrow_factory
 
 from testing import mock_infrastructure
+from builder.tests.tests_targets import LocalFileSystemTargetTest, GlobLocalFileSystemTargetTest
 
 class DeepyTest(unittest.TestCase):
     """Used to test the general graph construction of the deepy jobs"""
@@ -63,12 +71,12 @@ class DeepyTest(unittest.TestCase):
         job = deepy.build.deepy_jobs.DeepyDictJob('cube_aspaths_remote3_hour', rules_db)
         build_context['start_job'] = job.unexpanded_id
         build_graph.add_job(job.unexpanded_id, build_context, depth=1)
-        states = job.expand(build_context)
+        states = job.expand(build_graph, build_context)
 
 
         # Then
         self.assertTrue(len(states) == 1)
-        command = states[0].get_command(build_graph)
+        states[0].get_command()
 
     @testing.unit
     def test_basic_substitution(self):
@@ -138,8 +146,8 @@ class DeepyTest(unittest.TestCase):
         commands = []
         for node_id, node in build_graph.node.iteritems():
             obj = node['object']
-            if isinstance(obj, builder.jobs.JobState):
-                commands.append(obj.get_command(build_graph))
+            if isinstance(obj, builder.jobs.Job):
+                commands.append(obj.get_command())
 
 
         # Then
@@ -169,8 +177,8 @@ class DeepyTest(unittest.TestCase):
         commands = []
         for node_id, node in build_graph.node.iteritems():
             obj = node['object']
-            if isinstance(obj, builder.jobs.JobState):
-                commands.append(obj.get_command(build_graph))
+            if isinstance(obj, builder.jobs.Job):
+                commands.append(obj.get_command())
 
 
         # Then
@@ -208,7 +216,7 @@ class DeepyTest(unittest.TestCase):
 
 
         # Then
-        self.assertEqual(target_type, deepy.build.deepy_targets.DeepyS3BackedGlobLocalFileSystemTarget)
+        self.assertEqual(target_type, deepy_targets.DeepyS3BackedGlobLocalFileSystemTarget)
 
     @testing.unit
     def test_h5flow_marker(self):
@@ -235,31 +243,31 @@ class DeepyTest(unittest.TestCase):
             if isinstance(target, builder.targets.Target):
                 if "marker" in target.unique_id:
                     target.mtime = arrow.get("2015-03-12-01-06").float_timestamp
-                    target.exists = True
+                    target.cached_mtime = True
                 else:
                     target.mtime = None
-                    target.exists = False
+                    target.cached_mtime = True
 
         for _, target in build2.node.iteritems():
             target = target["object"]
             if isinstance(target, builder.targets.Target):
                 if "marker" in target.unique_id:
                     target.mtime = arrow.get("2015-03-12-01-10").float_timestamp
-                    target.exists = True
+                    target.cached_mtime = True
                 else:
                     if build2.predecessors(target.unique_id):
                         target.mtime = arrow.get("2015-03-12-01-09").float_timestamp
-                        target.exists = True
+                        target.cached_mtime = True
                     else:
                         target.mtime = arrow.get("2015-03-12-01-08").float_timestamp
-                        target.exists = True
+                        target.cached_mtime = True
 
         expected_stale1 = False
         expected_stale2 = False
 
         # When
-        should_run1 = build1.node["cubes_from_h5flow_5min_2015-03-12-01-05-00"]["object"].get_stale(build1)
-        should_run2 = build2.node["cubes_from_h5flow_5min_2015-03-12-01-05-00"]["object"].get_stale(build2)
+        should_run1 = build1.node["cubes_from_h5flow_5min_2015-03-12-01-05-00"]["object"].get_stale()
+        should_run2 = build2.node["cubes_from_h5flow_5min_2015-03-12-01-05-00"]["object"].get_stale()
 
         # Then
         self.assertEqual(should_run1, expected_stale1)
@@ -427,7 +435,8 @@ class DeepyDictJobTest(unittest.TestCase):
 
     def test_load_impala_jobs(self):
         # Given
-        impala_config = {
+        impala_config = mock.Mock()
+        impala_config.slice_config = {
             "impala": {
                 "load": {
                     "stream_bps": {
@@ -447,8 +456,9 @@ class DeepyDictJobTest(unittest.TestCase):
         }
 
         # When
-        original_rules = deepy.build.deepy_util.construct_rules()
-        with mock.patch("deepy.build.deepy_util.construct_rules") as dict:
+        deepy.build.deepy_util.construct_rules()
+        with mock.patch("deepy.build.deepy_util.construct_rules") as dict, \
+             mock.patch("deepy.cfg", impala_config):
             dict.return_value = {
                 "cube_stream_bps_5min": {
                     "meta": {
@@ -472,8 +482,7 @@ class DeepyDictJobTest(unittest.TestCase):
                     "file_step": "1d",
                 },
             }
-            build_manager = deepy.build.deepy_build.DeepyBuildManager(
-                    config=impala_config)
+            build_manager = deepy.build.deepy_build.DeepyBuildManager()
             deepy_build = build_manager.make_build()
 
         dependency_jobs = deepy_build.rule_dependency_graph.predecessors("impala_compaction")
@@ -542,7 +551,7 @@ class DeepyDictJobTest(unittest.TestCase):
 
         # When
         job_state = build.node["deepfield_dataset_name_step5min_view"]["object"]
-        should_run = job_state.get_should_run(build)
+        should_run = job_state.get_should_run()
         expected_command = "update_view.py -i dataset_name --step 300"
         actual_command = impala_job.get_command(job_state.unique_id, {}, build)
 
@@ -594,8 +603,6 @@ class DeepyDictJobTest(unittest.TestCase):
         build.add_job("deepfield_big_cube_step5min_insert", build_context)
         build.add_job("deepfield_stream_bps_step5min_insert", build_context2)
 
-        build.write_dot("graph.dot")
-
         expected_command = ("insertcube.py -i {}/big_cube/minutes/"
                             "cube.2015-02-01-05-10.h5".format(
                                     deepy.cfg.cubes_dir))
@@ -627,6 +634,175 @@ class DeepyDictJobTest(unittest.TestCase):
         self.assertEqual(produces_expander.dataset_name, "big_cube")
         self.assertEqual(produces_expander.compacted, False)
 
+    def test_enabled(self):
+        # Given
+        fake_slice = {
+            "enabled_jobs": {
+                "slice_enabled": True,
+                "slice_disabled": False,
+            }
+        }
+
+        with mock.patch("deepy.cfg.slice_config", fake_slice):
+            fake_rules_db = {
+                "disabled_job": {
+                    "meta": {
+                        "cube_id": "stream_bps",
+                    },
+                    "depends": {
+                        "classify_h5flow": "5min"
+                    },
+                    "recipe": [
+                        "h5flow_bps.py $A -c vss -t %Y-%m-%d-%H-%M -r $^ -w $@"
+                    ],
+                    "target": "$(cache_dir)/bps/minutes/cube.%Y-%m-%d-%H-%M.h5",
+                    "file_step": "5min",
+                    "enabled": False,
+                },
+                "enabled_job": {
+                    "meta": {
+                        "cube_id": "stream_bps",
+                    },
+                    "depends": {
+                        "classify_h5flow": "5min"
+                    },
+                    "recipe": [
+                        "h5flow_bps.py $A -c vss -t %Y-%m-%d-%H-%M -r $^ -w $@"
+                    ],
+                    "target": "$(cache_dir)/bps/minutes/cube.%Y-%m-%d-%H-%M.h5",
+                    "file_step": "5min",
+                    "enabled": True,
+                },
+                "implicitly_enabled_job": {
+                    "depends": {
+                        "classify_h5flow": "5min"
+                    },
+                    "recipe": [
+                        "h5flow_bps.py $A -c vss -t %Y-%m-%d-%H-%M -r $^ -w $@"
+                    ],
+                    "target": "$(cache_dir)/bps/minutes/cube.%Y-%m-%d-%H-%M.h5",
+                    "file_step": "5min",
+                    "time_step": "5min",
+                },
+                "implicit_enabled_job": {
+                    "meta": {
+                        "cube_id": "stream_bps",
+                    },
+                    "depends": {
+                        "classify_h5flow": "5min"
+                    },
+                    "recipe": [
+                        "h5flow_bps.py $A -c vss -t %Y-%m-%d-%H-%M -r $^ -w $@"
+                    ],
+                    "target": "$(cache_dir)/bps/minutes/cube.%Y-%m-%d-%H-%M.h5",
+                    "file_step": "5min",
+                    "time_step": "5min",
+                },
+                "slice_enabled": {
+                    "meta": {
+                        "cube_id": "stream_bps",
+                    },
+                    "depends": {
+                        "classify_h5flow": "5min"
+                    },
+                    "recipe": [
+                        "h5flow_bps.py $A -c vss -t %Y-%m-%d-%H-%M -r $^ -w $@"
+                    ],
+                    "target": "$(cache_dir)/bps/minutes/cube.%Y-%m-%d-%H-%M.h5",
+                    "file_step": "5min",
+                    "time_step": "5min",
+                    "enabled": deepy.query_rules.slice_enabled("slice_enabled"),
+                },
+                "slice_disabled": {
+                    "meta": {
+                        "cube_id": "stream_bps",
+                    },
+                    "depends": {
+                        "classify_h5flow": "5min"
+                    },
+                    "recipe": [
+                        "h5flow_bps.py $A -c vss -t %Y-%m-%d-%H-%M -r $^ -w $@"
+                    ],
+                    "target": "$(cache_dir)/bps/minutes/cube.%Y-%m-%d-%H-%M.h5",
+                    "file_step": "5min",
+                    "time_step": "5min",
+                    "enabled": deepy.query_rules.slice_enabled("slice_disabled"),
+                },
+                "implicit_slice_disabled": {
+                    "meta": {
+                        "cube_id": "stream_bps",
+                    },
+                    "depends": {
+                        "classify_h5flow": "5min"
+                    },
+                    "recipe": [
+                        "h5flow_bps.py $A -c vss -t %Y-%m-%d-%H-%M -r $^ -w $@"
+                    ],
+                    "target": "$(cache_dir)/bps/minutes/cube.%Y-%m-%d-%H-%M.h5",
+                    "file_step": "5min",
+                    "time_step": "5min",
+                    "enabled": deepy.query_rules.slice_enabled("implicit_slice_disabled"),
+                },
+            }
+
+        # When
+        enabled_job = deepy.build.deepy_jobs.DeepyDictJob('enabled_job', fake_rules_db)
+        disabled_job = deepy.build.deepy_jobs.DeepyDictJob('disabled_job', fake_rules_db)
+        implicit_enabled_job = deepy.build.deepy_jobs.DeepyDictJob('implicit_enabled_job', fake_rules_db)
+        slice_enabled = deepy.build.deepy_jobs.DeepyDictJob('slice_enabled', fake_rules_db)
+        slice_disabled = deepy.build.deepy_jobs.DeepyDictJob('slice_disabled', fake_rules_db)
+        implicit_slice_disabled = deepy.build.deepy_jobs.DeepyDictJob('implicit_slice_disabled', fake_rules_db)
+
+        # Then
+        self.assertTrue(enabled_job.get_enable())
+        self.assertFalse(disabled_job.get_enable())
+        self.assertTrue(implicit_enabled_job.get_enable())
+        self.assertTrue(slice_enabled.get_enable())
+        self.assertFalse(slice_disabled.get_enable())
+        self.assertFalse(implicit_slice_disabled.get_enable())
+
+    def test_extra_cron_job_enabled(self):
+        # Given
+        fake_empty_vm = {}
+        fake_vm = {
+            "extra_cron_jobs": [
+                "job_id3"
+            ]
+        }
+        job_id1 = "job_id1"
+        job_id2 = "job_id2"
+        job_id3 = "job_id3"
+
+
+        # When
+        with mock.patch("deepy.cfg.vm_config", fake_empty_vm):
+            fake_rules_db = {
+                "job_id1": {
+                    "recipe": ["recipe"],
+                    "enabled": deepy.query_rules.extra_cron_jobs_enabled("job_id1"),
+                },
+            }
+            job1 = deepy.build.deepy_jobs.DeepyDictJob("job_id1", fake_rules_db)
+
+        with mock.patch("deepy.cfg.vm_config", fake_vm):
+            fake_rules_db = {
+                "job_id2": {
+                    "recipe": ["recipe"],
+                    "enabled": deepy.query_rules.extra_cron_jobs_enabled("job_id2"),
+                },
+                "job_id3": {
+                    "recipe": ["recipe"],
+                    "enabled": deepy.query_rules.extra_cron_jobs.enalbed("job_id3"),
+                },
+            }
+            job2 = deepy.build.deeepy_jobs.DeepyDictJob("job_id2", fake_rules_db)
+            job3 = deepy.build.deeepy_jobs.DeepyDictJob("job_id3", fake_rules_db)
+
+        # Then
+        self.assertFalse(job1.get_enable())
+        self.assertFalse(job2.get_enable())
+        self.assertTrue(job3.get_enable())
+
 class SpecificJobsTest(unittest.TestCase):
 
     def _make_deepy_build(self, start_job):
@@ -649,8 +825,8 @@ class SpecificJobsTest(unittest.TestCase):
 
 
         # When
-        job_states = job.expand(build_context)
-        commands = map(lambda x: x.get_command(build), job_states)
+        job_states = job.expand(build, build_context)
+        commands = map(lambda x: x.get_command(), job_states)
 
         # Then
         self.assertEquals(1, len(commands))
@@ -669,8 +845,8 @@ class SpecificJobsTest(unittest.TestCase):
         job = build.rule_dependency_graph.node['cube_drill_small_5min']['object']
 
         # When
-        job_states = job.expand(build_context)
-        commands = map(lambda x: x.get_command(build), job_states)
+        job_states = job.expand(build, build_context)
+        commands = map(lambda x: x.get_command(), job_states)
 
         # Then
         self.assertEquals(1, len(commands))
@@ -687,9 +863,9 @@ class SpecificJobsTest(unittest.TestCase):
         job_states = []
         for node_id, node in build.node.iteritems():
             node_data = node['object']
-            if isinstance(node_data, builder.jobs.JobState):
+            if isinstance(node_data, builder.jobs.Job):
                 job_states.append(node_data)
-        commands = map(lambda x: x.get_command(build), job_states)
+        commands = map(lambda x: x.get_command(), job_states)
 
         # Then
         self.assertGreater(len(commands), 1)
@@ -700,12 +876,12 @@ class SpecificJobsTest(unittest.TestCase):
         # Given
         build_manager = deepy.build.deepy_build.DeepyBuildManager()
         build = build_manager.make_build()
-        job = build.rule_dependency_graph.get_job('h5flow')
+        job = build.rule_dependency_graph.get_job_definition('h5flow')
         build_context = {'start_time': arrow.get('2015-01-01')}
         build.add_meta("cubes_5min", build_context)
 
         # Create dependencies
-        for dep in build.rule_dependency_graph.get_dependy_ids('h5flow'):
+        for dep in build.rule_dependency_graph.get_dependency_ids('h5flow'):
             substituted_path = deepy.build.deepy_util.deepy_substitution(dep, deepy.cfg)
             substituted_path = build_context['start_time'].strftime(substituted_path)
             deepy.util.ensure_directory(os.path.dirname(substituted_path))
@@ -717,12 +893,11 @@ class SpecificJobsTest(unittest.TestCase):
             f.write('foo')
 
         # When
-        job_states = job.expand(build_context)
+        job_states = job.expand(build, build_context)
         job_state = job_states[0]
 
         # Then
-        build.write_dot("graph.dot")
-        self.assertFalse(job_state.get_should_run_immediate(build))
+        self.assertFalse(job_state.get_should_run_immediate())
 
 
     @testing.unit
@@ -731,13 +906,13 @@ class SpecificJobsTest(unittest.TestCase):
         # Given
         build_manager = deepy.build.deepy_build.DeepyBuildManager()
         build = build_manager.make_build()
-        job = build.rule_dependency_graph.get_job('cubes_from_h5flow_5min')
+        job = build.rule_dependency_graph.get_job_definition('cubes_from_h5flow_5min')
         build_context = {'start_time': arrow.get('2015-01-01')}
         build.add_meta("cubes_5min", build_context)
 
         # When
-        job_states = job.expand(build_context)
-        commands = map(lambda x: x.get_command(build), job_states)
+        job_states = job.expand(build, build_context)
+        commands = map(lambda x: x.get_command(), job_states)
 
         # Then
         self.assertEquals(commands[0], 'cubes_from_h5flow.py  -B -t 2015-01-01-00-00 -m {cubedir}/cubes_from_h5flow_markers/cubes_from_h5flow_5min/2015-01-01-00-00.marker'.format(cubedir=deepy.cfg.cubes_dir))
@@ -747,13 +922,13 @@ class SpecificJobsTest(unittest.TestCase):
         # Given
         build_manager = deepy.build.deepy_build.DeepyBuildManager()
         build = build_manager.make_build()
-        jobs = build.rule_dependency_graph.get_job("classify_h5flow")
+        jobs = build.rule_dependency_graph.get_job_definition("classify_h5flow")
         build_context = {"start_time": arrow.get("2015-01-01"),
                          "end_time": arrow.get("2015-01-01")}
 
         # When
         build.add_job("classify_h5flow", build_context)
-        jobs_states = jobs.expand(build_context)
+        jobs_states = jobs.expand(build, build_context)
         predecessors = build.predecessors(jobs_states[0].unique_id)
         ancestors = []
         for predecessor in predecessors:
@@ -778,7 +953,7 @@ class ImpalaTimePartitionedTargetTest(unittest.TestCase):
         mock_table.location = "location"
         def mod_target(target):
             target._get_snakebite_client = mock.Mock(return_value=snakebite_client)
-            target.get_table = mock.Mock(return_value=mock_table)
+            target.get_tables = mock.Mock(return_value=[mock_table])
         map(mod_target, targets)
         return targets
 
@@ -841,3 +1016,531 @@ class DeepyBuildManagerTest(unittest.TestCase):
 
         # Then
         self.assertIn('cube_drill_small_5min_2015-01-01-00-00-00', build.node)
+
+class S3BackedLocalFileSystemTargetTest(unittest.TestCase):
+    """Used to test specifically the local file system implemention of
+    a target
+    """
+    @staticmethod
+    def mock_s3_mtime_generator(file_dict):
+        """Used to generate a fake os.stat
+
+        takes in a list of files and returns a function that will return the
+        mtime corresponding to the path passed to it
+        """
+        def mock_s3_mtime(path):
+            """Returns the mtime corresponding to the path
+
+            raises:
+                OSError: if the path is not in the file_dict
+            """
+            path = path[0]
+            if path not in file_dict:
+                return {path: None}
+            return {path: file_dict[path]}
+        return mock_s3_mtime
+
+    @staticmethod
+    def mock_s3_bulk_mtime_generator(file_dict):
+        """Used to generate a fake os.stat
+
+        takes in a list of files and returns a function that will return the
+        mtime corresponding to the path passed to it
+        """
+        def mock_bulk_mtime(paths, bulk=True):
+            """Returns the mtime corresponding to the path
+
+            raises:
+                OSError: if the path is not in the file_dict
+            """
+            mtime_dict = {}
+            for path in paths:
+                for file in file_dict:
+                    if file.startswith(path):
+                        mtime_dict[file] = file_dict[file]
+            return mtime_dict
+        return mock_bulk_mtime
+
+    @testing.unit
+    def test_get_exists(self):
+        # given
+        path1 = "local_path/1"
+        path2 = "local_path/2"
+        path3 = "local_path/3"
+        path4 = "local_path/4"
+
+        local_mtimes = {
+            path1: 1,
+            path2: 2,
+        }
+
+        remote_mtimes = {
+            path1: 3,
+            path4: 4,
+        }
+
+        mock_local_mtime = (LocalFileSystemTargetTest
+                .mock_mtime_generator(local_mtimes))
+
+        mock_remote_mtime = (S3BackedLocalFileSystemTargetTest
+                .mock_s3_mtime_generator(remote_mtimes))
+
+        # when
+        build_context = {}
+        file1 = deepy_targets.S3BackedLocalFileSystemTarget(
+                path1, path1, build_context)
+        file2 = deepy_targets.S3BackedLocalFileSystemTarget(
+                path2, path2, build_context)
+        file3 = deepy_targets.S3BackedLocalFileSystemTarget(
+                path3, path3, build_context)
+        file4 = deepy_targets.S3BackedLocalFileSystemTarget(
+                path4, path4, build_context)
+
+        with mock.patch("os.stat", mock_local_mtime), \
+                mock.patch("deepy.store.ls_files_remote", mock_remote_mtime):
+            exists1 = file1.get_exists()
+            exists2 = file2.get_exists()
+            exists3 = file3.get_exists()
+            exists4 = file4.get_exists()
+
+        # then
+        self.assertTrue(exists1)
+        self.assertTrue(exists2)
+        self.assertFalse(exists3)
+        self.assertTrue(exists4)
+
+    @testing.unit
+    def test_get_mtime(self):
+        # given
+        path1 = "local_path/1"
+        path2 = "local_path/2"
+        path3 = "local_path/3"
+        path4 = "local_path/4"
+
+        local_mtimes = {
+            path1: 1,
+            path2: 2,
+        }
+
+        remote_mtimes = {
+            path1: 3,
+            path4: 4,
+        }
+
+        mock_local_mtime = (LocalFileSystemTargetTest
+                .mock_mtime_generator(local_mtimes))
+
+        mock_remote_mtime = (S3BackedLocalFileSystemTargetTest
+                .mock_s3_mtime_generator(remote_mtimes))
+
+        # when
+        build_context = {}
+        file1 = deepy_targets.S3BackedLocalFileSystemTarget(
+                path1, path1, build_context)
+        file2 = deepy_targets.S3BackedLocalFileSystemTarget(
+                path2, path2, build_context)
+        file3 = deepy_targets.S3BackedLocalFileSystemTarget(
+                path3, path3, build_context)
+        file4 = deepy_targets.S3BackedLocalFileSystemTarget(
+                path4, path4, build_context)
+
+        with mock.patch("os.stat", mock_local_mtime), \
+                mock.patch("deepy.store.ls_files_remote", mock_remote_mtime):
+            mtime1 = file1.get_mtime()
+            mtime2 = file2.get_mtime()
+            mtime3 = file3.get_mtime()
+            mtime4 = file4.get_mtime()
+
+        # then
+        self.assertEqual(mtime1, 3)
+        self.assertEqual(mtime2, 2)
+        self.assertIsNone(mtime3)
+        self.assertEqual(mtime4, 4)
+
+    @testing.unit
+    def test_get_bulk_exists_mtime(self):
+        # given
+        path1_file = "local_path/1"
+        path1 = builder.targets.LocalFileSystemTarget(path1_file, path1_file,
+                                                      {})
+        path2_file = "local_path/2"
+        path2 = builder.targets.LocalFileSystemTarget(path2_file, path2_file,
+                                                      {})
+        path3_file = "local_path/3"
+        path3 = builder.targets.LocalFileSystemTarget(path3_file, path3_file,
+                                                      {})
+        path4_file = "local_path/4"
+        path4 = builder.targets.LocalFileSystemTarget(path4_file, path4_file,
+                                                      {})
+
+        local_mtimes = {
+            path1_file: 1,
+            path2_file: 2,
+        }
+
+        remote_mtimes = {
+            path1_file: 3,
+            path4_file: 4,
+        }
+
+        mock_local_mtime = (LocalFileSystemTargetTest
+                .mock_mtime_generator(local_mtimes))
+
+        mock_remote_mtime = (S3BackedLocalFileSystemTargetTest
+                .mock_s3_bulk_mtime_generator(remote_mtimes))
+
+        # when
+        build_context = {}
+        file1 = deepy_targets.S3BackedLocalFileSystemTarget(
+                path1_file, path1_file, build_context)
+
+        mtime_fetcher = file1.get_bulk_exists_mtime
+
+        with mock.patch("os.stat", mock_local_mtime), \
+                mock.patch("deepy.store.ls_files_remote", mock_remote_mtime):
+            mtimes_exists = mtime_fetcher([path1, path2, path3, path4])
+            file1_exists = mtimes_exists[path1_file]["exists"]
+            file2_exists = mtimes_exists[path2_file]["exists"]
+            file3_exists = mtimes_exists[path3_file]["exists"]
+            file4_exists = mtimes_exists[path4_file]["exists"]
+            file1_mtime = mtimes_exists[path1_file]["mtime"]
+            file2_mtime = mtimes_exists[path2_file]["mtime"]
+            file3_mtime = mtimes_exists[path3_file]["mtime"]
+            file4_mtime = mtimes_exists[path4_file]["mtime"]
+
+        self.assertTrue(file1_exists)
+        self.assertTrue(file2_exists)
+        self.assertFalse(file3_exists)
+        self.assertTrue(file4_exists)
+        self.assertEqual(file1_mtime, 3)
+        self.assertEqual(file2_mtime, 2)
+        self.assertIsNone(file3_mtime)
+        self.assertEqual(file4_mtime, 4)
+
+class S3BackedGlobLocalFileSystemTargetTest(unittest.TestCase):
+    """Used to test specifically the local file system implemention of
+    a target
+    """
+    @testing.unit
+    def test_get_exists(self):
+        # given
+        # exists on both remote and local
+        glob1 = "local_path/1/*.gz"
+        glob1_path1 = "local_path/1/1.gz"
+        glob1_path2 = "local_path/1/2.gz"
+
+        # exists on neither
+        glob2 = "local_path/2/*.gz"
+
+        # exists on remote only
+        glob3 = "local_path/3/*.gz"
+        glob3_path1 = "local_path/3/1.gz"
+        glob3_path2 = "local_path/3/2.gz"
+
+        # exists on local only
+        glob4 = "local_path/4/*.gz"
+        glob4_path1 = "local_path/4/1.gz"
+        glob4_path2 = "local_path/4/2.gz"
+
+        # tests pattern matching correctness
+        glob5 = "local_path/*1/5*.gz"
+        glob5_path1 = "local_path/151/515.gz"
+        glob5_path2 = "local_path/251/525.gz"
+        close_glob5_path1 = "local_path/15/25.gz"
+
+        local_mtimes = {
+            glob1_path1: 1,
+            glob1_path2: 2,
+            glob4_path1: 3,
+            glob4_path2: 4,
+        }
+
+        remote_mtimes = {
+            glob1_path1: 3,
+            glob1_path2: 5,
+            glob3_path1: 2,
+            glob3_path2: 3,
+            glob5_path1: 4,
+            glob5_path2: 5,
+            close_glob5_path1: 6,
+        }
+
+        mock_local_mtime = (LocalFileSystemTargetTest
+                .mock_mtime_generator(local_mtimes))
+
+        mock_remote_mtime = (S3BackedLocalFileSystemTargetTest
+                .mock_s3_bulk_mtime_generator(remote_mtimes))
+
+        mock_glob = (GlobLocalFileSystemTargetTest
+                .mock_glob_list_generator(local_mtimes))
+
+        # when
+        build_context = {}
+
+        glob_target1 = deepy_targets.S3BackedGlobLocalFileSystemTarget(
+                glob1, glob1, build_context)
+        glob_target2 = deepy_targets.S3BackedGlobLocalFileSystemTarget(
+                glob2, glob2, build_context)
+        glob_target3 = deepy_targets.S3BackedGlobLocalFileSystemTarget(
+                glob3, glob3, build_context)
+        glob_target4 = deepy_targets.S3BackedGlobLocalFileSystemTarget(
+                glob4, glob4, build_context)
+        glob_target5 = deepy_targets.S3BackedGlobLocalFileSystemTarget(
+                glob5, glob5, build_context)
+
+        with mock.patch("os.stat", mock_local_mtime), \
+                mock.patch("deepy.store.list_files_remote", mock_remote_mtime), \
+                mock.patch("glob.glob", mock_glob):
+            exists1 = glob_target1.get_exists()
+            exists2 = glob_target2.get_exists()
+            exists3 = glob_target3.get_exists()
+            exists4 = glob_target4.get_exists()
+            exists5 = glob_target5.get_exists()
+
+        self.assertTrue(exists1)
+        self.assertFalse(exists2)
+        self.assertTrue(exists3)
+        self.assertTrue(exists4)
+        self.assertTrue(exists5)
+
+    @testing.unit
+    def test_get_mtime(self):
+        # given
+        # exists on both remote and local
+        glob1 = "local_path/1/*.gz"
+        glob1_path1 = "local_path/1/1.gz"
+        glob1_path2 = "local_path/1/2.gz"
+
+        # exists on neither
+        glob2 = "local_path/2/*.gz"
+
+        # exists on remote only
+        glob3 = "local_path/3/*.gz"
+        glob3_path1 = "local_path/3/1.gz"
+        glob3_path2 = "local_path/3/2.gz"
+
+        # exists on local only
+        glob4 = "local_path/4/*.gz"
+        glob4_path1 = "local_path/4/1.gz"
+        glob4_path2 = "local_path/4/2.gz"
+
+        # tests pattern matching correctness
+        glob5 = "local_path/*1/5*.gz"
+        glob5_path1 = "local_path/151/515.gz"
+        glob5_path2 = "local_path/251/525.gz"
+        close_glob5_path1 = "local_path/15/25.gz"
+
+        local_mtimes = {
+            glob1_path1: 1,
+            glob1_path2: 2,
+            glob4_path1: 3,
+            glob4_path2: 4,
+        }
+
+        remote_mtimes = {
+            glob1_path1: 3,
+            glob1_path2: 5,
+            glob3_path1: 2,
+            glob3_path2: 3,
+            glob5_path1: 4,
+            glob5_path2: 5,
+            close_glob5_path1: 6,
+        }
+
+        mock_local_mtime = (LocalFileSystemTargetTest
+                .mock_mtime_generator(local_mtimes))
+
+        mock_remote_mtime = (S3BackedLocalFileSystemTargetTest
+                .mock_s3_bulk_mtime_generator(remote_mtimes))
+
+        mock_glob = (GlobLocalFileSystemTargetTest
+                .mock_glob_list_generator(local_mtimes))
+
+        build_context = {}
+
+        # when
+        glob_target1 = deepy_targets.S3BackedGlobLocalFileSystemTarget(
+                glob1, glob1, build_context)
+        glob_target2 = deepy_targets.S3BackedGlobLocalFileSystemTarget(
+                glob2, glob2, build_context)
+        glob_target3 = deepy_targets.S3BackedGlobLocalFileSystemTarget(
+                glob3, glob3, build_context)
+        glob_target4 = deepy_targets.S3BackedGlobLocalFileSystemTarget(
+                glob4, glob4, build_context)
+        glob_target5 = deepy_targets.S3BackedGlobLocalFileSystemTarget(
+                glob5, glob5, build_context)
+
+        with mock.patch("os.stat", mock_local_mtime), \
+                mock.patch("deepy.store.list_files_remote", mock_remote_mtime), \
+                mock.patch("glob.glob", mock_glob):
+            mtime1 = glob_target1.get_mtime()
+            mtime2 = glob_target2.get_mtime()
+            mtime3 = glob_target3.get_mtime()
+            mtime4 = glob_target4.get_mtime()
+            mtime5 = glob_target5.get_mtime()
+
+        self.assertEqual(mtime1, 5)
+        self.assertIsNone(mtime2)
+        self.assertEqual(mtime3, 3)
+        self.assertEqual(mtime4, 4)
+        self.assertEqual(mtime5, 5)
+
+    @testing.unit
+    def test_get_bulk_exists_mtime(self):
+        # given
+        # exists on both remote and local
+        glob1_pattern = "local_path/1/*.gz"
+        glob1 = builder.targets.GlobLocalFileSystemTarget(glob1_pattern,
+                                                          glob1_pattern, {})
+        glob1_path1 = "local_path/1/1.gz"
+        glob1_path2 = "local_path/1/2.gz"
+
+        # exists on neither
+        glob2_pattern = "local_path/2/*.gz"
+        glob2 = builder.targets.GlobLocalFileSystemTarget(glob2_pattern,
+                                                          glob2_pattern, {})
+
+        # exists on remote only
+        glob3_pattern = "local_path/3/*.gz"
+        glob3_path1 = "local_path/3/1.gz"
+        glob3_path2 = "local_path/3/2.gz"
+        glob3 = builder.targets.GlobLocalFileSystemTarget(glob3_pattern,
+                                                          glob3_pattern, {})
+
+        # exists on local only
+        glob4_pattern = "local_path/4/*.gz"
+        glob4_path1 = "local_path/4/1.gz"
+        glob4_path2 = "local_path/4/2.gz"
+        glob4 = builder.targets.GlobLocalFileSystemTarget(glob4_pattern,
+                                                          glob4_pattern, {})
+
+        # tests pattern matching correctness
+        glob5_pattern = "local_path/*1/5*.gz"
+        glob5_path1 = "local_path/151/515.gz"
+        glob5_path2 = "local_path/251/525.gz"
+        close_glob5_path1 = "local_path/15/25.gz"
+        glob5 = builder.targets.GlobLocalFileSystemTarget(glob5_pattern,
+                                                          glob5_pattern, {})
+
+        local_mtimes = {
+            glob1_path1: 1,
+            glob1_path2: 2,
+            glob4_path1: 3,
+            glob4_path2: 4,
+        }
+
+        remote_mtimes = {
+            glob1_path1: 3,
+            glob1_path2: 5,
+            glob3_path1: 2,
+            glob3_path2: 3,
+            glob5_path1: 4,
+            glob5_path2: 5,
+            close_glob5_path1: 6,
+        }
+
+        mock_mtime = (LocalFileSystemTargetTest
+                .mock_mtime_generator(local_mtimes))
+
+        mock_glob = (GlobLocalFileSystemTargetTest
+                .mock_glob_list_generator(local_mtimes))
+
+        mock_remote_mtime = (S3BackedLocalFileSystemTargetTest
+                .mock_s3_bulk_mtime_generator(remote_mtimes))
+
+        build_context = {}
+
+        glob_target1 = (deepy_targets.S3BackedGlobLocalFileSystemTarget(
+                        glob1_pattern, glob1_pattern, build_context))
+
+        mtime_fetcher = glob_target1.get_bulk_exists_mtime
+
+        with mock.patch("os.stat", mock_mtime), \
+                mock.patch("deepy.store.list_files_remote",
+                        mock_remote_mtime), \
+                mock.patch("glob.glob", mock_glob):
+                mtimes_exists = mtime_fetcher([glob1, glob2, glob3,
+                        glob4, glob5])
+                glob1_exists = mtimes_exists[glob1_pattern]["exists"]
+                glob2_exists = mtimes_exists[glob2_pattern]["exists"]
+                glob3_exists = mtimes_exists[glob3_pattern]["exists"]
+                glob4_exists = mtimes_exists[glob4_pattern]["exists"]
+                glob5_exists = mtimes_exists[glob5_pattern]["exists"]
+                glob1_mtime = mtimes_exists[glob1_pattern]["mtime"]
+                glob2_mtime = mtimes_exists[glob2_pattern]["mtime"]
+                glob3_mtime = mtimes_exists[glob3_pattern]["mtime"]
+                glob4_mtime = mtimes_exists[glob4_pattern]["mtime"]
+                glob5_mtime = mtimes_exists[glob5_pattern]["mtime"]
+
+        self.assertTrue(glob1_exists)
+        self.assertFalse(glob2_exists)
+        self.assertTrue(glob3_exists)
+        self.assertTrue(glob4_exists)
+        self.assertTrue(glob5_exists)
+        self.assertEqual(glob1_mtime, 5)
+        self.assertIsNone(glob2_mtime)
+        self.assertEqual(glob3_mtime, 3)
+        self.assertEqual(glob4_mtime, 4)
+        self.assertEqual(glob5_mtime, 5)
+
+
+
+class CeleryExecutorTest(unittest.TestCase):
+    def _get_execution_manager_with_effects(self, jobs):
+        build_manager = BuildManager(jobs, metas=[])
+        execution_manager = ExecutionManager(build_manager, ExtendedMockExecutor)
+        return execution_manager
+
+    def test_do_execute(self):
+
+        # Given
+        deepy_execution.app.conf.CELERY_ALWAYS_EAGER = True
+        jobs = [EffectJobDefinition("A", command="true")]
+        execution_manager = self._get_execution_manager_with_effects(jobs)
+        execution_manager.executor = deepy_execution.CeleryExecutor(execution_manager)
+        execution_manager.running = True
+        execution_manager.submit("A", {})
+        executor = execution_manager.executor
+        executor.pool = mock.Mock()
+        mock_future = concurrent.futures.Future()
+        mock_future.set_result(("A", ExecutionResult(True, True, '', '')))
+
+        executor.pool.submit = mock.Mock(return_value=mock_future)
+
+        # When
+        future_result = execution_manager.executor.execute(execution_manager.get_build().get_job("A"))
+        job_id, result = future_result.result()
+
+        # Then
+        self.assertTrue(result.status)
+        self.assertEquals(result.stdout, '')
+
+
+class JobsDaemonExecutorTest(unittest.TestCase):
+    def _get_execution_manager_with_effects(self, jobs):
+        build_manager = DeepyBuildManager(jobs, metas=[])
+        execution_manager = ExecutionManager(build_manager, deepy_execution.JobsDaemonExecutor, config=build_manager.config)
+        execution_manager.executor
+        return execution_manager
+
+    def test_submit_async_job(self):
+
+        # Given
+        jobs = [EffectJobDefinition("A", command="true")]
+        execution_manager = self._get_execution_manager_with_effects(jobs)
+        execution_manager.running = True
+        execution_manager.submit("A", {})
+        executor = execution_manager.executor
+        executor.pool = mock.Mock()
+        mock_future = concurrent.futures.Future()
+        mock_future.set_result(("A", ExecutionResult(True, True, '', '')))
+
+        executor.pool.submit = mock.Mock(return_value=mock_future)
+
+        # When
+        future_result = execution_manager.executor.execute(execution_manager.get_build().get_job("A"))
+        job_id, result = future_result.result()
+
+        # Then
+        self.assertTrue(result.status)
+        self.assertEquals(result.stdout, '')

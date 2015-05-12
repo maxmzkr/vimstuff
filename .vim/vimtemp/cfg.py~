@@ -5,7 +5,6 @@ import os
 import json
 
 import deepy.url
-import deepy.log as log
 
 '''
 Clear umask so files are created with full permissions. Done here as
@@ -15,6 +14,8 @@ undocumented) and os.makedirs() will use 777, which is what we want in
 both cases.
 '''
 os.umask(0)
+
+DEFAULT_DB_PASS = 'PipedreamPassword!' # set in salt/mysql
 
 class Config:
     def __init__(self, pipedream_deployment_override=None,
@@ -92,6 +93,7 @@ class Config:
             self.deployment_id = self.slice_config['customer_id']
         else:
             self.deployment_id = None
+        self.no_cron_jobs = self.slice_config.get('no_cron_jobs', False)
 
         #Move data directories into/out of cache based on slice flags
         self._override_directory_info()
@@ -102,7 +104,7 @@ class Config:
         self._load_uuid(vm_uuid_override)
         self._load_vm_info()
         self._load_minion_info()
-        self._setup_logging()
+        self.new_jobs_daemon = 'execution_main' in self.vm_config.get('daemons')
         self.is_development = 'PIPEDREAM_HOOD' in os.environ
 
         # Debug flag; defaults to false, set from home.py
@@ -128,7 +130,6 @@ class Config:
             self.interfaces_regexp_file,
             self.setup_config_file,
             self.deployment_makefile,
-            #self.deployment_context_file,
             self.deployment_file,
             self.config_last_update_file
         ]
@@ -136,26 +137,38 @@ class Config:
         # XXX define all of these as self.*_file
         self.extended_config_files = [
             self.local_map_file,
-            self.genome_file,
-            os.path.join(self.mine_dir, 'master_names.json.gz'),
-            os.path.join(self.map_dir, 'geoip.h5'),
             os.path.join(self.bgp_dir, 'bgp.h5'),
             os.path.join(self.routemap_dir, 'routemap.h5'),
             os.path.join(self.subscribers_dir, 'subscribers.h5'),
+            self.eula_file,
+            self.notice_package_file,
+        ]
+
+
+        self.genome_files = [
+            self.genome_file,
+            os.path.join(self.map_dir, 'geoip.h5'),
+            os.path.join(self.mine_dir, 'master_names.json.gz'),
             os.path.join(self.routeview_dir, 'routeviews.h5'),
             os.path.join(self.routeview_dir, 'origins.h5'),
             os.path.join(self.genome_dir, 'linkedinlogos.tar.gz'),
             os.path.join(self.genome_dir, 'twitterlogos.tar.gz'),
-            self.eula_file,
-            self.notice_package_file,
-            self.asndb_file,
+            os.path.join(self.genome_dir, 'components_db.json'),
+            self.asndb_file
         ]
+        
 
         self.has_backbone = self.setup_config.get('backbone') is not None
 
         # websocket defaults
         self.ws_port = 8888
         self.ws_address = 'wss://127.0.0.1:{}/'.format(self.ws_port)
+
+
+        # handy global for development
+        # used to avoid production commits to store / s3
+        # and which redis you write to
+        self.dev_mode_flag = False
 
     def get_config_files(self, smaller_set=True, aws_paths=False):
         '''
@@ -175,8 +188,6 @@ class Config:
         # dimensions
         idx = self.load_json_file(self.dimensions_idx_file)
         if idx:
-            ret += [self.dimensions_db_file]
-
             dims = idx.get('dimensions', {})
             files = [v.get('file', None) for k, v in dims.iteritems() if v is not None]
             pathnames = [os.path.join(self.dimensions_dir, f) for f in files if f is not None]
@@ -201,7 +212,7 @@ class Config:
     def _load_database_settings(self):
         self.asndb_database_name = self.slice_config.get('asndb_database_name') or 'asndb'
         self.asndb_database_user = self.slice_config.get('asndb_database_user') or 'root'
-        self.asndb_database_password = self.slice_config.get('asndb_database_password') or 'PipedreamPassword!'
+        self.asndb_database_password = self.slice_config.get('asndb_database_password') or DEFAULT_DB_PASS
 
         # Override from environment variables
         if os.environ.get('ASNDB_DATABASE_NAME') is not None:
@@ -211,6 +222,10 @@ class Config:
         if os.environ.get('ASNDB_DATABASE_PASSWORD') is not None:
             self.asndb_database_password = os.environ.get('ASNDB_DATABASE_PASSWORD')
 
+        # setup more generic database info
+        self.db_database_user = 'root'
+        self.db_database_pass = DEFAULT_DB_PASS
+        self.db_database = 'deepfield'
 
     def _load_proxy_info(self):
         '''
@@ -268,9 +283,11 @@ class Config:
         self.h5flow_classified_dir       = os.path.join(self.home_dir, 'classified')
         self.h5dns_dir                   = os.path.join(self.home_dir, 'h5dns')
         self.logs_dir                    = os.path.join(self.home_dir, 'log')
+
         self.daemons_dir                 = os.path.join(self.home_dir, 'daemons')
         self.stats_dir                   = os.path.join(self.home_dir, 'stats')
         self.cache_dir                   = self.get_cache_dir()
+        self.logging_config              = os.path.join(self.cache_dir, 'logging.json')
         self.data_tmp                    = os.path.join(self.home_dir, 'tmp')
         self.geoip_dir                   = os.path.join(self.home_dir, 'geoip')
         self.fake_flows_dir              = os.path.join(self.home_dir, 'fake_flows')
@@ -342,10 +359,11 @@ class Config:
         self.search_ips_dir              = os.path.join(self.cache_dir, "search_ips")
         self.logos_dir                   = os.path.join(self.ui_dir, "static", "images", "logos")
         self.asndb_dir                   = os.path.join(self.cache_dir, 'asndb')
+        self.mysql_dir                   = os.path.join(self.cache_dir, 'mysql')
         self.bgp_dumps_dir               = os.path.join(self.bgp_dir, "dumps")
         self.bps_dir                     = os.path.join(self.cache_dir, 'bps')
         self.vss_dir                     = os.path.join(self.cache_dir, 'vss')
-
+        self.top_procs_dir               = os.path.join(self.cache_dir, 'top_procs')
 
     #XXX These are overriden after the file names are set. Do not override any directory that
     #  contains any files within it. For example ok to override deepy.cfg.flows_dir, but not deepy.cfg.cache_dir
@@ -405,21 +423,22 @@ class Config:
         self.license_file                    = os.path.join(self.cache_config_dir, 'license.json')
         self.deployment_file                 = os.path.join(self.cache_config_dir, 'deployment.json')
 
-        # Both soon to be deprecated in favor of using directory
+        # Both soon to be deprecated in favor of using directory 
         #self.deployment_context_file         = os.path.join(self.cache_config_dir, 'context.json')
         #self.context_file                    = os.path.join(self.cache_config_dir, 'context.json')
-
+        
         self.tile_config_file                = os.path.join(self.cache_config_dir, 'tile_config.json')
         self.config_last_update_file         = os.path.join(self.cache_config_dir, 'last_update.json')
         self.config_local_last_update_file   = os.path.join(self.cache_config_dir, 'local_last_update.json')
         self.dimensions_idx_file             = os.path.join(self.cache_config_dir, 'dimensions_idx.json')
         self.interfaces_regexp_file          = os.path.join(self.cache_config_dir, 'interface_regexp.json')
         self.deployment_makefile             = os.path.join(self.cache_config_dir, 'deployment_makefile.py')
-        self.dimensions_db_file              = os.path.join(self.dimensions_dir, 'dimensions_db.json.gz')
-        self.dimensions_db_small_file        = os.path.join(self.dimensions_dir, 'dimensions_db_small.json.gz')
+        self.dimensions_db_file_unused       = os.path.join(self.dimensions_dir, 'dimensions_db.json.gz')
+        self.dimensions_db_small_file_unused = os.path.join(self.dimensions_dir, 'dimensions_db_small.json.gz')
         self.peers_dimension_db_file         = os.path.join(self.dimensions_dir, 'peer.json.gz')
         self.nav_default_file                = os.path.join(self.defines_dir, 'nav_default.json')
-        self.components_db_file              = os.path.join(self.defines_dir, 'components_db.json')
+        self.components_db_master            = os.path.join(self.defines_dir, 'components_db.json')
+        self.components_db                   = os.path.join(self.genome_dir, 'components_db.json')
         self.system_roles_file               = os.path.join(self.defines_dir, 'roles.json')
         self.deployment_roles_file           = self.users_file
         self.attributes_config_file          = os.path.join(self.defines_dir, 'attributes.json')
@@ -456,6 +475,9 @@ class Config:
         self.snmpd_file                      = os.path.join('/', 'etc', 'default', 'snmpd')
         self.asndb_file                      = os.path.join(self.asndb_dir, 'asndb.sql.gz')
         self.asndb_installed_file            = os.path.join(self.asndb_dir, 'asndb-installed.json')
+        self.h5qwilt_template                = os.path.join(self.h5qwilt_dir, 'qwilt.%Y-%m-%d-%H-%M.h5')
+        self.qwilt_log_template              = os.path.join(self.qwilt_logs_dir, 'qwilt.%Y-%m-%d-%H-%M.log')
+        self.top_procs_template              = 'procs.%Y-%m-%d-%H-%M-%S.h5'
 
     def _load_uuid(self, vm_uuid_override):
         '''
@@ -534,17 +556,6 @@ class Config:
                 return
         self.minion_config = {}
 
-    def _setup_logging(self):
-        '''
-        Checks for an override for the log level in slice (attribute name:
-        log_level). Override can be either in the root of the slice, or in
-        the VM definition.
-        '''
-
-        if hasattr(self, 'vm_config') and self.vm_config.has_key('log_level'):
-            log.init(level=self.vm_config.get('log_level'))
-        elif self.slice_config.has_key('log_level'):
-            log.init(level=self.slice_config.get('log_level'))
 
     def _load_cache_files(self):
         '''
@@ -650,8 +661,10 @@ class Config:
         try:
             return json.load(open(file_name))
         except (IOError, ValueError):
-            f = log.warn if warn else log.debug
-            f('cfg-load-failed %s' % (file_name))
+            # Logging config depends on this, can't log here
+            # f = log.warn if warn else log.debug
+            # f()
+            #print >> sys.stderr, 'cfg-load-failed %s' % (file_name)
             return {}
 
     def init(self, pipedream_deployment_override=None,

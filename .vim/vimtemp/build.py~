@@ -124,7 +124,6 @@ class BaseGraph(networkx.DiGraph):
             dot = '/usr/bin/dot' if os.path.exists('/usr/bin/dot') else 'dot'
             subprocess.check_call([dot, '-Tpdf', f.name, file_name])
 
-
 class RuleDependencyGraph(BaseGraph):
     """The rule dependency graph holds all the information on how jobs relate
     to jobs and their targets. It also holds information on what their aliases
@@ -192,7 +191,7 @@ class RuleDependencyGraph(BaseGraph):
             meta: the meta target to add to the rule dependnecy graph
         """
         self.add_node(meta)
-        jobs = meta.get_job_collection()
+        jobs = meta.get_job_collection(self)
         for job in jobs:
             self.add_edge(job, meta.unexpanded_id, label="meta")
 
@@ -229,12 +228,12 @@ class RuleDependencyGraph(BaseGraph):
         Adds all the jobs that are specified by the jobs keyword to the graph
         """
         for job in self.jobs:
-            if not job.get_enable():
+            if not job.get_enabled():
                 continue
             self.add_job_definition(job)
 
         for meta in self.metas:
-            if not meta.get_enable():
+            if not meta.get_enabled():
                 continue
             self.add_meta(meta)
 
@@ -485,7 +484,7 @@ class RuleDependencyGraph(BaseGraph):
         can point to other metas"""
         job_ids = []
         meta = self.get_meta(meta_id)
-        job_collection = meta.get_job_collection()
+        job_collection = meta.get_job_collection(self)
         for job_id in job_collection:
             if self.is_meta(job_id):
                 job_ids = job_ids + self.get_job_ids_from_meta(job_id)
@@ -904,6 +903,8 @@ class BuildGraph(BaseGraph):
             dependencies: The nodes that shoulds be connected to the node
             data: any extra data to be added to the edge dict
         """
+        import ipdb;ipdb.set_trace()
+
         dependency_node_id = "{}_{}_{}".format(
             node.unique_id, dependency_type.func_name,
             "_".join([x.unique_id for x in dependencies]))

@@ -18,7 +18,7 @@ import deepy.cfg
 import deepy.deepy_redis
 import deepy.util
 import deepy.timerange
-import deepy.build
+import deepy.build.deepy_util
 import deepy.cube
 import deepy.slice_def
 import deepy.log as log
@@ -170,7 +170,7 @@ class QueryParams(dict):
     '''
     Values that should be rendered through cube_api
     '''
-    _cube_api_resp_formats = ['barchart', 'cubism', 'datatable', 'graphtable', 'matrix', 'parsets', 'percentiles', 'sunburst', 'table', 'timegraph']
+    _cube_api_resp_formats = ['barchart', 'cubism', 'datatable', 'graphtable', 'matrix', 'parsets', 'percentiles', 'sunburst', 'table', 'timegraph', 'sandstorm', 'supergraphtable']
 
     '''
     Sets of keys that are mutually exclusive.
@@ -734,6 +734,8 @@ class CubeApiAxesHandler(base.ApiHandler):
         slices = params['s'] if 's' in params else params['slice'] if 'slice' in params else []
         slices = [slices] if not isinstance(slices, list) else slices
         timestep = None
+
+        descriptions = 'descriptions' in params
         prof_requested = 'query_profiling' in params
 
         # Multi-tenancy partitioning
@@ -774,6 +776,16 @@ class CubeApiAxesHandler(base.ApiHandler):
                 return
 
         log.debug("query-completed")
+
+        if descriptions:
+            def get_dim_obj(dim):
+                dim_db = dimensions_db.get_by_name(dim)
+                description = None
+                if dim_db:
+                    description = dim_db['description'] if 'description' in dim_db else None
+                return { "name": dim, "description": description }
+            result = map(get_dim_obj, result)
+
 
         result = {'cube': source_cube, axis_type: result}
 
@@ -893,6 +905,7 @@ class CubeApiDimensionMetaHandler(base.ApiHandler):
 class CubeApiUtil():
 
     timesteps = {
+        '10s': 10,
         '10sec': 10,
         '10seconds': 10,
         'seconds': 10,
@@ -1082,7 +1095,7 @@ def extract_slice_defs(slices):
 def cube_list():
     result = {}
 
-    for rule_name, rule in deepy.build.util.construct_rules().iteritems():
+    for rule_name, rule in deepy.build.deepy_util.construct_rules().iteritems():
         meta = rule.get('meta', {})
         cube_id = meta.get('cube_id')
         time_step = rule.get('time_step')

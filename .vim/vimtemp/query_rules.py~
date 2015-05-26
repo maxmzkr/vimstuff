@@ -6,9 +6,20 @@ def slice_enabled(key):
     return enabled_jobs.get(key, False)
 
 def extra_cron_jobs_enabled(key):
-    vm_config = deepy.cfg.vm_config
-    extra_cron_jobs = vm_config.get("extra_cron_jobs", [])
-    return key in extra_cron_jobs
+    vm_configs = deepy.cfg.slice_config.get("vms", {})
+    for vm_config in vm_configs:
+        extra_cron_jobs = vm_config.get("extra_cron_jobs", [])
+        if key in extra_cron_jobs:
+            return True
+    return False
+
+def feature_flag_set(key):
+    slice = deepy.cfg.slice_config
+    return slice.get(key, False)
+
+def pipeline_10s():
+    slice = deepy.cfg.slice_config
+    return slice.get("flow_period_seconds", 300) == 10
 
 rules = {
     "make_rules": {
@@ -69,7 +80,6 @@ rules = {
                 "cube_origin_asn_remote3_hour": "1h",
                 "cube_aspaths_remote3_hour": "1h",
                 "interface_hour": "1h",
-                "cubes_from_h5flow_ipcount_hour": "1h",
             },
         },
 
@@ -306,7 +316,7 @@ rules = {
             "time_step": "5min",
             "file_step": "5min",
             "prune_ratio": 50.0, # XXX
-            "target": "$(qwilt_logs_dir)/qwilt.%Y-%m-%d-%H-%M.log"
+            "target": "$(qwilt_logs_dir)/qwilt.%Y-%m-%d-%H-%M.log.gz"
         },
 
         "h5qwilt": {
@@ -323,7 +333,8 @@ rules = {
             "time_step": '5min',
             "file_step": '5min',
             "target": "$(h5qwilt_dir)/qwilt.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 50, # XXX
+            "prune_ratio": 50, # XXX,
+            "enabled": feature_flag_set("logflow_enabled")
         },
 
         "h5flow": {
@@ -340,6 +351,7 @@ rules = {
             "target": "$(h5flow_dir)/flow.%Y-%m-%d-%H-%M.h5.raw",
             "alternates": ["$(h5flow_dir)/flow.%Y-%m-%d-%H-%M.h5"],
             "prune_ratio": 1.6, # XXX
+            "enabled": not pipeline_10s(),
         },
 
         "h5dns_cache": {
@@ -399,7 +411,8 @@ rules = {
             "recipe": [
                 "bgp.py"
             ],
-            "target": "$(bgp_dir)/bgp.h5"
+            "target": "$(bgp_dir)/bgp.h5",
+            "target_type": "glob",
         },
 
         "routemap": {
@@ -409,18 +422,19 @@ rules = {
             "recipe": [
                 "routemap.py"
             ],
+            "target_type": "glob",
             "target": "$(cache_dir)/routemap/routemap.h5"
         },
 
         "classify_h5flow": {
             "__comment": "classify h5flow (.raw -> h5flow)",
-            "depends": {
-                "h5flow": "5min"
-            },
-            "depends_past": {
-                "h5dns": {
-                    "file_step": "5min",
-                    "past": 3,
+            "dependencies": {
+                "depends": {
+                    "h5flow": {},
+                    "h5qwilt": {},
+                    "h5dns": {
+                        "past": 3,
+                    },
                 },
             },
             "time_step": "5min",
@@ -429,8 +443,6 @@ rules = {
             "recipe": [
                 "classify.py $A -t %Y-%m-%d-%H-%M"
             ],
-            "target": "$(h5flow_dir)/flow.%Y-%m-%d-%H-%M.h5",
-            "prune_ratio": 1.6,
         },
 
         "h5flow_hardlink": {
@@ -449,18 +461,57 @@ rules = {
             "target": "$(h5flow_classified_dir)/h5flow.%Y-%m-%d-%H-%M-%S.h5"
         },
 
+        "classified_h5flow_5min": {
+            "dependencies": {
+                "depends": {
+                    "classify_h5flow": {},
+                    "merge_classified_h5flow_10s": {},
+                },
+            },
+            "time_step": "5min",
+            "file_step": "5min",
+            "local_only": True,
+            "target": "$(h5flow_dir)/flow.%Y-%m-%d-%H-%M.h5",
+            "prune_ratio": 1.6,
+        },
+
+        "merge_classified_h5flow_10s": {
+            "dependencies": {
+                "depends": {
+                    "classified_h5flow_10s": {},
+                },
+            },
+            "time_step": "5min",
+            "file_step": "5min",
+            "local_only": feature_flag_set("archive_h5flow"),
+            "recipe": [
+                "merge_h5flow.py $A -t %Y-%m-%d-%H-%M"
+            ],
+            "enabled": pipeline_10s()
+        },
+
         "cubes_from_h5flow_5min": {
             "depends": {
                 "classify_h5flow": "5min"
             },
             "recipe": [
-                "cubes_from_h5flow.py $A -B -t %Y-%m-%d-%H-%M -m $@"
+                "cubes_from_h5flow.py $A -t %Y-%m-%d-%H-%M -m $@"
             ],
             "local_only": True,
             "file_step": "5min",
             "time_step": "5min",
-            "marker": "true",
-            # Within marker dir, add dirs based on rule name.
+            "markered": True,
+            "enabled": not pipeline_10s(),
+        },
+
+        "cubes_from_h5flow_5min_marker": {
+            "depends": {
+                "merge_h5cube_10s": "5min",
+                "cubes_from_h5flow_5min": "5min"
+            },
+            "marker": True,
+            "time_step": "5min",
+            "file_step": "5min",
             "target": "$(cubes_from_h5flow_marker_dir)/cubes_from_h5flow_5min/%Y-%m-%d-%H-%M.marker",
         },
 
@@ -480,7 +531,7 @@ rules = {
             "file_step": "5min",
             "ignore_missing": True,
             "time_step": "5min",
-            "enabled": extra_cron_jobs_enabled("cubes_stream_bps_5min"),
+            "enabled": extra_cron_jobs_enabled("build_stream_bps"),
         },
 
         "h5flow_aguri": {
@@ -507,6 +558,7 @@ rules = {
                 "cube_id": "big_cube",
             },
             "depends": {
+                "merge_h5cube_10s": "5min",
                 "cubes_from_h5flow_5min": "5min"
             },
             "time_step": "5min",
@@ -525,11 +577,30 @@ rules = {
             "prune_ratio": 2.4,
         },
 
+        "merge_h5cube_10s": {
+            "dependencies": {
+                "depends": {
+                    "cube_big_cube_10sec": {} # We are using big cube 10sec as
+                                              # a marker file. We really depend
+                                              # on all the 10sec cubes
+                },
+            },
+            "recipe": [
+                "merge_h5cube.py $A -t %Y-%m-%d-%H-%M -m $@"
+            ],
+            "file_step": "5min",
+            "time_step": "5min",
+            "markered": True,
+            # Within marker dir, add dirs based on rule name.
+            "enabled": pipeline_10s()
+        },
+
         "cube_site_peer_5min": {
             "meta": {
                 "cube_id": "site_peer"
             },
             "depends": {
+                "merge_h5cube_10s": "5min",
                 "cubes_from_h5flow_5min": "5min"
             },
             "time_step": "5min",
@@ -543,6 +614,7 @@ rules = {
                     "cube_id": "sub_count_cloud_total"
             },
             "depends": {
+                "merge_h5cube_10s": "5min",
                 "cubes_from_h5flow_5min": "5min"
             },
             "time_step": "5min",
@@ -556,6 +628,7 @@ rules = {
                 "cube_id": "sub_count_ip_version"
             },
             "depends": {
+                "merge_h5cube_10s": "5min",
                 "cubes_from_h5flow_5min": "5min"
             },
             "time_step": "5min",
@@ -569,6 +642,7 @@ rules = {
                 "cube_id": "sub_count_ip_version_total"
             },
             "depends": {
+                "merge_h5cube_10s": "5min",
                 "cubes_from_h5flow_5min": "5min"
             },
             "time_step": "5min",
@@ -582,6 +656,7 @@ rules = {
                 "cube_id": "sub_count_site_total"
             },
             "depends": {
+                "merge_h5cube_10s": "5min",
                 "cubes_from_h5flow_5min": "5min"
             },
             "time_step": "5min",
@@ -595,6 +670,7 @@ rules = {
                 "cube_id": "sub_count_cloud"
             },
             "depends": {
+                "merge_h5cube_10s": "5min",
                 "cubes_from_h5flow_5min": "5min"
             },
             "time_step": "5min",
@@ -608,6 +684,7 @@ rules = {
                 "cube_id": "sub_count_category"
             },
             "depends": {
+                "merge_h5cube_10s": "5min",
                 "cubes_from_h5flow_5min": "5min"
             },
             "time_step": "5min",
@@ -621,6 +698,7 @@ rules = {
                 "cube_id": "sub_count_site_peer"
             },
             "depends": {
+                "merge_h5cube_10s": "5min",
                 "cubes_from_h5flow_5min": "5min"
             },
             "time_step": "5min",
@@ -644,6 +722,7 @@ rules = {
                 "cube_id": "sub_count_site"
             },
             "depends": {
+                "merge_h5cube_10s": "5min",
                 "cubes_from_h5flow_5min": "5min"
             },
             "time_step": "5min",
@@ -657,6 +736,7 @@ rules = {
                  "cube_id": "sub_count_category"
              },
              "depends": {
+                "merge_h5cube_10s": "5min",
                  "cubes_from_h5flow_5min": "5min"
              },
                 "time_step": "5min",
@@ -677,6 +757,7 @@ rules = {
                  "cube_id": "sub_count_site_peer"
              },
              "depends": {
+                "merge_h5cube_10s": "5min",
                  "cubes_from_h5flow_5min": "5min"
              },
                 "time_step": "5min",
@@ -693,6 +774,7 @@ rules = {
                 "cube_id": "interface"
             },
             "depends": {
+                "merge_h5cube_10s": "5min",
                 "cubes_from_h5flow_5min": "5min"
             },
             "local_only": True,
@@ -757,18 +839,6 @@ rules = {
             "file_step": "5min",
             "target": "$(supplychain_dir)/supplychain.%Y-%m-%d-%H-%M.json.gz",
             "prune_ratio": 90.0, # XXX
-        },
-
-        "cubes_from_h5flow_ipcount_hour": {
-            "depends_one_or_more": {
-                "classify_h5flow": "5min"
-            },
-            "recipe": [
-                "cubes_from_h5flow.py --ipcount_hour -t %Y-%m-%d-%H-%M $^"
-            ],
-            "local_only": True,
-            "file_step": "1h",
-            "time_step": "5min",
         },
 
          "cube_big_cube_day": {
@@ -851,9 +921,6 @@ rules = {
             "meta": {
                 "cube_id": "sub_count_cloud_total"
             },
-            "depends": {
-                "cubes_from_h5flow_ipcount_hour": "1h"
-            },
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/sub_count_cloud_total/hours/cube.%Y-%m-%d-%H.h5",
@@ -863,9 +930,6 @@ rules = {
         "cube_sub_count_ip_version_hour": {
             "meta": {
                 "cube_id": "sub_count_ip_version"
-            },
-            "depends":{
-                "cubes_from_h5flow_ipcount_hour": "1h"
             },
             "time_step": "1h",
             "file_step": "1h",
@@ -877,9 +941,6 @@ rules = {
             "meta": {
                 "cube_id": "sub_count_ip_version_total"
             },
-            "depends": {
-                "cubes_from_h5flow_ipcount_hour": "1h"
-            },
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/sub_count_ip_version_total/hours/cube.%Y-%m-%d-%H.h5",
@@ -890,9 +951,6 @@ rules = {
             "meta": {
                 "cube_id": "sub_count_site_total"
             },
-            "depends": {
-                "cubes_from_h5flow_ipcount_hour": "5min"
-            },
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/sub_count_site_total/hours/cube.%Y-%m-%d-%H.h5",
@@ -902,9 +960,6 @@ rules = {
         "cube_sub_count_cloud_hour": {
             "meta": {
                 "cube_id": "sub_count_cloud"
-            },
-            "depends": {
-                "cubes_from_h5flow_ipcount_hour": "1h"
             },
             "time_step": "1h",
             "file_step": "1h",
@@ -928,9 +983,6 @@ rules = {
         "cube_sub_count_site_hour": {
             "meta": {
                 "cube_id": "sub_count_site"
-            },
-            "depends": {
-                "cubes_from_h5flow_ipcount_hour": "1h"
             },
             "time_step": "1h",
             "file_step": "1h",
@@ -1405,6 +1457,7 @@ rules = {
                 "cube_id": "sub_count_backbone_total"
             },
             "depends": {
+                "merge_h5cube_10s": "5min",
                 "cubes_from_h5flow_5min": "5min"
             },
             "time_step": "5min",
@@ -1417,9 +1470,6 @@ rules = {
             "meta": {
                 "cube_id": "sub_count_backbone_total"
             },
-            "depends": {
-                "cubes_from_h5flow_ipcount_hour": "1h"
-            },
             "time_step": "1h",
             "file_step": "1h",
             "target": "$(cubes_dir)/sub_count_backbone_total/hours/cube.%Y-%m-%d-%H.h5",
@@ -1431,6 +1481,7 @@ rules = {
                 "cube_id": "backbone"
             },
             "depends": {
+                "merge_h5cube_10s": "5min",
                 "cubes_from_h5flow_5min": "5min"
             },
             "time_step": "5min",
@@ -2002,7 +2053,7 @@ rules = {
                 "cube_backbone_small_5min": "5min"
             },
             "recipe": [
-                "cube_op.py -o $@ -D $D $^"
+                "cube_op.py -o $@ -D $D -A 'public_peering()' $^"
             ],
             "time_step": "5min",
             "file_step": "5min",
@@ -2013,7 +2064,8 @@ rules = {
                 "router.local",
                 "interfaces.local",
                 "peer.local"
-            ]
+            ],
+            "enabled": feature_flag_set("enable_interface_capacity"),
         },
 
         "cube_interface_capacity_5min": {
@@ -2037,7 +2089,8 @@ rules = {
                 "timestamp",
                 "capacity_information",
                 "capacity_status"
-            ]
+            ],
+            "enabled": feature_flag_set("enable_interface_capacity"),
         },
 
         "cube_backbone_peer_local_month_cost_list": {

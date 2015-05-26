@@ -24,7 +24,7 @@ def exclude_slice(d, vs, keypath=None):
 def query(name=None, dimensions=None, slices=None, applies=None,
           input_file_glob=None, target=None, required_measures=None,
           sum_all=False, timestep=None, use_bundle_rollup=False,
-          arg_joins=None):
+          arg_joins=None, get_fields=None):
 
     # create new dictionaries
     required_measures = None if required_measures is None else copy.deepcopy(required_measures)
@@ -32,6 +32,7 @@ def query(name=None, dimensions=None, slices=None, applies=None,
     applies = None if applies is None else copy.deepcopy(applies)
     dimensions = None if dimensions is None else copy.deepcopy(dimensions)
     arg_joins = None if arg_joins is None else copy.deepcopy(arg_joins)
+    get_fields = None if get_fields is None else copy.deepcopy(get_fields)
 
     q = {'required_measures': required_measures, 'slices': slices,
          'dimensions': dimensions, 'applies': applies, 'arg_joins': arg_joins}
@@ -42,6 +43,7 @@ def query(name=None, dimensions=None, slices=None, applies=None,
     if sum_all: q['sum_all'] = sum_all
     if timestep: q['timestep'] = timestep
     if use_bundle_rollup: q['use_bundle_rollup'] = use_bundle_rollup
+    if get_fields: q['get_fields'] = get_fields
 
     if sum_all:
         # dimensions must be None or filled with sum_all
@@ -86,6 +88,7 @@ def bundle(recipe=None, queries=None, recipes=None, target=None, time_step=None,
          'depends_one_or_more': depends_one_or_more,
          'queries': queries,
          'time_step': time_step,
+         'prune_ratio': 500,
          'file_step': 'month',
          'target': target,
          'recipe': [recipe],
@@ -215,7 +218,7 @@ def drill_tata(rules, dim_top, peer_remote):
     Show tata traffic grouped into on/off-net
     dim_top is local tata dimension
     '''
-    template = deepy.build.util.MakeruleTemplateStandardDrill()
+    template = deepy.build.deepy_util.MakeruleTemplateStandardDrill()
     dim_tops, dim_drills = template.get_dim_tops(), template.get_dim_drills()
 
     bundles = deepy.standard_drill_rules.make_drill_bundles(dim_top, dim_drills, drillname='tata')
@@ -252,7 +255,8 @@ def drill_peer_remote_external(rules, name='peer.remote'):
     '''
     peer.remote external peers only for peer analysis tile
     '''
-    _dim_tops, dim_drills = deepy.make.get_dimensions()
+    template = deepy.build.deepy_util.MakeruleTemplateStandardDrill()
+    _dim_tops, dim_drills = template.get_dim_tops(), template.get_dim_drills()
 
     dim_top = 'peer.remote'
     bundles = deepy.standard_drill_rules.make_drill_bundles(dim_top, dim_drills, drillname=name)
@@ -354,6 +358,7 @@ def sub_count(rules, dimensions, step, add=True, slices=None):
         "local_only": local_only,
         "recipe": [ recipe ],
         "time_step": step,
+        'prune_ratio': 500,
         "file_step": step,
         "target": target
     }

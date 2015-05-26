@@ -13,7 +13,7 @@ def glob_target(target):
     return fns
 
 def collect_rule_index(name_rdict):
-    name, rdict = name_rdict
+    name, rdict = name_rdict.iteritems()
 
     out = {}
 

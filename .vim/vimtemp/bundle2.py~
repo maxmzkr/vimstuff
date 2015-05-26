@@ -13,7 +13,6 @@ import deepy.util
 import deepy.store
 import deepy.dimensions
 import deepy.log as log
-import deepy.scheduler
 import deepy.event as event
 
 FILE_EXT=".h5"

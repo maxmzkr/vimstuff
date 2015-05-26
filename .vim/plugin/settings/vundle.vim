@@ -18,7 +18,7 @@ call vundle#begin()
 
 " settings start here
 " let Vundle manage Vundle, required
-Plugin 'gmarik/vundle'
+Plugin 'gmarik/Vundle.vim'
 " The following are examples of different formats supported.
 " Keep Plugin commands between here and filetype plugin indent on.
 " scripts on GitHub repos
@@ -66,6 +66,8 @@ Plugin 'octol/vim-cpp-enhanced-highlight'
 
 " Open gl
 Plugin 'tikhomirov/vim-glsl'
+
+Plugin 'nathanaelkane/vim-indent-guides'
 
 call vundle#end()
 filetype plugin indent on     " required

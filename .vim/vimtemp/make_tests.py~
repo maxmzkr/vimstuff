@@ -1,6 +1,6 @@
 
 from testing import unit, integration, mock_infrastructure
-import deepy.build.build
+import deepy.build.deepy_build
 from deepy.timerange import arrow_factory
 import os
 import sys
@@ -13,7 +13,7 @@ class MakeRulesTest(unittest.TestCase):
     @integration
     def test_that_all_rules_compile(self):
         # Given
-        deepy.build.build.DeepyBuild()
+        deepy.build.deepy_build.DeepyBuild()
 
         # Then
         # Nothing, if it compiled, success

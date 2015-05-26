@@ -104,7 +104,7 @@ class Config:
         self._load_uuid(vm_uuid_override)
         self._load_vm_info()
         self._load_minion_info()
-        self.new_jobs_daemon = 'execution_main' in self.vm_config.get('daemons')
+        self.new_jobs_daemon = 'execution_main' in self.vm_config.get('daemons', [])
         self.is_development = 'PIPEDREAM_HOOD' in os.environ
 
         # Debug flag; defaults to false, set from home.py
@@ -131,6 +131,7 @@ class Config:
             self.setup_config_file,
             self.deployment_makefile,
             self.deployment_file,
+            self.qwilt_config,
             self.config_last_update_file
         ]
 
@@ -287,7 +288,7 @@ class Config:
         self.daemons_dir                 = os.path.join(self.home_dir, 'daemons')
         self.stats_dir                   = os.path.join(self.home_dir, 'stats')
         self.cache_dir                   = self.get_cache_dir()
-        self.logging_config              = os.path.join(self.cache_dir, 'logging.json')
+
         self.data_tmp                    = os.path.join(self.home_dir, 'tmp')
         self.geoip_dir                   = os.path.join(self.home_dir, 'geoip')
         self.fake_flows_dir              = os.path.join(self.home_dir, 'fake_flows')
@@ -299,15 +300,18 @@ class Config:
 
         # Adjust the directories for these so they don't require a 'make install'
         # when running locally
+        # use scons as a flag to determine if we are running in a dev environment
+        # should run this from a dev config 
         pipedream_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        for path, var in [('config', 'defines'), ('ui', 'ui'), ('staging', 'staging')]:
-            repo_path = os.path.join(pipedream_path, path)
-            if os.path.exists(repo_path):
-                setattr(self, '%s_dir' % (var), repo_path)
+        self.scons_file = os.path.join(pipedream_path, 'SConstruct')
+        if os.path.exists(self.scons_file):
+            for path, var in [('config', 'defines'), ('ui', 'ui'), ('staging', 'staging')]:
+                repo_path = os.path.join(pipedream_path, path)
+                if os.path.exists(repo_path):
+                    setattr(self, '%s_dir' % (var), repo_path)
 
         self.cubes_dir                   = os.path.join(self.cache_dir, 'cubes')
         self.h5qwilt_dir                 = os.path.join(self.cache_dir, 'qwilt', 'h5qwilt')
-        self.qwilt_config                = os.path.join(self.cache_dir, 'qwilt', 'qwilt_config.json')
         self.qwilt_logs_dir              = os.path.join(self.cache_dir, 'qwilt', 'logs')
         self.qwilt_raw_logs_dir          = os.path.join(self.cache_dir, 'qwilt', 'raw_logs')
         self.hll_dir                     = os.path.join(self.cache_dir, 'hll')
@@ -328,6 +332,7 @@ class Config:
         self.routemap_dir                = os.path.join(self.cache_dir, 'routemap')
         self.routeview_dir               = os.path.join(self.cache_dir, 'routeviews')
         self.cache_config_dir            = os.path.join(self.cache_dir, 'config')
+        self.logging_config              = os.path.join(self.cache_config_dir, 'logging.json')
         self.cache_connectors_dir        = os.path.join(self.cache_dir, 'connectors')
         self.probe_results_dir           = os.path.join(self.cache_dir, 'probe_results')
         self.heartbeat_dir               = os.path.join(self.cache_dir, 'heartbeat')
@@ -356,6 +361,7 @@ class Config:
         self.cube_heartbeat_dir          = os.path.join(self.cubes_dir, "heartbeats")
         # Within marker dir, add dirs based on rule name.
         self.cubes_from_h5flow_marker_dir = os.path.join(self.cubes_dir, "cubes_from_h5flow_markers")
+        self.merge_hll_marker_di         = os.path.join(self.cubes_dir, "merge_hll_markers")
         self.search_ips_dir              = os.path.join(self.cache_dir, "search_ips")
         self.logos_dir                   = os.path.join(self.ui_dir, "static", "images", "logos")
         self.asndb_dir                   = os.path.join(self.cache_dir, 'asndb')
@@ -422,6 +428,7 @@ class Config:
         self.slice_file                      = os.path.join(self.cache_config_dir, 'slice.json')
         self.license_file                    = os.path.join(self.cache_config_dir, 'license.json')
         self.deployment_file                 = os.path.join(self.cache_config_dir, 'deployment.json')
+        self.qwilt_config                    = os.path.join(self.cache_config_dir, 'qwilt_config.json')
 
         # Both soon to be deprecated in favor of using directory 
         #self.deployment_context_file         = os.path.join(self.cache_config_dir, 'context.json')
@@ -476,7 +483,7 @@ class Config:
         self.asndb_file                      = os.path.join(self.asndb_dir, 'asndb.sql.gz')
         self.asndb_installed_file            = os.path.join(self.asndb_dir, 'asndb-installed.json')
         self.h5qwilt_template                = os.path.join(self.h5qwilt_dir, 'qwilt.%Y-%m-%d-%H-%M.h5')
-        self.qwilt_log_template              = os.path.join(self.qwilt_logs_dir, 'qwilt.%Y-%m-%d-%H-%M.log')
+        self.qwilt_log_template              = os.path.join(self.qwilt_logs_dir, 'qwilt.%Y-%m-%d-%H-%M.log.gz')
         self.top_procs_template              = 'procs.%Y-%m-%d-%H-%M-%S.h5'
 
     def _load_uuid(self, vm_uuid_override):

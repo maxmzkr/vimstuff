@@ -68,7 +68,6 @@ daemon_config = {
     'cube_daemon6':             'cubes_from_h5flow.py --daemon 6 2>&1 | logger -t cube_daemon &',
     'cube_daemon7':             'cubes_from_h5flow.py --daemon 7 2>&1 | logger -t cube_daemon &',
     'cube_daemon8':             'cubes_from_h5flow.py --daemon 8 2>&1 | logger -t cube_daemon &',
-    'job_system':               'python /home/support/pipedream-max/deepy/build/execution_main.py --port 20345 | logger -t job_system',
     'snmpd':                    'sudo service snmpd restart',
     'bgpd':                     '/usr/lib/quagga/bgpd -i %s -d -n -A 127.0.0.1  2>&1 | logger -i -t bgpd' % (os.path.join(deepy.cfg.pids_dir, "bgpd.pid")),
     'bird':                     '/usr/local/sbin/bird -P %s 2>&1 | logger -i -t bird' % (os.path.join(deepy.cfg.pids_dir, "bird.pid")),
@@ -123,43 +122,45 @@ cron_jobs_config = {
     'mine':                     '8 * * * * root sub_mine.py -q all 2>&1 | logger -i -t sub_mine.py',
     'mine_forward':             '15 * * * * root mine_forward.py -r 4 2>&1 | logger -i -t sub_mine_forward.py',
     'h5flow':             '2-59/5 * * * * root jobs.py -r 48 make h5flow 2>&1 | logger -i -t jobs.py',
-    'submit_h5flow':             '*/5 * * * * root pdmake.py submit -r 2 ^h5flow 2>&1 | logger -i -t pdmake.py',
+    'submit_h5flow':             '*/5 * * * * root pdmake.py submit -r 12 ^h5flow 2>&1 | logger -i -t pdmake.py',
     'h5dns':              '*/4 * * * * root jobs.py -r 48 make h5dns 2>&1 | logger -i -t jobs.py',
-    'submit_h5dns':              '*/5 * * * * root pdmake.py submit -r 2 ^h5dns 2>&1 | logger -i -t pdmake.py',
+    'submit_h5dns':              '*/5 * * * * root pdmake.py submit -r 12 ^h5dns 2>&1 | logger -i -t pdmake.py',
     'classify_h5flow':          '2-59/5 * * * * root jobs.py -r 48 make classify_h5flow 2>&1 | logger -i -t jobs.py',
-    'submit_classify_h5flow':          '*/5 * * * * root pdmake.py submit -r 2 ^classify_h5flow 2>&1 | logger -i -t pdmake.py',
+    'submit_classify_h5flow':          '*/5 * * * * root pdmake.py submit -r 12 ^classify_h5flow 2>&1 | logger -i -t pdmake.py',
     'cubes_from_h5flow_5min':       '3-59/4 * * * * root jobs.py -r 48 make cubes_from_h5flow_5min 2>&1 | logger -i -t jobs.py',
-    'submit_cubes_from_h5flow_5min':       '*/5 * * * * root pdmake.py submit -r 2 ^cubes_from_h5flow_5min 2>&1 | logger -i -t pdmake.py',
+    'submit_cubes_from_h5flow_5min':       '*/5 * * * * root pdmake.py submit -r 12 ^cubes_from_h5flow_5min 2>&1 | logger -i -t pdmake.py',
     'build_stream_bps':         '3-59/4 * * * * root jobs.py -r 72 make cubes_stream_bps_5min 2>&1 | logger -i -t build_stream_bps.py',
     'build_h5flow_long':        '17 * * * * root jobs.py -r 80 make h5flow 2>&1 | logger -i -t jobs.py',
     'build_h5dns_long':         '25 * * * * root jobs.py -r 80 make h5dns 2>&1 | logger -i -t jobs.py',
     'classify_h5flow_long':     '38 * * * * root jobs.py -r 80 make classify_h5flow 2>&1 | logger -i -t jobs.py',
     'build_h5cubes_5min_long':  '47 * * * * root jobs.py -r 80 make cubes_from_h5flow_5min 2>&1 | logger -i -t jobs.py',
     'cubes_from_h5flow_ipcount_hour':       '15 * * * * root jobs.py -r 25 make cubes_from_h5flow_ipcount_hour 2>&1 | logger -i -t jobs.py',
-    'submit_cubes_from_h5flow_ipcount_hour':       '*/5 * * * * root pdmake.py submit -r 2 ^cubes_from_h5flow_ipcount_hour 2>&1 | logger -i -t pdmake.py',
+    'submit_cubes_from_h5flow_ipcount_hour':       '*/5 * * * * root pdmake.py submit -r 12 ^cubes_from_h5flow_ipcount_hour 2>&1 | logger -i -t pdmake.py',
 
 
     'searchips':                '*/5 * * * * root jobs.py -r 10 make searchips | logger -i -t jobs.py',
-    'submit_searchips':                '*/5 * * * * root pdmake.py submit -r 2 ^searchips | logger -i -t pdmake.py',
+    'submit_searchips':                '*/5 * * * * root pdmake.py submit -r 12 ^searchips | logger -i -t pdmake.py',
     'upload_localbgp':          '30 * * * * root upload_localbgp.py 2>&1 | logger -i -t upload_localbgp.py',
     'dump_localbgp':            '20 * * * * root pybird.py dump 2>&1 | logger -i -t dump_localbgp',
     'dump_localbgp6':           '20 * * * * root pybird.py -6 dump 2>&1 | logger -i -t dump_localbgp6',
     'h5bgp':              '45 */2 * * * root jobs.py make h5bgp 2>&1 | logger -i -t bgp.py ',
-    'submit_h5bgp':              '*/5 * * * * root pdmake.py submit -r 2 ^h5bgp 2>&1 | logger -i -t bgp.py ',
     'bgp_status':               '*/2 * * * * root bgp.py --publish-status',
 
     # Real-time datapath 
-    'merge_h5flow':             '*/5 * * * * root merge_h5flow.py ',
-    'merge_h5cube':             '*/5 * * * * root merge_h5cube.py ',
-    'merge_h5hll':              '*/5 * * * * root merge_hll.py ',
-    'merge_h5hll_hour':         '5 * * * *   root merge_hll.py --merge-hour',
+    'merge_h5flow':         '*/5 * * * * root jobs.py -r 80 make merge_classified_h5flow_10s 2>&1 | logger -i -t jobs.py',
+    'submit_merge_h5flow':  '*/5 * * * * root pdmake.py submit -r 12 ^merge_classified_h5flow_10s 2>&1 | logger -i -t pdmake.py',
+    'merge_h5cube':         '*/5 * * * * root jobs.py -r 80 make merge_h5cube_10s 2>&1 | logger -i -t jobs.py',
+    'submit_merge_h5cube':  '*/5 * * * * root pdmake.py submit -r 12 ^merge_h5cube_10s 2>&1 | logger -i -t pdmake.py',
+    'merge_h5hll':              '*/5 * * * * root jobs.py -r 5 merge_h5hll 2>&1 | logger -i -t jobs.py',
+    'merge_h5hll_hour':         '5 * * * *   root jobs.py -r 2 merge_h5hll_hour 2>&1 | logger -i -t jobs.py',
 
     # qwilt
-    'qwilt_download_logs':       '*/5 * * * * root get_qwilt_logs.py 2>&1 | logger -i -t qwilt_download_logs',
+    'qwilt_download_logs':       '*/2 * * * * root get_qwilt_logs.py 2>&1 | logger -i -t qwilt_download_logs',
     'qwilt_prune_logs':          '37 * * * * root prune_qwilt_logs.py 2>&1 | logger -i -t qwilt_prune_logs.py',
-    'qwilt_aggregate_logs':      '*/5 * * * * root qwilt_aggregate_logs.py -r 50 2>&1 | logger -i -t qwilt_aggregate_logs',
-    'h5qwilt':                   '*/5 * * * * root jobs.py -r 50 make h5qwilt 2>&1 | logger -i -t h5qwilt',
+    'qwilt_aggregate_logs':      '*/5 * * * * root qwilt_aggregate_logs.py -r 150 2>&1 | logger -i -t qwilt_aggregate_logs',
+    'h5qwilt':                   '*/5 * * * * root jobs.py -r 150 make h5qwilt 2>&1 | logger -i -t h5qwilt',
     'h5qwilt_manual':            '*/5 * * * * root h5qwilt.py -r 50 2>&1 | logger -i -t h5qwilt',
+    'check_qwilt_ipsec':         '27 */2 * * * root test_ipsec_tunnel.py 2>&1 | logger -i -t check_ipsec',
 
     # impala
     'repair_gaps':               '*/15 * * * * root repair_gaps.py | logger -i -t repair_gaps.py',
@@ -183,7 +184,7 @@ cron_jobs_config = {
     'cubes_day':                '30 * * * * root jobs.py -r 7 make cubes_day | logger -i -t jobs.py',
     'cubes_month':              '*/30 * * * * root jobs.py -r 2 make cubes_month | logger -i -t jobs.py',
     'cubes_5min':               '*/5 * * * * root jobs.py -r 80 make cubes_5min | logger -i -t jobs.py',
-    'submit_cubes_5min':        '*/5 * * * * root pdmake.py -r 2 submit ^cubes_5min 2>&1 | logger -i -t pdmake.py',
+    'submit_cubes_5min':        '*/5 * * * * root pdmake.py submit -r 12 ^cubes_5min 2>&1 | logger -i -t pdmake.py',
     'aggregate_dimensions':     '*/5 * * * * root jobs.py -r 1 make aggregate_dimensions | logger -i -t jobs.py',
 
     # Craig new in sprint-14-snmp
@@ -448,10 +449,6 @@ def get_cron_jobs(save_cron_jobs= None):
             'bundle2_backbone1_summary',
             'bundles_deployment',
 
-            "routemap",
-            "rocketfuel_trace",
-            "cube_snmp",
-
             "impala_compaction",
             "impala_inserts",
 
@@ -462,7 +459,6 @@ def get_cron_jobs(save_cron_jobs= None):
         ])
 
         jobs_cron_jobs = set([
-            "h5bgp",
             "h5dns",
             "h5flow",
             "classify_h5flow",
@@ -473,7 +469,6 @@ def get_cron_jobs(save_cron_jobs= None):
 
         new_cron_jobs = set([
             "submit_cubes_5min",
-
             "update_top_most",
         ])
 
@@ -494,23 +489,31 @@ def get_cron_jobs(save_cron_jobs= None):
             "localmap",
             "notice_sync",
             "configure_proxy",
+            "impala_compaction",
+            "impala_inserts",
             "builders_5min",
+            "merge_h5hll",
+            "merge_h5hll_hour",
+            "routemap",
+            "h5bgp",
+            "rocketfuel_trace",
+            "cube_snmp",
         ])
 
-    build_manager = deepy.build.deepy_build.DeepyBuildManager()
-    rule_dependency_graph = build_manager.rule_dependency_graph
-    if not deepy.cfg.no_cron_jobs:
-        cron_jobs = cron_jobs | jobs_cron_jobs
-        cron_jobs = cron_jobs | new_cron_jobs
-        if deepy.cfg.new_jobs_daemon:
-            for job_id in jobs_cron_jobs:
-                job = rule_dependency_graph.get_job_definition(job_id)
-                if not job.get_local_only():
-                    cron_jobs.remove(job_id)
-                    cron_jobs.add("submit_{}".format(job_id))
+        build_manager = deepy.build.build.DeepyBuildManager()
+        rule_dependency_graph = build_manager.rule_dependency_graph
+        if not deepy.cfg.no_cron_jobs:
+            cron_jobs = cron_jobs | jobs_cron_jobs
+            if deepy.cfg.new_jobs_daemon:
+                cron_jobs = cron_jobs | new_cron_jobs
+                for job_id in jobs_cron_jobs:
+                    job = rule_dependency_graph.get_job_definition(job_id)
+                    if not job.get_local_only():
+                        cron_jobs.remove(job_id)
+                        cron_jobs.add("submit_{}".format(job_id))
 
-        else:
-            cron_jobs = cron_jobs | old_cron_jobs
+            else:
+                cron_jobs = cron_jobs | old_cron_jobs
 
     if deepy.util.is_configured_on_vm('bird') or deepy.util.is_configured_on_vm('bird6'):
         cron_jobs.add("upload_localbgp")
@@ -553,6 +556,23 @@ def get_cron_jobs(save_cron_jobs= None):
     if 'hdfs.namenode' in roles:
         cron_jobs.add('asndb_sync')
 
+    # XXX Don't do this. It's gross
+    # This is needed because this job is dependent on two different upgrade
+    # paths, the 10s pipeline and the new execution system.
+    # It is also very specific to avoid having to change slice, making it less
+    # specific would require the extra_cron_job to have the same name as the
+    # job itself.
+    submitable_job_ids = {
+        "merge_h5cube": "merge_h5cube_10s",
+        "merge_h5flow": "merge_classified_h5flow_10s",
+    }
+    for cron_job_id, job_id in submitable_job_ids.iteritems():
+        if cron_job_id in extra_cron_jobs:
+            if deepy.cfg.new_jobs_daemon:
+                job = rule_dependency_graph.get_job_definition(job_id)
+                if not job.get_local_only():
+                    extra_cron_jobs.remove(cron_job_id)
+                    extra_cron_jobs.add("submit_{}".format(cron_job_id))
     cron_jobs |= extra_cron_jobs
     cron_jobs -= disabled_cron_jobs
 

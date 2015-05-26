@@ -4,12 +4,12 @@
 # Top-level of cube module.
 #
 
+import time
 import funcy
 import errno
 import types
 import sys
 import os
-import time
 import json
 import re
 import redis
@@ -39,8 +39,13 @@ try:
 except ImportError:
     import json as ujson
 
-import deepy.cfg, deepy.util, deepy.store, deepy.map, deepy.geoip, deepy.dimensions
-import deepy.build.deepy_util
+import deepy.cfg
+import deepy.util
+import deepy.store
+import deepy.map
+import deepy.geoip
+import deepy.dimensions
+import deepy.build.util
 import deepy.query_rules
 import deepy.cube_cy
 import deepy.cube_apply
@@ -1877,7 +1882,7 @@ class CubeHash(CubeBase):
 
         if len(positions_arr_list) == 0:
             assert(0)
-            
+
         self._groupby.process(positions_arr_list, measures_arr_list,
                 selected_indices=selected_indices_arr,
                 convert_axes=convert_axes_arr_list)
@@ -2505,22 +2510,23 @@ def _timeslices_to_timestamps(time_slices, step, allow_large=False):
 
 # Helper
 def _find_cube_rule_match(cube_id, time_step):
-    import deepy.build.deepy_jobs
+    # Prevent a circular dependency by importing locally
+    import deepy.build.jobs
     time_step = deepy.timerange.convert_seconds_to_range(time_step)
-    rules_db = deepy.build.deepy_util.construct_rules()
+    rules_db = deepy.build.util.construct_rules()
     for rule_name, rule in rules_db.iteritems():
         meta = rule.get('meta', {})
         if (meta.get('cube_id') == cube_id and
             (rule.get('time_step') == time_step or
                 rule.get('make_time_step') == time_step)):
-            job = deepy.build.deepy_jobs.DeepyDictJob(rule_name, rules_db)
+            job = deepy.build.jobs.DeepyDictJob(rule_name, rules_db)
             targets = job.get_targets()
             target = targets["produces"][0]
             return target
         elif (rule_name == cube_id and
             (rule.get('time_step') == time_step or
                 rule.get('make_time_step') == time_step)):
-            job = deepy.build.deepy_jobs.DeepyDictJob(rule_name, rules_db)
+            job = deepy.build.jobs.DeepyDictJob(rule_name, rules_db)
             targets = job.get_targets()
             target = targets["produces"][0]
             return target
@@ -2550,7 +2556,7 @@ def bundle_query(*args, **kwargs):
 @deepy.deepy_redis.cache_bundles
 def bundle_query_inner(src_bundle_id, timeslices, slice_defs, dimensions_db, partition_query_updates=None, subquery=None, include_measures=None):
     # get queries from rule
-    rules_db = deepy.build.deepy_util.construct_rules()
+    rules_db = deepy.build.util.construct_rules()
     bundle = rules_db[src_bundle_id]
 
     timestep = bundle.get('make_time_step') or bundle.get('timestep')
@@ -2606,8 +2612,8 @@ def bundle_query_inner(src_bundle_id, timeslices, slice_defs, dimensions_db, par
         cube_files = []
         for ts in timestamps:
             target = query_str['target']
-            cube_files.append(deepy.build.deepy_util.basic_substitution(target, ts))
-
+            cube_files.append(
+                deepy.build.util.deepy_substitution(deepy.build.util.basic_substitution(target, ts), deepy.cfg))
         query_str['input_files'] = cube_files
 
         # do use need required_measures in querying bundles
@@ -2669,15 +2675,9 @@ def check_view_satisfied(view, cube_id, time_step, dimensions):
     for dimension in dimensions:
         if dimension == 'timestamp':
             continue
-<<<<<<< HEAD
 
-        if dim_idx.name_to_id(dimension) not in view['dimensions']:
-            print "******* MISSING", dim_idx.name_to_id(dimension)
-=======
-        
         if str(dim_idx.name_to_id(dimension)) not in map(str, view['dimensions']):
             print "******* MISSING", dim_idx.name_to_id(dimension), view['dimensions']
->>>>>>> origin/master
             return
 
     target = deepy.cfg.cubes_dir + "/" + cube_id + "/view/%s/days/" % view['name']
@@ -2685,7 +2685,7 @@ def check_view_satisfied(view, cube_id, time_step, dimensions):
     rule = {"time_step": time_step, "target": target}
 
     log.info("query-matched-view %s" % rule)
-    
+
     return rule
 
 
@@ -2714,6 +2714,11 @@ def find_view_match (cube_id, slice_defs, time_step, dimensions):
             continue
 
         for view in vals['views']:
+
+            # this allows us to let views populate before using
+            if view.get('write-only'):
+                continue
+            
             rule = check_view_satisfied(view, cube_id, time_step, dimensions_tmp)
             if rule:
                 return rule
@@ -2741,8 +2746,8 @@ def find_view_match (cube_id, slice_defs, time_step, dimensions):
 def cube_query(src_cube_id, result_dimensions=None, exclude_dimensions=None,
         required_measures=None, time_step=None, slice_defs=None, apply_flags=None,
         dimensions_db=None, exclude_apply=None, allow_large=False, groupby=None):
-    import deepy.build.deepy_targets
-    import deepy.build.deepy_expanders
+    import deepy.build.targets
+    import deepy.build.expanders
 
     rule_match = None
     found_view = False
@@ -2784,6 +2789,7 @@ def cube_query(src_cube_id, result_dimensions=None, exclude_dimensions=None,
     for s in slice_defs:
         if s['dimension'] == 'timestamp':
             time_slices.append(s)
+            other_slices.append(s)
         else:
             #Bitwise operations are not supported outside of impala
             if s.is_bitwise():
@@ -2800,7 +2806,7 @@ def cube_query(src_cube_id, result_dimensions=None, exclude_dimensions=None,
 
     if found_view:
         target_expander = deepy.build.deepy_expanders.DeepyTimestampExpander(
-                deepy.build.deepy_targets.DeepyS3BackedLocalFileSystemTarget,
+                deepy.build.deepy_targets.DeepyStoreBackedLocalFileSystemTarget,
                 rule_match["target"], rule_match["time_step"],
                 rule_match["time_step"])
         files = []
@@ -2830,8 +2836,7 @@ def cube_query(src_cube_id, result_dimensions=None, exclude_dimensions=None,
                 files.append(expanded_target.unique_id)
         files = list(set(files))
 
-    #print "cube.py FILES ***********", files
-    #print apply_flags
+    log.info("FILES %s" % files)
 
     if apply_flags == []:
         apply_flags = {}
@@ -2976,7 +2981,8 @@ class CubeQuery(object):
         self.use_bundle_rollup = False
         self.now = now
         self.prev_month_days = prev_month_days
-
+        self.arg_join_expand = arg_join_expand
+ 
         # Separate to handle various ways of initing.
         if query_dict is not None:
             self._init_query_dict(query_dict)
@@ -3061,8 +3067,10 @@ class CubeQuery(object):
         self.arg_join_subst_dict = {}
         ts = deepy.timerange.parse_datetime(self.ts, '-')
         for aj_key, aj_file in self.arg_joins.iteritems():
-            aj_file = deepy.build.deepy_util.basic_substitution(aj_file, ts)
-            val = arg_join_expand(aj_file)
+            aj_file = deepy.build.util.deepy_substitution(
+                deepy.build.util.basic_substitution(aj_file, ts),
+                deepy.cfg)
+            val = self.arg_join_expand(aj_file)
             # Clean this up; avoid jumping into and out of str format...
             if val is not None:
                 self.arg_join_subst_dict['<{}>'.format(aj_key)] = val
@@ -3308,7 +3316,7 @@ def get_rule_queries(rule_name, ts, dimensions_db, now=None):
     # round to 5 minutes
     now = now - datetime.timedelta(minutes=now.minute % 5)
 
-    rules_db = deepy.build.deepy_util.construct_rules()
+    rules_db = deepy.build.util.construct_rules()
     rule = rules_db[rule_name]
 
     query_strs = rule.get('queries', {})

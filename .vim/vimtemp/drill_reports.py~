@@ -11,7 +11,7 @@ import base
 import pandas
 import tornado.web
 import cube_api
-import deepy.build.deep_util
+import deepy.build.deepy_util
 from deepy.ui_celery.async_decorator import make_async
 from deepy.make_functions import get_partition_dimensions
 
@@ -351,21 +351,6 @@ class DataExplorerHandler(base.TileHandler):
     template = 'templates/data_explorer.html'
     template_args = {"title": "Data Explorer"}
 
-class QueryDrillHandler(base.TileHandler):
-    template = 'templates/drill_query.html'
-    template_args = {"title": "Drill"}
-
-    def get(self, *path_args, **path_kwargs):
-        # Normalize path args and pass to template.
-        drill_base = path_args[0]
-        drill_args = path_args[1].strip('/').split('/')
-        drill_args = [x for x in drill_args if x != '']
-        self.template_args['drill_href_base'] = base.json_encode(drill_base)
-        self.template_args['drill_args_json'] = base.json_encode(drill_args)
-
-        print drill_base, drill_args
-
-        return super(QueryDrillHandler, self).get(*path_args, **path_kwargs)
 
 #In order to pickle this function as a celery argument we need it at the top level of the file
 #   eventually refactor to only pass data through celery and we can move this back into setup_partition_slices

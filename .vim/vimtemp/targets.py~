@@ -1,157 +1,22 @@
-""" This document will hold the way that targets are defined
+"""defines implementation specific targets"""
 
-Likely these targets will be abstract target's, non abstract targets will
-maybe be defined in something that looks a little more config like
-"""
-import errno
+import collections
+import urlparse
+import funcy
 import fnmatch
-import glob
+import json
 import os
 
-import abc
 
 import deepy.store
-
-class Target(object):
-    """A target class is one that can express certain attributes that are
-    common to all targets
-
-    These attributes are
-        mtime: the last modificaiton time of a target
-        exists: whether or not the target exists
-
-    These two attributes require a way of getting them individually and a way
-    to get them in bulk
-
-    args:
-        unexpanded_id: The id that the file takes in the rule_dep_graph
-        unique_id: The id that this file will take in the build_graph
-        build_context: The context that the node currently has, not what was
-            used to expand it
-        config: A dictionary of properties that the target may use as a config
-    """
-    def __init__(self, unexpanded_id, unique_id, build_context, config=None):
-        self.unexpanded_id = unexpanded_id
-        self.unique_id = unique_id
-        self.build_context = build_context
-        self.config = config
-
-        self.exists = None
-        self.mtime = None
-
-        self.expanded_directions = {"up": False, "down": False}
-
-    def get_exists(self, cached=True):
-        """returns whether or not the target has been built before
-        on a local file system it is simply the exists, in impala it might
-        be whether or not something is found in a where statement
-
-        args:
-            cached: True if the cached value is wanted
-        """
-        return self.exists
-
-    def get_mtime(self, cached=True):
-        """returns whether or not the target has been built before
-        on a local file system it is simply the mtime, in impala it might
-        be a value stored elsewhere by a command
-
-        args:
-            cached: True if the cached value is wanted
-        """
-        return self.mtime
-
-    @staticmethod
-    @abc.abstractmethod
-    def get_bulk_exists_mtime(targets):
-        """Gets the existance and mtime values for the targets in bulk
-
-        Returns:
-            A dictionary with the form
-            {
-                "unique_id1": {
-                    "exists": True/False
-                    "mtime": number
-                },
-                "unique_id2": {
-                    "exists": True/False
-                    "mtime": number
-                }, ...
-            }
-        """
+import snakebite
+import snakebite.errors
+from deepy.build.util import deepy_substitution
+from builder.targets import Target, LocalFileSystemTarget, GlobLocalFileSystemTarget
 
 
-class LocalFileSystemTarget(Target):
-    """A local file system target is one that lives on the local
-    filesystem
 
-    The mtime is retrieved doing a standard stat on the file
-    The existance value is equivalent to it's return value to exists
-    """
-    @staticmethod
-    def non_cached_mtime(local_path):
-        """Gets the non cached mtime of a the local_path
-
-        is static so get_bulk_exists_mtime can use it
-
-        returns:
-            The value of the mtime if the file exists, otherwise None
-        """
-        try:
-            mtime = os.stat(local_path).st_mtime
-        except OSError as oserror:
-            if oserror.errno == errno.ENOENT:
-                mtime = None
-            else:
-                raise oserror
-        return mtime
-
-    @staticmethod
-    def get_bulk_exists_mtime(targets):
-        """Gets all the exists and mtimes for the local paths and returns them
-        in a dict. Just as efficient as normal mtime and exists
-        """
-        local_paths = [x.unique_id for x in targets]
-        exists_mtime_dict = {}
-        for local_path in local_paths:
-            mtime = LocalFileSystemTarget.non_cached_mtime(local_path)
-            exists = mtime is not None
-            exists_mtime_dict[local_path] = {
-                    "exists": exists,
-                    "mtime": mtime,
-            }
-        return exists_mtime_dict
-
-    def get_exists(self, cached=True):
-        """Returns whether or not the target is on the local file system
-
-        also gets value of the mtime. The existance value is based on whether
-        or not mtime is none
-        """
-        self.get_mtime(cached=cached)
-        return self.exists
-
-    def get_mtime(self, cached=True):
-        """Returns the value of the mtime of the file as reported
-        by the local filesystem
-
-        Also caches the existance value of the file
-
-        Returns:
-            The value of the mtime if the file exists, otherwise None
-        """
-        if cached and self.exists is not None:
-            return self.mtime
-
-        mtime = LocalFileSystemTarget.non_cached_mtime(self.unique_id)
-
-        self.mtime = mtime
-        self.exists = mtime is not None
-
-        return self.mtime
-
-
-class S3BackedLocalFileSystemTarget(LocalFileSystemTarget):
+class StoreBackedLocalFileSystemTarget(LocalFileSystemTarget):
     """A local file system target is backedup in S3
 
     The information about the file is retrieved from S3 first and
@@ -169,8 +34,8 @@ class S3BackedLocalFileSystemTarget(LocalFileSystemTarget):
         ls_files = deepy.store.ls_files_remote([local_path])
         if ls_files.get(local_path, None) is None:
             mtime = super(
-                S3BackedLocalFileSystemTarget,
-                S3BackedLocalFileSystemTarget).non_cached_mtime(local_path)
+                StoreBackedLocalFileSystemTarget,
+                StoreBackedLocalFileSystemTarget).non_cached_mtime(local_path)
             return mtime
         else:
             return ls_files[local_path]
@@ -188,34 +53,34 @@ class S3BackedLocalFileSystemTarget(LocalFileSystemTarget):
                 },
             }
         """
-        local_paths = [x.unique_id for x in targets]
         exists_mtime_dict = {}
-        mtime_dict = deepy.store.list_files_remote(local_paths)
-        for local_path in local_paths:
-            if local_path not in mtime_dict:
+        local_paths = [x.unique_id for x in targets]
+        deepy.log.debug("Bulk listing {} local paths".format(len(local_paths)))
+
+        result_dict = deepy.store.ls_files_remote(local_paths, bulk=True)
+
+        for target in targets:
+            local_path = target.unique_id
+            if local_path not in result_dict:
                 mtime = super(
-                    S3BackedLocalFileSystemTarget,
-                    S3BackedLocalFileSystemTarget).non_cached_mtime(local_path)
+                    StoreBackedLocalFileSystemTarget,
+                    StoreBackedLocalFileSystemTarget).non_cached_mtime(local_path)
                 exists = mtime is not None
             else:
-                mtime = mtime_dict[local_path]
-                exists = True
+                mtime = result_dict[local_path]
+                exists = mtime is not None
+
             exists_mtime_dict[local_path] = {
-                    "exists": exists,
-                    "mtime": mtime,
+                "exists": exists,
+                "mtime": mtime,
             }
+            target.mtime = mtime
+            target.cached_mtime = True
+
+        deepy.log.debug("Completed bulk listing {} local paths".format(len(local_paths)))
         return exists_mtime_dict
 
-    def get_exists(self, cached=True):
-        """Returns whether or not the target is on the local file system
-
-        also gets value of the mtime. The existance value is based on whether
-        or not mtime is none
-        """
-        self.get_mtime(cached=cached)
-        return self.exists
-
-    def get_mtime(self, cached=True):
+    def do_get_mtime(self):
         """Returns the value of the mtime of the file as reported
         by the local filesystem
 
@@ -224,80 +89,14 @@ class S3BackedLocalFileSystemTarget(LocalFileSystemTarget):
         Returns:
             The value of the mtime if the file exists, otherwise None
         """
-        if cached and self.exists is not None:
-            return self.mtime
+        mtime = StoreBackedLocalFileSystemTarget.non_cached_mtime(self.unique_id)
 
-        mtime = S3BackedLocalFileSystemTarget.non_cached_mtime(self.unique_id)
-
-        self.mtime = mtime
-        self.exists = mtime is not None
-
-        return self.mtime
+        return mtime
 
 
-class GlobLocalFileSystemTarget(Target):
-    """Used to get information about glob targets."""
-    def get_exists(self, cached=True):
-        self.get_mtime(cached=cached)
-        return self.exists
-
-    @staticmethod
-    def non_cached_mtime(pattern):
-        """Gets the maximum mtime of the files that match the glob pattern
-
-        Is statis so get_bulk_exists_mtime can use it
-
-        returns:
-            The value of the maximum mtime if at least one file exists that
-            matches the patterns, otherwise None
-        """
-        max_mtime = None
-        file_glob = glob.glob(pattern)
-        for file_path in file_glob:
-            mtime = LocalFileSystemTarget.non_cached_mtime(file_path)
-            if max_mtime is None or mtime > max_mtime:
-                max_mtime = mtime
-
-        return max_mtime
-
-    def get_mtime(self, cached=True):
-        """The mtime retrieved corresponds to the largest mtime matching the
-        pattern
-        """
-        if cached and self.exists is not None:
-            return self.mtime
-
-        mtime = GlobLocalFileSystemTarget.non_cached_mtime(self.unique_id)
-
-        self.mtime = mtime
-        self.exists = mtime is not None
-
-        return self.mtime
-
-    @staticmethod
-    def get_bulk_exists_mtime(targets):
-        """Uses the non chached mtime to retrieve mtimes in bulk.
-        Just as efficient as getting the values individually
-        """
-        patterns = [x.unique_id for x in targets]
-        exists_mtime_dict = {}
-        for pattern in patterns:
-            mtime = GlobLocalFileSystemTarget.non_cached_mtime(pattern)
-            exists = mtime is not None
-            exists_mtime_dict[pattern] = {
-                    "exists": exists,
-                    "mtime": mtime,
-            }
-        return exists_mtime_dict
-
-
-class S3BackedGlobLocalFileSystemTarget(GlobLocalFileSystemTarget):
+class StoreBackedGlobLocalFileSystemTarget(GlobLocalFileSystemTarget):
     """Used to get information about glob targets."""
     unexpanded_id = "s3_backed_glob_local_file_system_target"
-
-    def get_exists(self, cached=True):
-        self.get_mtime(cached=cached)
-        return self.exists
 
     @staticmethod
     def s3_prefix_from_glob(pattern):
@@ -331,7 +130,7 @@ class S3BackedGlobLocalFileSystemTarget(GlobLocalFileSystemTarget):
             The value of the maximum mtime if at least one file exists that
             matches the patterns, otherwise None
         """
-        s3_prefix = (S3BackedGlobLocalFileSystemTarget
+        s3_prefix = (StoreBackedGlobLocalFileSystemTarget
                          .s3_prefix_from_glob(pattern))
         s3_list = deepy.store.list_files_remote([s3_prefix])
         max_mtime = None
@@ -345,19 +144,13 @@ class S3BackedGlobLocalFileSystemTarget(GlobLocalFileSystemTarget):
 
         return max_mtime
 
-    def get_mtime(self, cached=True):
+    def get_mtime(self):
         """The mtime retrieved corresponds to the largest mtime matching the
         pattern
         """
-        if cached and self.exists is not None:
-            return self.mtime
-
         mtime = self.non_cached_mtime(self.unique_id)
 
-        self.mtime = mtime
-        self.exists = mtime is not None
-
-        return self.mtime
+        return mtime
 
     @staticmethod
     def get_bulk_exists_mtime(targets):
@@ -367,7 +160,7 @@ class S3BackedGlobLocalFileSystemTarget(GlobLocalFileSystemTarget):
         patterns = [x.unique_id for x in targets]
         exists_mtime_dict = {}
         for pattern in patterns:
-            mtime = S3BackedGlobLocalFileSystemTarget.non_cached_mtime(pattern)
+            mtime = StoreBackedGlobLocalFileSystemTarget.non_cached_mtime(pattern)
             exists = mtime is not None
             exists_mtime_dict[pattern] = {
                     "exists": exists,
@@ -376,3 +169,143 @@ class S3BackedGlobLocalFileSystemTarget(GlobLocalFileSystemTarget):
         return exists_mtime_dict
 
 
+
+class DeepyStoreBackedLocalFileSystemTarget(StoreBackedLocalFileSystemTarget):
+    """Used to make sure that all the nodes have the deepy $(var)s replaced"""
+    def __init__(self, unexpanded_id, local_path, build_context, config=None):
+        super(DeepyStoreBackedLocalFileSystemTarget, self).__init__(
+                unexpanded_id, local_path, build_context,
+                config=config)
+        self.unique_id = deepy_substitution(self.unique_id)
+
+class DeepyStoreBackedGlobLocalFileSystemTarget(StoreBackedGlobLocalFileSystemTarget):
+    """Used to make sure that all the nodes have the deepy $(var)s replaced"""
+    def __init__(self, unexpanded_id, pattern, build_context, config=None):
+        super(DeepyStoreBackedGlobLocalFileSystemTarget, self).__init__(
+                unexpanded_id, pattern, build_context,
+                config=config)
+        self.unique_id = deepy_substitution(self.unique_id)
+
+
+# pdtest.py run
+class ImpalaTimePartitionedTarget(Target):
+    """An ImpalaTableTarget is a target that corresponds to the insertion of a single partition
+    into an impala table
+
+    The mtime is retrieved from the impala data index
+    The existence value is determined by the impala data index
+    """
+    def __init__(self, unexpanded_id, unique_id, build_context, dataset_name, time_step,
+                 compacted=False, config=None):
+        super(ImpalaTimePartitionedTarget, self).__init__(unexpanded_id, unique_id, build_context, config=config)
+        self.dataset_name = dataset_name
+        self.time_step = time_step
+        self.table_manager = self._get_table_manager()
+        self.compacted = compacted
+
+    def _get_snakebite_client(self):
+        return snakebite.client.AutoConfigClient()
+
+    table_managers = collections.defaultdict(dict)
+
+    def _get_table_manager(self):
+        dataset_table_managers = self.table_managers[self.dataset_name]
+        table_manager = dataset_table_managers.get(self.time_step)
+        if not table_manager:
+            import deepy.impala.tables as impala_tables
+            table_manager = impala_tables.make_cube_data_manager(
+                    self.dataset_name, self.time_step)
+            dataset_table_managers[self.time_step] = table_manager
+
+        print table_managers
+
+        return table_manager
+
+    @staticmethod
+    def _partition_exists_mtime(full_partition_path, hdfs_client):
+        try:
+            paths = tuple(hdfs_client.ls([full_partition_path]))
+        except snakebite.errors.FileNotFoundException:
+            return {'mtime': None, 'exists': False}
+        exists_paths = filter(lambda x: x['length'] !=0, paths)
+        if len(exists_paths) == 0:
+            return {'mtime': None, 'exists': False}
+        mtime = max(map(lambda x: x['modification_time'], paths))
+        exists =  len(exists_paths) > 0
+        return {'mtime': mtime, 'exists': exists}
+
+    @staticmethod
+    def get_bulk_exists_mtime(targets):
+        """Gets all the exists and mtimes for the local paths and returns them
+        in a dict. Just as efficient as normal mtime and exists
+        """
+
+        # Get unique dataset/time_step pairs
+        tables = funcy.flatten(map(lambda x: x.get_tables(), targets))
+        unique_tables = set(tables)
+
+        # Get locations for each table from impala
+        table_locations = {}
+        for table in unique_tables:
+            table_locations[table] = table.location
+
+        # For each target, decide if it exists and get its mtime if it does
+        exists_mtime_dict = {}
+        for target in targets:
+            tables = target.get_tables()
+            for table in tables:
+                location = table_locations[table]
+                if location is not None:
+                    location = urlparse.urlparse(location).path
+                else:
+                    exists_mtime_dict[target.unique_id] = {'exists': False, 'mtime': None}
+                    continue
+                partition_path = target.get_partition_path(target.build_context['start_time'])
+                full_path = '{}{}'.format(location, partition_path)
+                hdfs_client = target._get_snakebite_client()
+                exists_mtime = ImpalaTimePartitionedTarget._partition_exists_mtime(full_path, hdfs_client)
+                #TODO does this evaluate to false when missing?
+                if not exists_mtime:
+                    continue
+                exists_mtime_dict[target.unique_id] = ImpalaTimePartitionedTarget._partition_exists_mtime(
+                    full_path, hdfs_client)
+
+        return exists_mtime_dict
+
+    def _get_exists_mtime(self):
+        result = {'mtime': None, 'exists': False}
+        for table in self.get_tables():
+            location = table.location
+            if location is not None:
+                location = urlparse.urlparse(location).path
+            else:
+                continue
+            partition_path = self.get_partition_path(self.build_context['start_time'])
+            full_path = '{}{}'.format(location, partition_path)
+
+            result = self._partition_exists_mtime(full_path, self._get_snakebite_client())
+            if result:
+                break
+        return result
+
+    def do_get_mtime(self):
+        """Returns the value of the mtime of the file as reported
+        by the hdfs
+        """
+        exists_mtime = self._get_exists_mtime()
+        return exists_mtime['mtime']
+
+    def get_tables(self):
+        """Gets the table that contains this target's data
+
+        Returns:
+            [table_name (string)]
+        """
+        tables = self.table_manager.get_insertion_tables(self.build_context['start_time'])
+        return tables
+
+    def get_partition_path(self, timestamp):
+        """Get partition path for this target. Does not include the prefix, this is only the
+        partition path, e.g. /year=2015/month=02/day=06
+        """
+        return self.table_manager.partition_path(timestamp, compacted=self.compacted)

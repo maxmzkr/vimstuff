@@ -47,7 +47,7 @@ import deepy.status
 import deepy.h5flowutil
 import deepy.pybird
 import deepy.timerange
-import deepy.build.deepy_jobs
+import deepy.build.jobs
 arrow = deepy.timerange.arrow_factory
 
 def is_vm_running_daemon(daemon):
@@ -452,7 +452,7 @@ class SNMPStatusMetric(Metric):
 class QueueMetric(Metric):
     '''
     XXX
-    heartbeat_config:avg_queue_size_domain_seconds = 3600
+    metric_config:avg_queue_size_domain_seconds = 3600
         average the queue over the last hour
     '''
 
@@ -557,7 +557,7 @@ class H5FlowMetric(Metric):
             deepy.log.warning('H5FlowMetric: Not running flowd')
             return None
 
-        heartbeat_config = deepy.status.get_heartbeat_config()
+        metric_config = deepy.status.get_metric_config()
         h5flow_status = None
 
         temp = deepy.util.recursive_default_dict()
@@ -602,7 +602,7 @@ class H5FlowMetric(Metric):
                 h5flow_status["num_onnet_ip_v4"] = 0
 
             h5flow_status["h5flow_ago"] = None
-            if not heartbeat_config.get('ignore_h5flow_ago'):
+            if not metric_config.get('ignore_h5flow_ago'):
                 #XXX remove hb config
                 ret = sample_latest_5min(file_str)
                 if ret:
@@ -865,8 +865,8 @@ class TrafficMetric(Metric):
     tags = ['traffic']
 
     def collect(self):
-        heartbeat_config = deepy.status.get_heartbeat_config()
-        cube_type = heartbeat_config.get('traffic_metric_cube_type','drill_small')
+        metric_config = deepy.status.get_metric_config()
+        cube_type = metric_config.get('traffic_metric_cube_type','drill_small')
         end = datetime.datetime.utcnow()
         begin = end - datetime.timedelta(hours=1)
         file_str = os.path.join(deepy.cfg.cubes_dir, cube_type, 'hours', "cube.%Y-%m-%d-%H.h5")
@@ -1060,13 +1060,13 @@ class BGPMetric(Metric):
         return output
 
     def collect(self):
-        heartbeat_config = deepy.status.get_heartbeat_config()
+        metric_config = deepy.status.get_metric_config()
 
         # old function arg defaults
-        reps = heartbeat_config.get('bgp_metric_bgp_reps', 5)
-        timeout = heartbeat_config.get('bgp_metric_timeout', 4)
+        reps = metric_config.get('bgp_metric_bgp_reps', 5)
+        timeout = metric_config.get('bgp_metric_timeout', 4)
 
-        bgp_config = heartbeat_config.get('bgp', {})
+        bgp_config = metric_config.get('bgp', {})
         timeout = bgp_config.get('timeout', timeout)
         reps = bgp_config.get('reps', reps)
 
@@ -1395,13 +1395,15 @@ class MissingBundlesMetric(Metric):
 
         Returns an empty result if all bundles are up-to-date.
         '''
-        heartbeat_config = deepy.status.get_heartbeat_config()
-        hours = heartbeat_config.get('missing_bundles_metric_hours', 10)
+
+        metric_config = deepy.status.get_metric_config()
+        hours = metric_config.get('missing_bundles_metric_hours', 10)
         rules_db = deepy.build.deepy_util.construct_rules()
         bundles = []
         for rule_id, rule in rules_db.iteritems():
             if self._want_bundle(rule_id, rule):
                 bundles.append((rule_id, rule))
+
         out = {}
         now = datetime.datetime.utcnow()
         for bundle_id, bundle in bundles:
@@ -1477,7 +1479,7 @@ class BundleStatusMetric(Metric):
             return None
 
         if make_rule.get('type') != 'bundle':
-            deepy.log.debug("BundleStatusMetric: not bundle: " + make_rule.rule_name)
+            deepy.log.debug("BundleStatusMetric: not bundle: " + rule_id)
             return None
 
         recipe = make_rule.get('recipe')
@@ -1621,8 +1623,8 @@ class DirMetric(Metric):
     tags = ['dir']
 
     def collect(self):
-        heartbeat_config = deepy.status.get_heartbeat_config()
-        directory_size_threshold = heartbeat_config.get('dir_metric_directory_size_threshold', 0)
+        metric_config = deepy.status.get_metric_config()
+        directory_size_threshold = metric_config.get('dir_metric_directory_size_threshold', 0)
         dirs = [
             '/var',
             '/tmp',
@@ -1833,10 +1835,10 @@ class FindMissingMineFilesMetric(Metric):
     tags = ['missingmines']
     def collect(self):
         deployment_id = deepy.cfg.deployment_id
-        heartbeat_config = deepy.status.get_heartbeat_config()
-        hours = heartbeat_config.get('find_missing_missing_mine_files_metric_hours', 6)
+        metric_config = deepy.status.get_metric_config()
+        hours = metric_config.get('find_missing_missing_mine_files_metric_hours', 6)
 
-        mine_files_config = heartbeat_config.get('mine_files', {})
+        mine_files_config = metric_config.get('mine_files', {})
         hours = mine_files_config.get('hours', hours)
 
         filenames = \
@@ -2113,9 +2115,9 @@ class BackboneErrorMetric(Metric):
             deepy.log.error("BackboneErrorMetric: Could not determine UUID")
             return None
 
-        heartbeat_config = deepy.status.get_heartbeat_config()
-        min_ratio = heartbeat_config.get('backbone_metric_min_ratio', 0.5)
-        max_ratio = heartbeat_config.get('backbone_metric_max_ratio', 2)
+        metric_config = deepy.status.get_metric_config()
+        min_ratio = metric_config.get('backbone_metric_min_ratio', 0.5)
+        max_ratio = metric_config.get('backbone_metric_max_ratio', 2)
 
         now = datetime.datetime.utcnow()
         end = deepy.timerange.floor_timestamp_to(now, "5T")
@@ -2171,78 +2173,12 @@ class BackboneErrorMetric(Metric):
     def snapshot(self, client=None):
         self.send_snapshot('traffic_error')
 
-class BackboneChangeMetric(Metric):
-    tags = ['backbonchange']
-
-    def __init__(self, dimensions_db=None, hour_traffic=None):
-        self.dimensions_db = dimensions_db if dimensions_db else deepy.dimensions.DimensionsDB()
-        self.traffic = hour_traffic[0] if hour_traffic else None
-
-    def collect(self):
-        uuid = load_uuid()
-        if uuid is None:
-            deepy.log.error("BackboneChangeMetric: Could not determine UUID")
-            return None
-
-        # Todays traffic
-        if not self.traffic:
-            hour_traffic = deepy.metrics.HourTrafficMetric(self.dimensions_db).collect()
-            if not hour_traffic:
-                return None
-            self.traffic = hour_traffic[0]
-
-        unused, today_recv, today_sent = self.traffic
-
-        now = datetime.datetime.utcnow()
-        end = deepy.timerange.floor_timestamp_to(now, "1H")
-        begin = end - datetime.timedelta(hours=1)
-        file_str = os.path.join(deepy.cfg.heartbeat_dir, str(uuid), "vm", "vm.%Y-%m-%d-%H-%M.json.gz")
-        timerange = deepy.timerange.generate_file_glob(file_str, begin, end, "1H")
-
-        previous_path, now_path = timerange
-
-        if previous_path is None:
-            deepy.log.warning('BackboneChangeMetric: failed timerange for previous heartbeat')
-            return None
-
-        previous_heartbeat = deepy.store.simple_load_json(previous_path)
-        if not previous_heartbeat:
-            deepy.log.warning('BackboneChangeMetric: no previous heartbeat')
-            return None
-
-        pbbht = previous_heartbeat.get('backbone_hour_traffic')
-        if not pbbht:
-            deepy.log.warning('BackboneChangeMetric: no previous backbone_hour_traffic')
-            return None
-
-        previous_backbone = pbbht[0]
-        unused, previous_recv, previous_sent = previous_backbone[:3]
-
-        return {
-            "delta_recv": today_recv - previous_recv,
-            "delta_sent": today_sent - previous_sent,
-            "ratio_recv": today_recv/previous_recv if previous_recv != 0 else None,
-            "ratio_sent": today_sent/previous_sent if previous_sent != 0 else None,
-        }
-
-    def publish(self, metric, client=None):
-        prefix = 'pipedream/backbone/'
-        if metric is None:
-            deepy.log.warning("Failed to collect BackboneChangeMetric")
-            return
-        for k, v in metric.iteritems():
-            name = prefix + k
-            self.send(name, v, client=client)
-
-    def snapshot(self, client=None):
-        self.send_snapshot('traffic_change')
-
 class ProcessesByMemoryMetric(Metric):
     tags = ['processes']
 
     def collect(self):
-        heartbeat_config = deepy.status.get_heartbeat_config();
-        count = heartbeat_config.get('process_by_memory_metric_count', 20)
+        metric_config = deepy.status.get_metric_config();
+        count = metric_config.get('process_by_memory_metric_count', 20)
 
         try:
             top_N = sorted(psutil.get_process_list(), key=lambda x: x.get_memory_info().vms, reverse=True)[:count]
@@ -2298,8 +2234,8 @@ class FlowdStatsMetric(Metric):
         { "eth0": {"name": "eth0", "ps_recv": 11424, "ps_drop": 0, "ps_ifdrop": 0} }
 
         '''
-        heartbeat_config = deepy.status.get_heartbeat_config()
-        range_num = heartbeat_config.get('flowd_stats_metric_range_num', 6)
+        metric_config = deepy.status.get_metric_config()
+        range_num = metric_config.get('flowd_stats_metric_range_num', 6)
         flowd_stats = None
 
         now = int(time.time())
@@ -2347,8 +2283,8 @@ class MissingCubesMetric(Metric):
         return n
 
     def collect(self):
-        heartbeat_config = deepy.status.get_heartbeat_config()
-        hours = heartbeat_config.get('missing_cubes_metric_hours', 6)
+        metric_config = deepy.status.get_metric_config()
+        hours = metric_config.get('missing_cubes_metric_hours', 6)
 
         # N hour interval starting now floored to nearest hour
         now = datetime.datetime.utcnow()
@@ -2363,7 +2299,7 @@ class MissingCubesMetric(Metric):
             "cube_heartbeats"
         ]
 
-        ignored_cubes += heartbeat_config.get("ignored_cubes") or []
+        ignored_cubes += metric_config.get("ignored_cubes") or []
 
         _want_rule_partial = functools.partial(want_rule, ignored_cubes, ('1h', '5min'))
         rules_db = deepy.build.deepy_util.construct_rules()
@@ -2383,7 +2319,7 @@ class MissingCubesMetric(Metric):
 
             cube_id = make_rule.get('meta').get('cube_id')
 
-            target_expander = deepy.build.deepy_jobs.DeepyDictJob(
+            target_expander = deepy.build.jobs.DeepyDictJob(
                     rule_id, rules_db, config=config)
             targets = []
             for ts in timerange:
@@ -2423,8 +2359,8 @@ class UIPageMetric(Metric):
     tags = ['uipage']
 
     def collect(self):
-        heartbeat_config = deepy.status.get_heartbeat_config()
-        max_timeout = heartbeat_config.get('ui_page_metric_max_timeout', 60)
+        metric_config = deepy.status.get_metric_config()
+        max_timeout = metric_config.get('ui_page_metric_max_timeout', 60)
         daemons = deepy.cfg.vm_config.get("daemons")
         err = {}
         if not daemons or 'home.py' not in daemons:

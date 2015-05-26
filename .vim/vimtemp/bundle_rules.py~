@@ -28,8 +28,6 @@ def modify_bundles(rules):
     ########################################
 
     # service
-    import ipdb;ipdb.set_trace()
-
     modify_bundle('drill_day_service_summary', rules, drill_service_summary)
     modify_bundle('drill_day_service', rules, drill_service_drill)
 
@@ -131,16 +129,24 @@ def make_bundles(rules):
     make_bundle('bundle2_h5backbone_summary', bundle2_h5backbone_summary, rules)
     make_bundle('bundle2_backbone1_summary', bundle2_backbone1_summary, rules)
 
-    make_bundle('drill_day_asn_eval_summary', drill_day_asn_eval_summary, rules)
-    make_bundle('drill_month_asn_eval_summary', drill_month_asn_eval_summary, rules)
-
     make_bundle('drill_day_asn_eval', drill_day_asn_eval, rules)
+    make_bundle('drill_day_asn_eval_summary', drill_day_asn_eval_summary, rules)
+    make_bundle('drill_month_asn_eval_summary_cost',
+                drill_month_asn_eval_summary_cost, rules)
+    make_bundle('drill_month_asn_eval_cost',
+                drill_month_asn_eval_cost, rules)
+
     make_bundle('drill_month_asn_eval', drill_month_asn_eval, rules)
+    make_bundle('drill_month_asn_eval_summary', drill_month_asn_eval_summary, rules)
 
     make_drill_router_local(rules)
 
     if deepy.cfg.slice_config.get("enable_bgp_drills"):
+        make_bgp_bundles(rules)
+
+def make_bgp_bundles(rules):
         bgp_drill_dims = deepy.cfg.slice_config.get("bgp_drill_dims")
+        make_drill_bgp_bundles (rules, dim_drills=bgp_drill_dims)
         make_drill_bgp_category (rules, dim_drills=bgp_drill_dims)
         make_drill_bgp_cdn (rules, dim_drills = bgp_drill_dims)
         make_drill_bgp_sites (rules, dim_drills = bgp_drill_dims)
@@ -212,7 +218,9 @@ return_names = convert_to_names('true')
 top_25_max_total_bps = sort('max.total.bps', 'desc', 0, 25)
 top_25_avg_total_bps = sort('avg.total.bps', 'desc', 0, 25)
 
-a_costing = lambda dim, args=[]: {'fn': 'costing', 'args': [dim] + args}
+a_costing = lambda dim, args=[], kwargs={}: {'fn': 'costing',
+                                             'args': [dim] + args,
+                                             'kwargs': kwargs}
 
 def group_other(*args):
     return {'fn': 'group_other', 'args': list(args)}
@@ -693,11 +701,16 @@ def drill_day_asn_eval_summary():
         return '$(cubes_dir)/{}/months/top_list_{}.%Y-%m.json.gz'.format(cid, n)
 
     queries = {}
-    depends = {}
-    depends['cube_backbone_asn_5min'] = '5min'
-    depends['cube_backbone_asn_total_5min'] = '5min'
-    depends['cube_backbone_asn2_ind_month_top_list'] = '1d'
-    depends['cube_backbone_asn2_month_top_list'] = '1d'
+    dependencies = {
+        "depends": {
+            "cube_backbone_asn2_ind_month_top_list": {"ignore_mtime": True},
+            "cube_backbone_asn2_month_top_list": {"ignore_mtime": True},
+        },
+        "depends_one_or_more": {
+            "cube_backbone_asn_small_5min": {},
+            "cube_backbone_asn_total_5min": {},
+        },
+    }
 
     name = 'summary.interconnection'
     queries[name] = query(name, dimensions=['timestamp', 'interconnection'],
@@ -715,7 +728,7 @@ def drill_day_asn_eval_summary():
                           arg_joins={'c.top_asns':
                                      top_month_n('backbone_asn2', 200)},
                           slices=[include_slice('asn', ['<c.top_asns>'])],
-                          input_file_glob=backbone_asn_minutes,
+                          input_file_glob=backbone_asn_small_minutes,
                           target=mt(name))
 
     name = 'list.asn.indirect'
@@ -725,7 +738,7 @@ def drill_day_asn_eval_summary():
                                      top_month_n('backbone_asn2_ind', 200)},
                           slices=[include_slice('asn', ['<c.top_asns_ind>']),
                                   s_interconnection('Indirect')],
-                          input_file_glob=backbone_asn_minutes,
+                          input_file_glob=backbone_asn_small_minutes,
                           target=mt(name))
 
     name = 'list.peer.local'
@@ -733,7 +746,7 @@ def drill_day_asn_eval_summary():
                           applies=[td_days],
                           slices=[s_null_top('peer.local'),
                                   s_interconnection('Direct')],
-                          input_file_glob=backbone_asn_minutes,
+                          input_file_glob=backbone_asn_small_minutes,
                           target=mt(name))
 
     bundle_name = 'drill_day_asn_eval_summary'
@@ -745,15 +758,65 @@ def drill_day_asn_eval_summary():
             'auto_add_to_build_rules': False,
             'make_time_step': 86400,
             'time_step': 300,
+            'prune_ratio': 500,
             'file_step': '1d',
             'recipe': [recipe],
             'queries': queries,
-            'depends_one_or_more': depends,
+            'dependencies': dependencies,
             'type': 'bundle',
             'target': target,
          }
 
     return bundle_def
+
+def drill_month_asn_eval_summary_cost():
+    '''
+    Bundle which simply pre-calculates cost data for month summary.
+    This should run along with top lists every half hour to stay current.
+    '''
+    def ifg(qname):
+        return os.path.join('$(cubes_dir)', 'drill', 'asn_eval', 'days',
+                            qname, 'cube.%Y-%m-%d.h5')
+    def mt(fname):
+        return os.path.join('$(cubes_dir)', 'drill',
+                  'asn_eval/months/{}/cost_list.%Y-%m.json.gz'.format(fname))
+    queries = {}
+    depends = {}
+    depends['drill_day_asn_eval_summary'] = 'day'
+
+    name = 'cost.summary'
+    queries[name] = query(name, dimensions=['peer.local'],
+                          input_file_glob=ifg('list.peer.local'),
+                          applies=[a_costing('peer.local',[],
+                                             {'bundle_rollup':True})],
+                          timestep='days',
+                          target=mt(name),
+                          get_fields=['104.local', 'pctl.ingress.bps.95',
+                                      'pctl.egress.bps.95', 'avg.total.bps',
+                                      'cost', 'cost_per_mbps'])
+
+    queries[name]['use_bundle_rollup'] = True
+    bundle_name = 'drill_month_asn_eval_summary_cost'
+    target = os.path.join('$(cubes_dir)', 'drill',
+                          'asn_eval/months/markers/summary_cost.%Y-%m.marker')
+    recipe = 'bundle2.py -M {} -m {} -t %Y-%m'.format(bundle_name, target)
+
+    bundle_def = {
+        'auto_add_to_build_rules': False,
+        'make_time_step': 'month',
+        'prune_ratio': 500,
+        'file_step': 'month',
+        'time_step': 86400,
+        'recipe': [recipe],
+        'dim_top': 'asn',
+        'queries': queries,
+        'depends_one_or_more': depends,
+        'type': 'bundle',
+        'target': target
+    }
+
+    return bundle_def
+
 
 def drill_month_asn_eval_summary():
     '''
@@ -768,11 +831,12 @@ def drill_month_asn_eval_summary():
         return '$(cubes_dir)/{}/months/top_list.%Y-%m.json.gz'.format(cid)
 
     peer_month_cost_list = \
-       '$(cubes_dir)/backbone_peer_local/months/cost_list.%Y-%m.json.gz'
+       '$(cubes_dir)/drill/asn_eval/months/cost.summary/cost_list.%Y-%m.json.gz'
 
     queries = {}
     depends = {}
     depends['drill_day_asn_eval_summary'] = 'day'
+    depends['drill_month_asn_eval_summary_cost'] = 'month'
 
     name = 'summary'
     queries[name] = query(name, sum_all=True,
@@ -880,6 +944,7 @@ def drill_month_asn_eval_summary():
     bundle_def = {
         'auto_add_to_build_rules': False,
         'make_time_step': 'month',
+        'prune_ratio': 500,
         'file_step': 'month',
         'time_step': 86400,
         'recipe': [recipe],
@@ -900,7 +965,7 @@ def drill_day_asn_eval():
     queries = {}
     depends = {}
 
-    depends['cube_backbone_asn_5min'] = '5min'
+    depends['cube_backbone_asn_small_5min'] = '5min'
 
     ############################################
     # On bundle query, all cubes sliced on asn #
@@ -911,7 +976,7 @@ def drill_day_asn_eval():
     queries[name] = query(name, dimensions=['asn', 'timestamp',
                                             'interconnection'],
                           applies=[td_days],
-                          input_file_glob=backbone_asn_minutes,
+                          input_file_glob=backbone_asn_small_minutes,
                           target=mt('timeseries', 'interconnection'))
 
     # Traffic sliced on direct as proxy for peer.local slice; peer.local
@@ -920,7 +985,7 @@ def drill_day_asn_eval():
     queries[name] = query(name, dimensions=['asn', 'timestamp',
                                             'peer.local'],
                           applies=[td_days],
-                          input_file_glob=backbone_asn_minutes,
+                          input_file_glob=backbone_asn_small_minutes,
                           slices=[s_interconnection('Direct')],
                           target=mt('timeseries', 'direct'))
 
@@ -932,7 +997,7 @@ def drill_day_asn_eval():
         queries[name] = query(name, dimensions=['asn', 'timestamp',
                                                 'peer.local', dim],
                               applies=[td_days],
-                              input_file_glob=backbone_asn_minutes,
+                              input_file_glob=backbone_asn_small_minutes,
                               slices=[s_interconnection(interxion.title()),
                                       s_null_drill(dim)],
                               target=mt('list', 'breakdown.{}.{}'.format(dim,
@@ -942,7 +1007,7 @@ def drill_day_asn_eval():
     name = 'timeseries.indirect.peer.local'
     queries[name] = query(name, dimensions=['asn', 'timestamp', 'peer.local'],
                           applies=[td_days],
-                          input_file_glob=backbone_asn_minutes,
+                          input_file_glob=backbone_asn_small_minutes,
                           slices=[s_interconnection('Indirect')],
                           target=mt('timeseries', 'indirect.peer.local'))
 
@@ -950,7 +1015,7 @@ def drill_day_asn_eval():
     name = 'timeseries.indirect'
     queries[name] = query(name, dimensions=['asn', 'timestamp'],
                           applies=[td_days],
-                          input_file_glob=backbone_asn_minutes,
+                          input_file_glob=backbone_asn_small_minutes,
                           slices=[s_interconnection('Indirect')],
                           target=mt('timeseries', 'indirect'))
 
@@ -959,7 +1024,7 @@ def drill_day_asn_eval():
     queries[name] = query(name, dimensions=['asn', 'timestamp',
                                             'aspaths.local'],
                           applies=[td_days],
-                          input_file_glob=backbone_asn_minutes,
+                          input_file_glob=backbone_asn_small_minutes,
                           target=mt('list', 'aspaths.local'))
 
     bundle_name = 'drill_day_asn_eval'
@@ -971,6 +1036,7 @@ def drill_day_asn_eval():
         'dim_top': 'asn',
         'make_time_step': 86400,
         'time_step': 300,
+        'prune_ratio': 500,
         'file_step': '1d',
         'recipe': [recipe],
         'queries': queries,
@@ -978,6 +1044,54 @@ def drill_day_asn_eval():
         'type': 'bundle',
         'target': target,
     }
+    return bundle_def
+
+def drill_month_asn_eval_cost():
+    '''
+    Bundle which simply pre-calculates cost data for month drill.
+    This should run along with top lists every half hour to stay current.
+    '''
+    def ifg(qtype, dim):
+        return os.path.join('$(cubes_dir)', 'drill', 'asn_eval', 'days',
+                            'drill', dim, qtype, 'cube.%Y-%m-%d.h5')
+    def mt(qtype, dim):
+        return os.path.join('$(cubes_dir)', 'drill', 'asn_eval', 'months',
+                            'drill', dim, qtype, 'cost_list.%Y-%m.json.gz')
+    queries = {}
+    depends = {}
+    depends['drill_day_asn_eval'] = 'day'
+
+    name = 'cost.summary'
+    queries[name] = query(name, dimensions=['peer.local'],
+                          input_file_glob=ifg('timeseries', 'direct'),
+                          applies=[a_costing('peer.local',[],
+                                             {'bundle_rollup':True})],
+                          timestep='days',
+                          target=mt(name, 'peer.local'),
+                          get_fields=['104.local', 'pctl.ingress.bps.95',
+                                      'pctl.egress.bps.95', 'avg.total.bps',
+                                      'cost', 'cost_per_mbps'])
+
+    queries[name]['use_bundle_rollup'] = True
+    bundle_name = 'drill_month_asn_eval_cost'
+    target = os.path.join('$(cubes_dir)', 'drill',
+                          'asn_eval/months/markers/drill_cost.%Y-%m.marker')
+    recipe = 'bundle2.py -M {} -m {} -t %Y-%m'.format(bundle_name, target)
+
+    bundle_def = {
+        'auto_add_to_build_rules': False,
+        'make_time_step': 'month',
+        'prune_ratio': 500,
+        'file_step': 'month',
+        'time_step': 86400,
+        'recipe': [recipe],
+        'dim_top': 'asn',
+        'queries': queries,
+        'depends_one_or_more': depends,
+        'type': 'bundle',
+        'target': target
+    }
+
     return bundle_def
 
 def drill_month_asn_eval():
@@ -989,12 +1103,13 @@ def drill_month_asn_eval():
         return os.path.join('$(cubes_dir)', 'drill', 'asn_eval', 'days',
                             'drill', dim, qtype, 'cube.%Y-%m-%d.h5')
 
-    peer_month_cost_list = \
-       '$(cubes_dir)/backbone_peer_local/months/cost_list.%Y-%m.json.gz'
+    peer_month_cost_list = '$(cubes_dir)/drill/asn_eval/months/drill/' \
+                             + 'peer.local/cost.summary/cost_list.%Y-%m.json.gz'
 
     queries = {}
     depends = {}
     depends['drill_day_asn_eval'] = 'day'
+    depends['drill_month_asn_eval_cost'] = 'month'
 
     ############################################
     # On bundle query, all cubes sliced on asn #
@@ -1081,6 +1196,7 @@ def drill_month_asn_eval():
         'dim_top': 'asn',
         'make_time_step': 86400,
         'time_step': 300,
+        'prune_ratio': 500,
         'file_step': '1d',
         'recipe': [recipe],
         'queries': queries,
@@ -1205,3 +1321,17 @@ def make_drill_bgp_router (rules, dim_drills = None):
     dashqueries = rules['dashboard']['queries']
     deepy.standard_drill_rules.add_dashboard_query(dashqueries, 'bgp_router.local')
 
+def make_drill_bgp_bundles (rules, dim_drills=None):
+    template = deepy.build.util.MakeruleTemplateStandardDrill()
+    dim_tops = template.get_dim_tops()
+    if dim_drills is None:
+        dim_drills = template.get_dim_drills()
+
+    cube_hours = '$(cubes_dir)/backbone_small/hours/cube.%Y-%m-%d-%H.h5'
+    for dim_top in dim_tops:
+        drillname =  'bgp_' + dim_top
+        bundles = deepy.standard_drill_rules.make_drill_bundles(dim_top, dim_drills, drillname=drillname, input_file_glob=cube_hours, timestep=3600)
+        rules.update(bundles)
+
+        dashqueries = rules['dashboard']['queries']
+        deepy.standard_drill_rules.add_dashboard_query(dashqueries, drillname)

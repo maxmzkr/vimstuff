@@ -1,611 +1,540 @@
-"""Used to implement the basic framework around job nodes. Job nodes are
-the nodes that can be called and will perform an action.
-"""
-
-import json
-import arrow
 import collections
+import string
+import json
+import os.path
+from collections import defaultdict
+import itertools
 
-import builder.expanders
-import builder.targets
-from builder.util import convert_to_timedelta
+import builder
 
-class Job(object):
-    """A Job is a particular run of a JobDefinition.
+from deepy.build import (DeepyStoreBackedLocalFileSystemTarget, DeepyStoreBackedGlobLocalFileSystemTarget,
+    basic_substitution, deepy_substitution, DeepyTimestampExpander,
+    DeepyImpalaExpander, DeepyExpander)
+
+import builder.jobs
+import deepy.cfg
+import deepy.log
+
+class BundleState(builder.jobs.TimestampExpandedJob):
+    """A state that should always run because bundles should pretty much always
+    run
     """
-    def __init__(self, job, unique_id, build_graph, build_context,
-                 meta=None):
-        if meta is None:
-            meta = {}
-        self.job = job
-        self.unique_id = unique_id
-        self.build_graph = build_graph
-        self.build_context = build_context
-        self.meta = meta
-
-        self.unexpanded_id = job.unexpanded_id
-        self.config = job.config
-        self.cache_time = job.cache_time
-
-        # State
-        self.retries = 0
-        self.failed = False
-        self.last_run = None
-        self.stale = None
-        self.buildable = None
-        self.should_run = None
-        self.parents_should_run = None
-        self.expanded_directions = {"up": False, "down": False}
-        self.is_running = False
-        self.force = False
-
-    def __repr__(self):
-        return "{}:{}".format(self.unexpanded_id, self.unique_id)
-
-    def invalidate(self):
-        """Sets all cached values to their default None"""
-        self.stale = None
-        self.buildable = None
-        self.should_run = None
-        self.parents_should_run = None
-
-    def reset(self):
-        """Sets all values to their defaults"""
-        self.invalidate()
-        self.retries = 0
-        self.last_run = None
-        self.is_running = False
-        self.force = False
-        self.failed = False
-
-    def get_stale_alternates(self):
-        """Returns True if the job does not have an alternate or if any
-        of it's alternates don't exist otherwise returns the mtimes of
-        the alternates
-        """
-        targets = self.build_graph.get_target_relationships(self.unique_id)
-        alternates = targets.get("alternates", [])
-
-        alternate_mtimes = []
-        for alternate_id in alternates:
-            alternate = self.build_graph.get_target(alternate_id)
-            if not alternate.get_exists():
-                return True
-            alternate_mtimes.append(alternate.get_mtime())
-        if not alternates:
-            return True
-        return alternate_mtimes
-
-    def update_stale(self, new_value):
-        """Updates the stale value of the node and then updates all the above
-        nodes.
-
-        This is needed due to alternates. If the job above this job has an
-        alternate that is this job's target, then the above job may not be
-        stale when it's target doesn't exist.
-        If this job is stale then it needs the targert from the above job.
-        Therefore this job will then tell the above job that it needs to be
-        stale. That is the goal of this function.
-
-        If the new value is True and the old value was not True then
-        everything above it is updated.
-        Updating the above involves looking at all the dependencies.
-        If a dependency doesn't exist, then it updates the job of the
-        dependency to stale
-        """
-        if new_value == True and self.stale != True:
-            self.stale = new_value
-            dependency_ids = self.build_graph.get_dependency_ids(self.unique_id)
-            for dependency_id in dependency_ids:
-                dependency = self.build_graph.get_target(dependency_id)
-                if not dependency.get_exists():
-                    creator_ids = self.build_graph.get_creator_ids(dependency_id)
-                    for creator_id in creator_ids:
-                        creator = self.build_graph.get_job(creator_id)
-                        creator.update_stale(True)
-        self.stale = new_value
-
-    def get_minimum_target_mtime(self):
-        """Returns the minimum target mtime or returns True if a stale condition
-        is met
-
-        Stale conditions are the following:
-            - There are no targets for the job
-            - The job has no produces and an alternate is missing
-            - The job is missing a produces and is missing an alternates or
-                doesn't have an alternate
-
-        Returns:
-            True: if a stale condition is met
-            Minimum mtime: if no stale condition is met the lowest mtime of
-                the targets, returned
-        """
-        # The target doesn't produce anything so it only depends on it's
-        # alternates
-        target_dict = self.build_graph.get_target_relationships(self.unique_id)
-
-        # There are no targets so it is just a cron job with dependencies
-        if not target_dict:
-            return True
-
-        produced_targets = target_dict.get("produces")
-        if not produced_targets:
-            return self.get_stale_alternates()
-
-        alt_check = False
-        target_mtimes = [float("inf")]
-        for target_id, data in produced_targets.iteritems():
-            target = self.build_graph.get_target(target_id)
-            if not target.get_exists() and not alt_check:
-                stale_alternates = self.get_stale_alternates()
-                if stale_alternates == True:
-                    return True
-                target_mtimes = target_mtimes + stale_alternates
-            else:
-                if data.get("ignore_mtime", False):
-                    continue
-                target_mtimes.append(target.get_mtime())
-        min_target_mtime = min(target_mtimes)
-        return min_target_mtime
-
-    def get_maximum_dependency_mtime(self, minimum_target_mtime):
-        """Returns True if a dependency mtime is greater than the
-        minimum_target_mtime
-        """
-        dependency_dict = self.build_graph.get_dependency_relationships(
-                self.unique_id)
-        for _, group_list in dependency_dict.iteritems():
-            for group_dict in group_list:
-                if group_dict["data"].get("ignore_mtime", False):
-                    continue
-                for dependency_id in group_dict["targets"]:
-                    dependency = self.build_graph.get_target(dependency_id)
-                    if dependency.get_exists():
-                        if dependency.get_mtime() > minimum_target_mtime:
-                            return True
-        return False
-
-    def get_stale(self):
-        """Returns whether or not the job needs to run to update it's output
-
-        Often this job will look at the mtime of it's inputs and it's outputs
-        and determine if the job needs to run
-
-        Stale conditions:
-            The job has been updated to stale with update_stale
-            A target doesn't exist and the job doesn't have an alternate
-            A target doesn't exist and a single alternate doesn't exist
-            A target's mtime is lower than a dependency's mtime
-            The job has no targets
-            The job has no produces and is missing an alternates
-        """
-        if self.stale != None:
-            return self.stale
-        if not self.past_cache_time():
-            self.stale = False
-            return False
-
-        minimum_target_mtime = self.get_minimum_target_mtime()
-        if minimum_target_mtime is True:
-            self.update_stale(True)
-            return True
-
-        greater_mtime = self.get_maximum_dependency_mtime(minimum_target_mtime)
-        if greater_mtime:
-            self.update_stale(True)
-            return True
-
-        self.update_stale(False)
-        return False
-
-    def set_stale(self, stale):
-        self.stale = stale
-
-    def get_buildable(self):
-        """Returns whether or not the job is buildable
-
-        Buildability is true when all the depends are met. This is true when
-        all of the depends node's return True
-
-        Buildable conditions:
-            All the above dependency nodes return true
-        """
-        if self.buildable is not None:
-            return self.buildable
-
-        for dependency_node_id in self.build_graph.predecessors(self.unique_id):
-            dependency_node = self.build_graph.node[dependency_node_id]
-            dependency_func = dependency_node["object"].func
-            buildable_ids = self.build_graph.predecessors(dependency_node_id)
-            buildable_nodes = []
-            for buildable_id in buildable_ids:
-                buildable_nodes.append(
-                    self.build_graph.node[buildable_id]["object"])
-            buildable = dependency_func(buildable_nodes)
-            if not buildable:
-                self.buildable = False
-                return False
-
-        self.buildable = True
-        return True
-
-    def set_buildable(self, buildable):
-        self.buildable = buildable
-
-    def get_failed(self):
-        return self.failed
-
-    def past_cache_time(self):
-        """Returns true if the job is past it's cache time
-
-        This implementation returns true if the oldest mtime is older than
-        the cache_time or if non of the targets exist
-        """
-        cache_time = self.cache_time
-        if cache_time is None:
-            return True
-        cache_delta = convert_to_timedelta(cache_time)
-        current_time = arrow.get()
-        for target_edge in self.build_graph.out_edges(self.unique_id, data=True):
-            if target_edge[2]["kind"] == "produces":
-                target = self.build_graph.node[target_edge[1]]["object"]
-                if not target.get_exists():
-                    return True
-                elif arrow.get(target.get_mtime()) + cache_delta < current_time:
-                    return True
-        return False
-
-    def all_dependencies(self):
-        """Returns whether or not all the jobs dependencies exist"""
-        for depends_node_id in self.build_graph.predecessors(self.unique_id):
-            for dependency_id in self.build_graph.predecessors(depends_node_id):
-                dependency = self.build_graph.node[dependency_id]["object"]
-                if not dependency.get_exists():
-                    return False
-        return True
-
-    def past_curfew(self):
-        """Returns whether or not the job is past it's curfew
-
-        True by default
-        """
-        return True
-
-    def get_parent_jobs(self):
-        """Returns a list of all the parent jobs"""
-        parent_jobs = []
-        for depends_node_id in self.build_graph.predecessors(self.unique_id):
-            for dependency_id in self.build_graph.predecessors(depends_node_id):
-                parent_jobs = (parent_jobs +
-                               self.build_graph.predecessors(dependency_id))
-        return parent_jobs
-
-    def update_lower_nodes_should_run(self, update_set=None):
-        """Updates whether or not the job should run based off the new
-        information on the referrer
-        """
-        if update_set is None:
-            update_set = set([])
-
-        if self.unique_id in update_set:
-            return
-
-        self.invalidate()
-        self.get_should_run()
-        for target_id in self.build_graph.neighbors(self.unique_id):
-            for depends_id in self.build_graph.neighbors(target_id):
-                for job_id in self.build_graph.neighbors(depends_id):
-                    job = self.build_graph.node[job_id]["object"]
-                    job.update_lower_nodes_should_run(update_set=update_set)
-
-        update_set.add(self.unique_id)
-
-    def set_failed(self, failed):
-        """Sets the job as failed and sets the state that a failed job should
-        have
-        """
-        if failed == True:
-            self.failed = True
-            self.force = False
-            self.should_run = False
-
-    def get_parents_should_run(self):
-        """Returns whether or not any contiguous ancestor job with the
-        same cache_time bool value should run
-
-        False if an ancestor should run
-        True if no ancestor should run
-        """
-        if self.parents_should_run is not None:
-            return self.parents_should_run
-
-        if self.should_ignore_parents():
-            return False
-
-        for dependency_id in self.get_parent_jobs():
-            dependency = self.build_graph.node[dependency_id]["object"]
-            if not dependency.should_ignore_parents():
-                parents_should_run = dependency.get_parents_should_run()
-                should_run_immediate = dependency.get_should_run_immediate()
-                if parents_should_run or should_run_immediate:
-                    self.parents_should_run = True
-                    return True
-
-        self.parents_should_run = False
-        return False
-
-    def get_force(self):
-        return self.force
-
-
-    def set_force(self, force):
-        self.force = force
-
-
-    def get_should_run_immediate(self):
-        """Returns whether or not the node should run not caring about the
-        ancestors should run status
-        """
-        if self.force or self.job.get_always_force():
-            return True
-        if self.get_failed():
-            return False
-        if self.should_run is not None:
-            return self.should_run
-
-        has_cache_time = self.cache_time is not None
-        stale = self.get_stale()
-        buildable = self.get_buildable()
-        if not stale or not buildable:
-            self.should_run = False
-            return False
-
-        past_curfew = self.past_curfew()
-        all_dependencies = self.all_dependencies()
-        if has_cache_time or past_curfew or all_dependencies:
-            self.should_run = True
-            return True
-        self.should_run = False
-        return False
-
-    def get_should_run(self):
-        """Returns whether or not the job should run
-
-        depends on it's current state and whether or not it's ancestors
-        should run
-        """
-        if self.force:
-            return True
-
-        if self.get_parents_should_run():
-            return False
-
-
-        return self.get_should_run_immediate()
-
-    def set_should_run(self, should_run):
-        self.should_run = should_run
-
-    def should_ignore_parents(self):
-        """
-        Returns true if this job should ignore parents. E.g. if this job is set to run
-        on a timeout
-        """
-        return self.cache_time is not None
-
-    def get_command(self):
-        """Returns the job's expanded command"""
-        return self.job.get_command(self.unique_id, self.build_context,
-                                          self.build_graph)
-
-
-    def get_id(self):
-        """ Returns this Job's unique id
-        """
-        return self.unique_id
-
-class TimestampExpandedJob(Job):
     def __init__(self, job, unique_id, build_graph, build_context):
-        super(TimestampExpandedJob, self).__init__(job,
-                unique_id, build_graph, build_context)
-        self.curfew = job.curfew
 
-    def past_curfew(self):
-        time_delta = convert_to_timedelta(self.curfew)
-        end_time = self.build_context["end_time"]
-        curfew_time = end_time + time_delta
-        return curfew_time < arrow.get()
+        super(BundleState, self).__init__(job, unique_id, build_graph, build_context)
+        if self.cache_time is None:
+            self.cache_time = "2h"
 
 
-class MetaJob(TimestampExpandedJob):
+class DeepyJobDefinition(builder.jobs.JobDefinition):
+    """Used to give the jobs the command replacement"""
+    meta = {}
 
-    def get_should_run_immediate(self):
+    def __init__(self, config=None):
+        super(DeepyJobDefinition, self).__init__(config=config)
+
+    def get_job_type(self):
+        return builder.jobs.Job
+
+    def get_dimensions(self, build_context=None):
+        """Returns all the dimensions the job has in list form"""
+        if build_context is None:
+            build_context = {}
+
+        return []
+
+    def get_local_only(self):
+        """Returns if the the job should only be run on the local machine"""
         return False
 
 
-class JobDefinition(object):
-    """A job"""
-    def __init__(self, unexpanded_id=None, cache_time=None, targets=None,
-                 dependencies=None, command=None, config=None):
-        if targets is None:
-            targets = {}
 
-        if dependencies is None:
-            dependencies = {}
 
-        if config is None:
-            config = {}
-
-        # Support setting unexpanded_id as class attribute
-        if not (hasattr(self, 'unexpanded_id') and unexpanded_id is None):
-            self.unexpanded_id = unexpanded_id
-        self.cache_time = cache_time
-        self.targets = targets
-        self.dependencies = dependencies
-        self.config = config
-        self.command = command
-
-    def get_id(self):
-        """
-        Returns a unique name for the job
-        """
-        return self.unexpanded_id
-
-    def get_expandable_id(self):
-        """Returns the unexpanded_id with any expansion neccessary information
-        appended
-        """
-        return self.unexpanded_id
-
+class DeepyTimestampExpandedJob(DeepyJobDefinition, builder.jobs.TimestampExpandedJobDefinition):
+    """A timestamp expanded form of deepy job"""
     def get_job_type(self):
-        """Returns the type of state to use for expansions"""
-        return Job
+        return builder.jobs.TimestampExpandedJob
 
     def expand(self, build_graph, build_context):
-        """Used to expand the node using a build context returns a list of
-        nodes
-
-        a typical expansion is a timestamp expansion where build
-        context would use start time and end time and the node
-        would expand from there
-        """
-        return [self.construct_job(self.get_expandable_id(), build_graph, build_context)]
-
-    def construct_job(self, expanded_id, build_graph, build_context):
-        """
-        Return the Job instance to insert into the build graph.
-
-        By default, make a Job instance using the
-        Job type returned by get_job_type.
-        """
         job_type = self.get_job_type()
-        expanded_node = job_type(self, expanded_id, build_graph, build_context)
-        return expanded_node
-
-    def get_enable(self):
-        """Used to determine if the node should end up in the build graph
-        or not. For example, when the deployment doesn't have backbone
-        no backbone node should be in the graph
-        """
-        return True
-
-    def get_command(self, unique_id, build_context, build_graph):
-        """Used to get the command related to the command"""
-        return self.command
-
-    def get_dependencies(self):
-        """most jobs will depend on the existance of a file, this is what is
-        returned here. It is in the form
-        {
-            "dependency_type": [
-                dependency_class,
-            ],
-        }
-        """
-        return self.dependencies
-
-    def get_targets(self):
-        """most jobs will output a target, specify them here
-        form:
-            {
-                "target_type": [
-                    target_class
-                ],
-            }
-        """
-        return self.targets
-
-    def get_always_force(self):
-        return False
-
-    def __repr__(self):
-        dependencies_dict = self.get_dependencies()
-        targets_dict = self.get_targets()
-
-        str_dependencies = collections.defaultdict(list)
-        for dependency_type, dependencies in dependencies_dict.iteritems():
-            for dependency in dependencies:
-                str_dependencies[dependency_type].append(dependency.unexpanded_id)
-
-        str_targets = collections.defaultdict(list)
-        for target_type, targets in targets_dict.iteritems():
-            for target in targets:
-                str_targets[target_type].append(target.unexpanded_id)
-
-        this_dict = {"depends": str_dependencies, "targets": str_targets}
-
-        return str(json.dumps(this_dict, indent=2))
-
-class TimestampExpandedJobDefinition(JobDefinition):
-    """A job that combines the timestamp expanded node and the job node
-    logic
-    """
-    def __init__(self, unexpanded_id=None, cache_time=None,
-                 curfew="10min", file_step="5min", targets=None,
-                 dependencies=None, command=None, config=None):
-        super(TimestampExpandedJobDefinition, self).__init__(unexpanded_id=unexpanded_id,
-                                                   cache_time=cache_time,
-                                                   targets=targets,
-                                                   dependencies=dependencies,
-                                                   command=command,
-                                                   config=config)
-
-        self.curfew = curfew
-        self.file_step = file_step
-
-    def get_expandable_id(self):
-        return self.unexpanded_id + "_%Y-%m-%d-%H-%M-%S"
-
-    def get_job_type(self):
-        return TimestampExpandedJob
-
-    def expand(self, build_graph, build_context):
-        """Expands the node based off of the file step and the start and
-        end times
-        """
-
-        expanded_contexts = (builder.expanders
-                                    .TimestampExpander
-                                    .expand_build_context(
+        expanded_contexts = (DeepyTimestampExpander
+                                  .expand_build_context(
                                             build_context,
                                             self.get_expandable_id(),
                                             self.file_step))
 
         expanded_nodes = []
         for expanded_id, build_context in expanded_contexts.iteritems():
-            expanded_node = self.construct_job(expanded_id, build_graph, build_context)
+            expanded_node = job_type(self, expanded_id, build_graph,
+                                     build_context)
             expanded_nodes.append(expanded_node)
 
         return expanded_nodes
 
 
-class MetaTarget(object):
-    """Meta targets point to jobs in the graph. Meta targets are only in rule
-    dependency graphs and should never be expanded in to the build graph. When
-    exapanding the graph the meta targets should simply forward the expansion to
-    the next jobs.
-    """
-    def __init__(self, unexpanded_id="meta_target", job_collection=None,
-                 config=None):
-        if job_collection is None:
-            job_collection = {}
+class DeepyDictJob(DeepyTimestampExpandedJob):
+    def __init__(self, rule_id, rules_db, config=None,
+                 expander=None):
+        super(DeepyDictJob, self).__init__(config=config)
+        self.unexpanded_id = rule_id
+        self.rule_id = rule_id
+        self.rules_db = rules_db
+        self.expander = expander
+        self.rule = self.get_rule(self.rule_id)
+        if expander is None:
+            if not self.rule.get('file_step'):
+                self.expander = deepy.build.expanders.DeepyExpander
+            else:
+                self.expander = expander or deepy.build.expanders.DeepyTimestampExpander
+        self.force = self.rule.get("force", False)
 
+        # get the file step using a process that can handle many revisions of
+        # file_step
+        self.file_step = self.rule.get("file_step",
+                                       self.rule.get("make_time_step",
+                                                     self.rule.get("time_step",
+                                                                   None)))
+        self.time_step = self.rule.get("time_step", self.file_step)
+
+        self.cache_time = self.rule.get("cache_time")
+        self.curfew = self.rule.get("curfew", "12h")
+        self.target_type = self.rule.get("target_type", "normal")
+
+    def modernize_rule_dict(self, rule_dict):
+        """Takes in a rule dictionary and converts it to a modern version of a
+        rule dictionary
+        """
+        dependencies_dict = rule_dict.get("dependencies", {})
+        dependencies_dict = collections.defaultdict(dict, dependencies_dict)
+        rule_dict["dependencies"] = dependencies_dict
+
+        for depends_type in ["depends", "depends_one_or_more"]:
+            if depends_type in rule_dict:
+                for dependency_id in rule_dict[depends_type]:
+                    rule_dict["dependencies"][depends_type][dependency_id] = {}
+                del rule_dict[depends_type]
+
+    def get_rule(self, rule_id):
+        rule = self.rules_db[rule_id]
+        self.modernize_rule_dict(rule)
+        return rule
+
+    def get_enabled(self):
+        enabled = self.rule.get("enabled")
+        return enabled is None or enabled
+
+    def get_job_type(self):
+        """Returns what type of job state the job should expand to"""
+        if self.get_type() == "glob":
+            return builder.jobs.Job
+        if self.get_type() == "bundle":
+            return BundleState
+        elif "meta" in self.get_type():
+            return builder.jobs.MetaJob
+        return builder.jobs.TimestampExpandedJob
+
+    def get_type(self):
+        """Returns what type of job this is
+        possible:
+            job: A normal job
+            meta: A job that is used for specifying multiple jobs
+            target: A job that only specifies a target
+        """
+        if self.rule.get("target_type") == "glob":
+            return "glob"
+        if self.rule.get("type") != "bundle":
+            if self.rule.get("recipe", [None])[0] is not None:
+                return "job"
+            elif self.get_targets()["produces"]:
+                return "target"
+            else:
+                return "meta"
+        else:
+            if self.rule.get("recipe", [None])[0] is not None:
+                return "bundle"
+            else:
+                return "bundle_meta"
+
+    def get_command(self, unique_id, build_context, build_graph):
+        return self._replace_command(
+                self.rule.get("recipe", [None])[0], unique_id, build_context,
+                build_graph)
+
+    def get_id(self):
+        return self.rule_id
+
+    def get_expandable_id(self):
+        if self.file_step is None:
+            return self.rule_id
+        else:
+            return super(DeepyDictJob, self).get_expandable_id()
+
+    def get_dependencies(self, build_context=None):
+        dependencies = defaultdict(list)
+        depends = []
+        depends_one_or_more = []
+
+        definition = self.get_rule(self.rule_id)
+        for dependency_type, dependency_group in definition.get("dependencies", {}).iteritems():
+            for dependency_job_id, dependency_args in dependency_group.iteritems():
+                dependency = DeepyDictJob(dependency_job_id, self.rules_db,
+                                          config=self.config,
+                                          expander=self.expander)
+                if dependency.get_enabled():
+                    targets = dependency.get_targets()
+                    for target in targets["produces"]:
+                        for kwarg, value in dependency_args.iteritems():
+                            target.__setattr__(kwarg, value)
+                            target.edge_data[kwarg] = value
+                        dependencies[dependency_type].append(target)
+
+        return dependencies
+
+    def get_alternates(self):
+        definition = self.get_rule(self.rule_id)
+        alternate_ids = definition.get("alternates", [])
+        alternates = []
+        for alternate_id in alternate_ids:
+            alternates.append(self.expander(
+                    DeepyStoreBackedLocalFileSystemTarget,
+                    alternate_id, self.file_step, self.time_step,
+                    meta={'alias': self.rule_id}))
+
+        return alternates
+
+    def get_always_force(self):
+        return self.force
+
+    def get_targets(self, build_context=None):
+        definition = self.get_rule(self.rule_id)
+        target_id = definition.get('target')
+
+        targets = {'produces':[], 'alternates':[], 'untracked': []}
+        target_type = 'produces'
+        if target_id:
+            if self.target_type == "normal":
+                targets[target_type].append(self.expander(
+                    DeepyStoreBackedLocalFileSystemTarget,
+                    target_id, file_step=self.file_step, time_step=self.time_step,
+                    meta={'alias':self.rule_id})
+                )
+            elif self.target_type == "glob":
+                targets[target_type].append(self.expander(
+                    DeepyStoreBackedGlobLocalFileSystemTarget,
+                    target_id, self.file_step, self.time_step,
+                    meta={'alias':self.rule_id})
+                )
+            else:
+                raise Exception("There is no target type {}".format(self.target_type))
+
+        # Get all of the back-referenced target-only nodes
+        for rule_id in self.rules_db:
+            rule = self.get_rule(rule_id)
+            depends_dict = rule.get("dependencies", {}).get("depends", {})
+
+            if self.rule_id in depends_dict and rule.get('target') and (not rule.get('recipe')):
+                rule_job = DeepyDictJob(rule_id, self.rules_db,
+                        config=self.config, expander=self.expander)
+                if (definition.get('markered') and not
+                        rule_job.rule.get('marker'))
+                    target_type = 'untracked'
+                else:
+                    target_type = 'produces'
+                # Add target
+                rule_targets = rule_job.get_targets()
+                targets[target_type] += rule_targets['produces']
+
+
+        if (not targets["produces"] and
+                self.rule.get("recipe", [None])[0] is not None):
+            deepy.log.warn("{} has a recipe but no target".format(self.rule_id))
+
+        targets["alternates"] = self.get_alternates()
+
+        return targets
+
+    def get_dimensions(self, build_context=None):
+        return self.rule.get('dimensions') or []
+
+    def _replace_command(self, command, unique_id, build_context, build_graph):
+        """Used to replace all of the formatting on the string used for
+        recipes
+        """
+        got_format_args = False
+
+        if "$@" in command:
+            target_edges = build_graph.out_edges(unique_id)
+            target_edges = filter(lambda x: build_graph.get_edge_data(*x).get('label') == 'produces', target_edges)
+            targets = " ".join(map(lambda x: x[1], target_edges))
+            command = command.replace("$@", targets)
+
+        dependency_ids = build_graph.get_dependency_ids(unique_id)
+        existing_dependency_ids = []
+        for dependency_id in dependency_ids:
+            dependency = build_graph.get_target(dependency_id)
+            if dependency.get_exists():
+                existing_dependency_ids.append(dependency_id)
+
+        while True:
+            new_command = basic_substitution(
+                command, build_context["start_time"])
+            new_command = deepy_substitution(new_command, config=deepy.cfg)
+
+            try:
+                new_command = new_command.format()
+                command = new_command
+                break
+            except:
+                if got_format_args == False:
+                    format_args, new_command = self._get_format_args(
+                            existing_dependency_ids, new_command, build_context,
+                            build_graph)
+                    got_format_args = True
+                new_command = new_command.format(**format_args)
+                command = new_command
+
+        if "$^" in command:
+            prerequisites_string = " ".join(existing_dependency_ids)
+            command = command.replace("$^", prerequisites_string)
+        if "$D" in command:
+            dimensions = self._get_list_merge("dimensions")
+            dimensions = ",".join(dimensions)
+            command = command.replace("$D", dimensions)
+        if "$A" in command:
+            user_args = build_context.get('user_args') or []
+            user_args = " ".join(user_args)
+            command = command.replace("$A", user_args)
+
+        command = str(command)
+        return command
+
+    def _get_substitution_lookup(self, build_context, build_graph):
+        lookup = defaultdict(set)
+        for job_id, job_dict in build_graph.rule_dependency_graph.node.iteritems():
+            job = job_dict.get('object')
+            if not job:
+                raise ValueError(
+                    "Rule with ID {} is invalid. Remove it from the make rules database. Content: {}".format(
+                        job_id, job_dict))
+
+            job = job_dict['object']
+            if not isinstance(job, builder.jobs.JobDefinition): continue
+            targets = job.get_targets()
+            for target_set in itertools.chain(*targets.values()):
+                for expanded_target in target_set.expand(build_context):
+                    lookup[target_set.meta.get('alias')].add(
+                            expanded_target.unique_id)
+        return lookup
+
+    def _get_format_args(self, dependencies, command, build_context, build_graph):
+        """Returns a dict of the form
+        {"class_id": [dependencies, ...], ...}
+        """
+        string_formatter = string.Formatter()
+        dependency_dict = collections.defaultdict(list)
+        lookup = self._get_substitution_lookup(build_context, build_graph)
+
+        for item in string_formatter.parse(command):
+            job_id = item[1]
+            targets = lookup[job_id]
+            dependency_dict[job_id] += targets
+
+        for dependency_id, dependency_list in dependency_dict.iteritems():
+            dependency_dict[dependency_id] = " ".join(dependency_list)
+
+        return dependency_dict, command
+
+    def _get_list_merge(self, key):
+        """Merges in the extend and remove dictionarys"""
+        val = self.rule.get(key, [])
+        # Copy the list so we don't modify the original.
+        val = val[:]
+        ext = self.rule.get(key + '.extend')
+        rem = self.rule.get(key + '.remove')
+        if ext is not None:
+            # preserve order and make unique
+            val += [x for x in ext if x not in val]
+        if rem is not None:
+            val = [x for x in val if x not in rem]
+        return val
+
+    def get_local_only(self):
+        return self.rule.get("local_only", False)
+
+    def expand(self, build_graph, build_context):
+        job_type = self.get_job_type()
+        if self.rule.get("target_type") == "glob":
+            expanded_contexts = (DeepyExpander
+                                      .expand_build_context(
+                                                build_context,
+                                                self.get_expandable_id()))
+        else:
+            expanded_contexts = (DeepyTimestampExpander
+                                      .expand_build_context(
+                                                build_context,
+                                                self.get_expandable_id(),
+                                                file_step=self.file_step))
+        expanded_nodes = []
+        for expanded_id, build_context in expanded_contexts.iteritems():
+            expanded_node = job_type(self, expanded_id, build_graph, build_context)
+            expanded_nodes.append(expanded_node)
+        return expanded_nodes
+
+    def __repr__(self):
+        return str(json.dumps(self.get_rule(self.rule_id), indent=2))
+
+
+class DeepyHourJob(DeepyJobDefinition):
+    """Used to default to a 12 hour curfew"""
+    curfew = "12h"
+
+
+class DeepyCachedJob(DeepyJobDefinition):
+    """Used to default to a 2 hour cache"""
+    cache_time = "2h"
+
+class DeepyImpalaCompactionJob(DeepyTimestampExpandedJob):
+    """Used to compact impala targets"""
+    def __init__(self, dataset_name, time_step, curfew="6h", config=None):
         if config is None:
             config = {}
 
-        self.unexpanded_id = unexpanded_id
-        self.job_collection = job_collection
-        self.config = config
 
-    def get_job_collection(self):
-        """Returns the jobs that it should be pointing to."""
-        return self.job_collection
+        super(DeepyImpalaCompactionJob, self).__init__(config=config)
 
-    def get_enable(self):
-        """Returns whether or not the meta job should be inserted in the
-        graph
-        """
-        return True
+        self.unexpanded_id = "deepfield_{}_step{}_compaction".format(
+                dataset_name, time_step)
+        self.dataset_name = dataset_name
+        self.time_step = time_step
 
-    def __repr__(self):
-        return str(json.dumps("MetaTarget({})".format(self.job_collection), indent=2))
+        self.table_manager = self._get_table_manager()
+
+        self.file_step = self.table_manager.compacted_file_step
+        self.curfew = curfew
+
+    def _get_table_manager(self):
+        """returns a table manager related to the impala dataset"""
+        import deepy.impala.tables as impala_tables
+        return impala_tables.make_cube_data_manager(self.dataset_name,
+                                                    self.time_step)
+
+    def get_dependencies(self, build_context=None):
+        depends_name = "deepfield_{}_step{}_%Y-%m-%d-%H-%M".format(
+                self.dataset_name, self.time_step)
+        return {
+            "depends_one_or_more": [
+                DeepyImpalaExpander(
+                        depends_name, self.time_step, self.time_step,
+                        self.dataset_name)
+            ]
+        }
+
+    def get_targets(self, build_context=None):
+        produces_name = "deepfield_{}_step{}_compacted_%Y-%m-%d-%H-%M".format(
+                self.dataset_name, self.time_step)
+        return {
+            "produces": [
+                DeepyImpalaExpander(
+                        produces_name, self.time_step, self.file_step,
+                        self.dataset_name, compacted=True)
+            ]
+        }
+
+    def get_command(self, unique_id, build_context, build_graph):
+        start_time = build_context["start_time"].format("YYYY-MM-DD-HH-mm")
+        end_time = start_time
+        time_step = int(deepy.timerange.convert_to_timedelta(
+                self.time_step).total_seconds())
+        return "compact_cubes.py -i {} -s {} -e {} --step {}".format(
+                self.dataset_name, start_time, end_time, time_step)
+
+
+class ImpalaViewUpdate(DeepyJobDefinition):
+    """Used to update the view of impala cubes"""
+    def __init__(self, dataset_name, time_step, config=None):
+        if config is None:
+            config = {}
+
+        super(ImpalaViewUpdate, self).__init__(config=config)
+
+        self.unexpanded_id = "deepfield_{}_step{}_view".format(dataset_name,
+                                                               time_step)
+        self.dataset_name = dataset_name
+        self.time_step = time_step
+
+    def get_command(self, unique_id, build_context, build_graph):
+        time_step = int(deepy.timerange.convert_to_timedelta(
+                self.time_step).total_seconds())
+        return "update_view.py -i {} --step {}".format(self.dataset_name,
+                                                       time_step)
+
+class InsertCube(DeepyTimestampExpandedJob):
+    """Used to template a insert cube job"""
+    def __init__(self, dataset_name, time_step, rules_db, pattern, config=None):
+        if config is None:
+            config = {}
+
+        super(InsertCube, self).__init__(config=config)
+
+        self.unexpanded_id = "deepfield_{}_step{}_insert".format(dataset_name,
+                                                                 time_step)
+        self.cube_name = ""
+
+        for rule_id, rule in rules_db.iteritems():
+            meta = rule.get("meta", {})
+            cube_id = meta.get("cube_id", {})
+            if cube_id == dataset_name:
+                file_step = rule.get("file_step", "5min")
+                file_step = deepy.timerange.convert_to_timedelta(file_step)
+                expected_file_step = deepy.timerange.convert_to_timedelta(
+                        time_step)
+                if file_step == expected_file_step:
+                    self.cube_name = rule_id
+                    break
+
+
+        self.dataset_name = dataset_name
+        self.time_step = time_step
+        self.rules_db = rules_db
+        self.file_step = time_step
+        self.pattern = pattern
+        if self.cube_name == "":
+            deepy.log.critical("Could-not-match-cube-name-for-impala-insert-target-{}".format(dataset_name))
+            deepy.log.critical("check-slice-config-for-errors")
+
+    def get_dependencies(self, build_context=None):
+        expander = DeepyTimestampExpander
+        if self.pattern is not None:
+            path = os.path.join("$(cache_dir)", self.pattern,
+                                "cube.%Y-%m-%d-%H-%M.h5")
+            return {
+                "depends": [
+                    expander(
+                        DeepyStoreBackedLocalFileSystemTarget,
+                        path, self.file_step, self.time_step)
+                ]
+            }
+
+        dependency = DeepyDictJob(
+                self.cube_name, self.rules_db, config=self.config,
+                expander=expander)
+        dependency_targets = dependency.get_targets()
+        return {
+            "depends": dependency_targets["produces"],
+        }
+
+    def get_targets(self, build_context=None):
+        depends_name = "deepfield_{}_step{}_%Y-%m-%d-%H-%M".format(
+                self.dataset_name, self.time_step)
+        return {
+            "produces": [
+                DeepyImpalaExpander(
+                    depends_name, self.time_step, self.time_step,
+                    self.dataset_name)
+            ]
+        }
+
+    def get_command(self, unique_id, build_context, build_graph):
+        insert_cubes = build_graph.get_dependency_ids(unique_id)
+        insert_cubes = " ".join(insert_cubes)
+        return "insertcube.py -i {}".format(insert_cubes)

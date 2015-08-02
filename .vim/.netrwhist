@@ -1,6 +1,10 @@
 let g:netrw_dirhistmax  =10
-let g:netrw_dirhist_cnt =4
-let g:netrw_dirhist_1='/home/max/school-work/EECS482/dambe.maxmzkr.3'
-let g:netrw_dirhist_2='/home/max/my-salt-states'
-let g:netrw_dirhist_3='/home/max/my-salt-states/haskell'
-let g:netrw_dirhist_4='/home/max/my-salt-states/vimstuff'
+let g:netrw_dirhist_cnt =8
+let g:netrw_dirhist_1='/home/max/deepfield-bootstrap/pipedream/lib'
+let g:netrw_dirhist_2='/home/max/go/src/github.com/maxmzkr/gobot/search/giphy'
+let g:netrw_dirhist_3='scp://support@198.108.63.85//home/support/pipedream-max/lib/deepy/defender/'
+let g:netrw_dirhist_4='/home/max/go/src/github.com/maxmzkr/gobot/ccs'
+let g:netrw_dirhist_5='/home/max/go/src/github.com/maxmzkr/gobot/ccs/giphyccs'
+let g:netrw_dirhist_6='/home/max/.go_appengine/goroot/src/appengine'
+let g:netrw_dirhist_7='/home/max/go/src/github.com/maxmzkr/gobot/urlGetter'
+let g:netrw_dirhist_8='/home/max/go/src/github.com/maxmzkr/gobot/ccs'

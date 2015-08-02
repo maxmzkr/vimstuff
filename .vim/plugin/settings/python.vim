@@ -1,0 +1,2 @@
+let python_version_2=1
+let python_highlight_print_as_function=1

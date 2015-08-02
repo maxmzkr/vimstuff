@@ -69,6 +69,10 @@ Plugin 'tikhomirov/vim-glsl'
 
 Plugin 'nathanaelkane/vim-indent-guides'
 
+Plugin 'hdima/python-syntax'
+
+Plugin 'wincent/Command-T' 
+
 call vundle#end()
 filetype plugin indent on     " required
 " To ignore plugin indent changes, instead use:

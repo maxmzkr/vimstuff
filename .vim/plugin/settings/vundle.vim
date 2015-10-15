@@ -73,6 +73,11 @@ Plugin 'hdima/python-syntax'
 
 Plugin 'wincent/Command-T' 
 
+" Matlab
+Plugin 'vim-scripts/MatlabFilesEdition'
+
+Plugin 'Valloric/YouCompleteMe'
+
 call vundle#end()
 filetype plugin indent on     " required
 " To ignore plugin indent changes, instead use:

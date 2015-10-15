@@ -1,5 +1,5 @@
 let g:netrw_dirhistmax  =10
-let g:netrw_dirhist_cnt =8
+let g:netrw_dirhist_cnt =9
 let g:netrw_dirhist_1='/home/max/my-salt-states/two-finger-scrolling'
 let g:netrw_dirhist_2='/home/max/my-salt-states/edge-scrolling'
 let g:netrw_dirhist_3='/home/max/.vimstuff'
@@ -8,3 +8,4 @@ let g:netrw_dirhist_5='/home/max/go/src/github.com/maxmzkr/test/hello'
 let g:netrw_dirhist_6='/home/max/go/src/github.com/maxmzkr/gobot/twilio'
 let g:netrw_dirhist_7='/home/max/school-work/EECS445/homework/homework01/problem03'
 let g:netrw_dirhist_8='/home/max/school-work/EECS445/project/raspberry'
+let g:netrw_dirhist_9='/home/max/.vimstuff/.vim/vimtemp'

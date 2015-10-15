@@ -1,5 +1,2 @@
-.vim/vimundo/*
-.vim/vimtemp/*
-.vim/bundle/*
 !.vim/bundle/Vundle.vim
 *~

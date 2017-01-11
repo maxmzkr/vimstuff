@@ -78,6 +78,12 @@ Plugin 'vim-scripts/MatlabFilesEdition'
 
 Plugin 'Valloric/YouCompleteMe'
 
+Plugin 'vim-scripts/SQLUtilities'
+Plugin 'vim-scripts/Align'
+
+" Theme
+Plugin 'altercation/vim-colors-solarized'
+
 call vundle#end()
 filetype plugin indent on     " required
 " To ignore plugin indent changes, instead use:

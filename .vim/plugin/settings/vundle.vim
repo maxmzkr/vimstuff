@@ -43,7 +43,7 @@ Plugin 'git://git.wincent.com/command-t.git'
 Plugin 'scrooloose/syntastic.git'
 
 " finds files in git repo
-Plugin 'kien/ctrlp.vim'
+Plugin 'junegunn/fzf'
 
 " All the go lang stuff you could need
 Plugin 'fatih/vim-go'

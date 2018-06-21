@@ -43,7 +43,7 @@ Plugin 'git://git.wincent.com/command-t.git'
 Plugin 'scrooloose/syntastic.git'
 
 " finds files in git repo
-Plugin 'kien/ctrlp.vim'
+Plugin 'junegunn/fzf'
 
 " All the go lang stuff you could need
 Plugin 'fatih/vim-go'
@@ -83,6 +83,10 @@ Plugin 'vim-scripts/Align'
 
 " Theme
 Plugin 'altercation/vim-colors-solarized'
+
+Plugin 'SirVer/ultisnips'
+Plugin 'honza/vim-snippets'
+Plugin 'AndrewRadev/linediff.vim'
 
 call vundle#end()
 filetype plugin indent on     " required

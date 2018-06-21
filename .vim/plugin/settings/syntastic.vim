@@ -12,7 +12,8 @@ let g:syntastic_cpp_compiler_options = ' -std=c++11 -stdlib=libc++'
 let g:syntastic_cpp_cpplint_exec = 'cpplint'
 let g:syntastic_cpp_checkers = ['gcc', 'cpplint']
 
-let g:syntastic_python_checkers=['pyflakes', 'pylint']
+let g:syntastic_python_checkers=['pylint']
+let g:syntastic_python_pylint_exec='cool_python_linter'
 let g:syntastic_python_pylint_args='--rcfile=/home/max/.pylintrc'
 let g:syntastic_python_pylint_post_args = '--rcfile=/home/max/.pylintrc'
 " hopefully setting the bottom list thing
@@ -31,3 +32,5 @@ let g:syntastic_cpp_compiler_options = ' -std=c++11'
 
 " java minecraft
 let g:syntastic_java_javac_classpath = '/home/max/.gradle/caches/minecraft/net/minecraftforge/forge/1.8-11.14.0.1299/snapshot_nodoc/20141130/*.jar:/home/max/.forge/src/main/java'
+
+let g:syntastic_check_on_open = 0

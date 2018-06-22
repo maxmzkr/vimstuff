@@ -44,6 +44,7 @@ Plugin 'scrooloose/syntastic.git'
 
 " finds files in git repo
 Plugin 'junegunn/fzf'
+Plugin 'junegunn/fzf.vim'
 
 " All the go lang stuff you could need
 Plugin 'fatih/vim-go'

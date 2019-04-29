@@ -77,7 +77,7 @@ Plugin 'wincent/Command-T'
 " Matlab
 Plugin 'vim-scripts/MatlabFilesEdition'
 
-Plugin 'Valloric/YouCompleteMe'
+" Plugin 'Valloric/YouCompleteMe'
 
 Plugin 'vim-scripts/SQLUtilities'
 Plugin 'vim-scripts/Align'
@@ -88,6 +88,9 @@ Plugin 'altercation/vim-colors-solarized'
 Plugin 'SirVer/ultisnips'
 Plugin 'honza/vim-snippets'
 Plugin 'AndrewRadev/linediff.vim'
+Plugin 'tpope/vim-rhubarb'
+Plugin 'avanzzzi/behave.vim'
+
 
 call vundle#end()
 filetype plugin indent on     " required
